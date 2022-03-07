@@ -1,2 +1,4 @@
-# toys
+# PyQt Toys
+
 My PyQt Desktop Toys
+
