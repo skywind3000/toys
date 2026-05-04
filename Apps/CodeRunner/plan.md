@@ -63,7 +63,7 @@
 
 **具体内容**：
 - TabData 全部属性：file_path, is_new, is_dirty, editor_doc(QTextDocument), input_doc(QTextDocument), output_doc(QTextDocument), cursor, scroll_pos, input_cursor, input_scroll, encoding, zoom_font_size, compiler_mtime
-- 每个 TabData 创建时新建三个独立 QTextDocument 实例，editor_doc 挂载 CppHighlighter（阶段 4 才实现高亮规则，此阶段先空挂）
+- 每个 TabData 创建时新建三个独立 QTextDocument 实例，CppHighlighter 实例化但不挂载到 editor_doc（延迟挂载避免大文件打开时的 re-highlight 逐块处理开销，Phase 4 实现规则后再 setDocument 挂载）
 - TabManager：add_tab, close_tab, switch_tab, get_current, untitled_counter
 - 标签切换：通过 `editor.setDocument(tab.editor_doc)` 交换文档，手动保存/恢复光标和滚动条位置，使用 `setUpdatesEnabled(False)` 冻结重绘
 - dirty 信号：连接 editor_doc.contentsChanged 到 TabData 的 dirty 标记方法（信号跟随 document，不受 Widget 切换影响）

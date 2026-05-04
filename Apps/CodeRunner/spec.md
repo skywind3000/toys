@@ -64,14 +64,14 @@ class TabData:
 
 **QTextDocument 模型说明**：每个标签页持有三个独立的 QTextDocument 实例（editor_doc、input_doc、output_doc）。Widget 层共享单一 QPlainTextEdit/QTextEdit，切换标签时通过 `widget.setDocument(tab.xxx_doc)` 交换文档。此设计的关键优势：
 - **undo/redo 完整保留**：QTextDocument 自带 undo 栈，切换标签不丢失撤销历史
-- **语法高亮状态保留**：CppHighlighter 挂在 editor_doc 上，切换后无需重新解析
+- **语法高亮状态保留**：Phase 4 挂载 CppHighlighter 后，切换标签无需重新解析
 - **无需 setPlainText**：避免内容销毁重建和 undo 栈清空
 
 - `is_new` 标志：新建文件时为 True，首次保存后变为 False
 - `is_dirty` 标志：编辑器文本变化时置 True，保存后置 False；新建文件预填充模板后也视为 dirty
 - 标签名生成规则：`is_new` 且 `is_dirty` → `*untitledN*`；`is_new` 且非 dirty → `untitledN`；已保存文件 dirty → `*filename*`；已保存文件非 dirty → `filename`
 - 退出时持久化：已保存文件记录 file_path；新文件记录 editor_doc.toPlainText() + input_doc.toPlainText()
-- CppHighlighter 在 TabData 创建时即挂载到 editor_doc，生命周期与 TabData 一致
+- CppHighlighter 在 TabData 创建时实例化但不挂载到 editor_doc（延迟挂载避免大文件打开时 highlighter 逐块处理的开销），Phase 4 实现高亮规则后再通过 `setDocument()` 挂载，生命周期与 TabData 一致
 
 ### TabManager
 

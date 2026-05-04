@@ -353,12 +353,22 @@ def _detect_encoding (raw:bytes) -> str:
 
 
 def _read_file (path:str) -> tuple:
-    """Read file with auto encoding detection. Returns (content, encoding)."""
+    """Read file with auto encoding detection. Returns (content, encoding).
+    Detects and decodes in one pass to avoid double-decoding UTF-8 files."""
     with open(path, 'rb') as f:
         raw = f.read()
-    encoding = _detect_encoding(raw)
+    # UTF-8 BOM: strip BOM and decode
     if raw[:3] == b'\xef\xbb\xbf':
-        raw = raw[3:]
+        content = raw[3:].decode('utf-8', 'replace')
+        return (content, 'UTF-8')
+    # Try UTF-8 strict decode (serves as both detection and decoding)
+    try:
+        content = raw.decode('utf-8', 'strict')
+        return (content, 'UTF-8')
+    except UnicodeDecodeError:
+        pass
+    # Fall back to system encoding
+    encoding = 'gbk' if sys.platform == 'win32' else 'utf-8'
     content = raw.decode(encoding, 'replace')
     return (content, encoding)
 
@@ -436,8 +446,11 @@ class TabData:
             self.editor_doc.setModified(False)
         self.editor_doc.blockSignals(False)
 
-        # Attach highlighter (empty rules for now, Phase 4)
-        self.highlighter = CppHighlighter(self.editor_doc)
+        # Highlighter created but deferred — not attached to editor_doc yet.
+        # Attaching triggers re-highlight of every block, which costs
+        # ~0.03ms per Python→C++ call; 4000 blocks ≈ 120ms overhead
+        # for an empty highlightBlock. Deferring to Phase 4 avoids this.
+        self.highlighter = CppHighlighter()
 
         # Connect dirty tracking via modificationChanged
         self.editor_doc.modificationChanged.connect(
