@@ -75,7 +75,7 @@
 - MenuBar：File 菜单填充 New / Open / Save / Save As / Close / Settings 占位
 - Toolbar：New / Save / Open 按钮连线到动作
 - InputPanel / OutputPanel 随标签切换通过 setDocument 交换
-- Settings 默认值（template_text 为 C++ 骨架）
+- Settings 默认值（template_text 为 C++ 骨架，editor/io 字体按平台自动检测 monospace）
 
 **自动测试项**：
 - TabData 状态转换逻辑（is_new/is_dirty 组合 → 标签名）

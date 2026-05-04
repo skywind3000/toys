@@ -15,7 +15,36 @@ from PyQt5.QtWidgets import (
     QVBoxLayout
 )
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QKeySequence
+from PyQt5.QtGui import QKeySequence, QFontDatabase
+
+
+#----------------------------------------------------------------------
+# Platform monospace font detection
+#----------------------------------------------------------------------
+_MONOSPACE_PRIORITY = {
+    'win32': ['Consolas', 'Courier New'],
+    'darwin': ['Menlo', 'SF Mono'],
+}
+
+# Linux has many distros, use a common fallback list
+_LINUX_MONOSPACE = ['DejaVu Sans Mono', 'Ubuntu Mono']
+
+def _detect_monospace_font () -> str:
+    """Detect the best available monospace font for the current platform."""
+    db = QFontDatabase()
+    available = db.families()
+    candidates = _MONOSPACE_PRIORITY.get(sys.platform, _LINUX_MONOSPACE)
+    for name in candidates:
+        if name in available:
+            return name
+    return 'monospace'
+
+
+def _init_font_defaults () -> None:
+    """Initialize Settings font defaults based on platform."""
+    font = _detect_monospace_font()
+    Settings.editor_font_family = font
+    Settings.io_font_family = font
 
 
 def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
@@ -47,9 +76,9 @@ class Settings:
     env_vars = {}
     run_timeout = 10
     compile_timeout = 20
-    editor_font_family = 'Consolas'
+    editor_font_family = ''   # set by _init_font_defaults()
     editor_font_size = 11
-    io_font_family = 'Consolas'
+    io_font_family = ''      # set by _init_font_defaults()
     io_font_size = 11
     bracket_completion = True
     template_text = (
@@ -231,6 +260,7 @@ class MainWindow (QMainWindow):
 def main ():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
+    _init_font_defaults()
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

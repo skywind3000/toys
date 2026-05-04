@@ -157,9 +157,9 @@ class Settings:
     env_vars: dict              # 环境变量 {key: value}
     run_timeout: int            # 运行超时秒数，默认 10
     compile_timeout: int        # 编译超时秒数，默认 20
-    editor_font_family: str     # 编辑器字体，默认 'Consolas'
+    editor_font_family: str     # 编辑器字体，默认按平台自动选择（见下方说明）
     editor_font_size: int       # 编辑器字号，默认 11
-    io_font_family: str         # IO 面板字体，默认 'Consolas'
+    io_font_family: str         # IO 面板字体，默认按平台自动选择（同 editor_font_family 逻辑）
     io_font_size: int           # IO 面板字号，默认 11
     bracket_completion: bool    # 括号补全开关，默认 True
     template_text: str          # 新建模板内容
@@ -167,6 +167,15 @@ class Settings:
 
 - 修改 `compiler_path`、`compiler_flags` 或 `env_vars` 时，记录当前时间戳到 `compiler_mtime`，供重编译判断使用（`compiler_path` 变更意味着使用不同编译器，旧产物需要重编译；`env_vars` 变更可能影响编译器搜索路径等行为，属于刻意扩展的安全策略）
 - `env_vars` 的值中 `$VAR_NAME` 语法在运行时展开为实际环境变量值
+- `editor_font_family` / `io_font_family` 默认值按平台自动选择 monospace 字体，优先列表如下：
+
+| 平台 | 首选 | 次选 | 全部不可用回退 |
+|------|------|------|----------------|
+| Windows | Consolas | Courier New | monospace（Qt 系统默认） |
+| macOS | Menlo | SF Mono | monospace |
+| Linux | DejaVu Sans Mono | Ubuntu Mono | monospace |
+
+启动时通过 `QFontDatabase` 检测优先列表中第一个可用字体，设为默认值；用户可通过 Settings 自定义覆盖
 
 ### Settings JSON 格式
 
@@ -186,7 +195,7 @@ class Settings:
 }
 ```
 
-首次运行不存在配置文件时使用默认值。
+首次运行不存在配置文件时使用默认值。`editor_font_family` / `io_font_family` 的默认值按平台自动检测（见上方优先列表），JSON 中 `"Consolas"` 为 Windows 下的示例值。
 
 ### Window State JSON 格式
 
