@@ -31,10 +31,10 @@
 - Toolbar：七个按钮（New / Save / Open / Run / Test / Stop / Settings），点击无响应
 - TabBar（QTabBar）：空状态，无标签页
 - MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputPanel / 下 OutputPanel）），默认 1:1
-- StatusBar：左 QLabel（空消息）+ 右 QLabel（显示 `Ln 1, Col 1 | UTF-8 | INS`）
+- StatusBar：左 QLabel（空消息）+ 右 QLabel（零标签时清空）
 - DPI：`Qt.AA_EnableHighDpiScaling`
 - 主入口：`def main()`，窗口 1000x650 居中
-- 启动时无标签页，编辑区域显示为空
+- 启动时无标签页，CodeEditor / InputPanel / OutputPanel 三个面板 `setEnabled(False)` 灰显，内容为空
 
 **自动测试项**：无（纯视觉）
 
@@ -42,8 +42,8 @@
 - [ ] `python CodeRunner.py` 启动，看到完整五区域布局
 - [ ] 水平分割条可左右拖动，垂直分割条可上下拖动
 - [ ] 窗口大小约 1000x650
-- [ ] 状态栏右侧显示 `Ln 1, Col 1 | UTF-8 | INS`
-- [ ] 无标签页时编辑区域为空
+- [ ] 无标签页时 CodeEditor / InputPanel / OutputPanel 三个面板灰显不可交互
+- [ ] 无标签页时状态栏右侧为空（不显示行号/编码/模式）
 
 ---
 
@@ -57,21 +57,23 @@
 - CodeEditor（QPlainTextEdit）：基础编辑（无行号、无高亮、无补全），Tab 键插入制表符
 
 **具体内容**：
-- TabData 全部属性：file_path, is_new, is_dirty, editor_text, input_text, output_html, encoding, zoom_font_size, compiler_mtime
+- TabData 全部属性：file_path, is_new, is_dirty, editor_doc(QTextDocument), input_doc(QTextDocument), output_doc(QTextDocument), cursor, scroll_pos, input_cursor, input_scroll, encoding, zoom_font_size, compiler_mtime
+- 每个 TabData 创建时新建三个独立 QTextDocument 实例，editor_doc 挂载 CppHighlighter（阶段 4 才实现高亮规则，此阶段先空挂）
 - TabManager：add_tab, close_tab, switch_tab, get_current, untitled_counter
-- 标签切换：保存旧标签状态到 TabData → 更新 Widget 内容为新标签状态
+- 标签切换：通过 `editor.setDocument(tab.editor_doc)` 交换文档，手动保存/恢复光标和滚动条位置，使用 `setUpdatesEnabled(False)` 冻结重绘
+- dirty 信号：连接 editor_doc.contentsChanged 到 TabData 的 dirty 标记方法（信号跟随 document，不受 Widget 切换影响）
 - 标签名显示规则：is_new+dirty → `*untitledN*`，is_new+非dirty → `untitledN`，已保存+dirty → `*filename*`，已保存+非dirty → `filename`
-- 关闭最后标签后进入空窗口状态（current_index = -1）
-- New（Ctrl+N）：创建 TabData（is_new=True, is_dirty=True, editor_text=默认模板, encoding='UTF-8'）
-- Open（Ctrl+O）：QFileDialog 选择 .cpp/.c 文件，读取内容到 TabData
-- Save（Ctrl+S）：新文件弹出 QFileDialog；已保存文件直接写入，使用 TabData.encoding 编码
+- 关闭最后标签后进入零标签状态（current_index = -1），三个面板 `setEnabled(False)` 灰显
+- 新建/打开标签时从零标签状态恢复：三个面板 `setEnabled(True)`
+- Switch Tab 快捷键：Alt+1 ~ Alt+9 切换第 1~9 个标签，Alt+0 切第 10 个，通过 QShortcut 绑定
+- New（Ctrl+N）：创建 TabData（is_new=True, is_dirty=True, editor_doc 初始内容为默认模板, encoding='UTF-8'）
+- Open（Ctrl+O）：QFileDialog 选择 .cpp/.c 文件，读取内容到 TabData.editor_doc
+- Save（Ctrl+S）：新文件弹出 QFileDialog；已保存文件直接写入 editor_doc.toPlainText()，使用 TabData.encoding 编码
 - Save As（Ctrl+Shift+S）：始终弹出 QFileDialog
 - Close（Ctrl+W）：dirty 时弹出 QMessageBox（Save / Don't Save / Cancel）
 - MenuBar：File 菜单填充 New / Open / Save / Save As / Close / Settings 占位
 - Toolbar：New / Save / Open 按钮连线到动作
-- 编辑器 textChanged 信号 → 标记 is_dirty → 更新标签名
-- InputPanel 内容随标签切换存入/读出
-- OutputPanel 内容随标签切换存入/读出（此时为空）
+- InputPanel / OutputPanel 随标签切换通过 setDocument 交换
 - Settings 默认值（template_text 为 C++ 骨架）
 
 **自动测试项**：
@@ -84,9 +86,13 @@
 - [ ] Ctrl+S 保存，弹出文件对话框，保存后标签名变为 `*filename*` → `filename`
 - [ ] Ctrl+O 打开一个 .cpp 文件，内容正确显示
 - [ ] Ctrl+W 关闭标签，有未保存更改时弹出确认对话框
-- [ ] 关闭最后一个标签后窗口为空
+- [ ] 关闭最后一个标签后三个面板灰显不可交互
+- [ ] 零标签状态下 Ctrl+N 创建新标签，面板恢复可用
 - [ ] Ctrl+N 再次创建新标签，编号递增
+- [ ] 多标签快速切换时无闪烁、无内容跳变
 - [ ] 多标签切换时编辑器内容和 InputPanel 内容正确切换
+- [ ] 切换标签后 Ctrl+Z 撤销历史仍然有效（setDocument 保留 undo 栈）
+- [ ] Alt+1 切换到第一个标签，Alt+2 切换到第二个，索引超出时无反应
 
 ---
 
@@ -189,8 +195,10 @@
 - 编译命令拼接：compiler_path + 编译标志 + compiler_flags + 源文件 + -o + exe文件
 - exe 文件路径：源文件同目录，同名 .exe
 - 工作目录：exe 所在目录
-- Run 外部终端：Windows 用临时 .bat + start 命令
-- psutil 内存占用：可选，进程结束后追加到退出状态行
+- Run 外部终端：Windows 用固定批处理 `%TEMP%\coderunner.cmd`（内容固定，变化部分通过 `CR_COMMAND`/`CR_PAUSE` 环境变量传入），临时修改 `os.environ` 后 `startDetached` 启动
+- psutil 内存占用：可选，QTimer 100ms 轮询记录峰值 rss，进程结束后追加到退出状态行
+- 输出路由：ProcessManager 记录 target_tab，stdout/stderr 始终写入发起操作的 TabData，非当前标签时仅更新缓冲
+- save_if_dirty 中止：Test/Run/Build 流程中 save_if_dirty 返回失败时终止整个流程
 - MenuBar：Run 菜单填充 Build / Test / Run / Stop
 - Toolbar：Run / Test / Stop 按钮连线
 - 状态栏左侧：编译/运行结果消息更新
@@ -210,8 +218,10 @@
 - [ ] F7 终止正在运行的进程
 - [ ] 运行超时后 OutputPanel 显示红色超时信息
 - [ ] 编译超时后 OutputPanel 显示红色超时信息
-- [ ] Busy 状态下按 Build/Test/Run 弹出提示，不启动新操作
+- [ ] Busy 状态下按 Build/Test/Run 弹出英文提示，不启动新操作
 - [ ] stderr 输出用灰色字体显示
+- [ ] Tab A 运行 Test 期间切到 Tab B，切回 Tab A 后看到 Tab A 的运行结果
+- [ ] 新文件按 F9 → 弹出保存对话框 → 取消保存 → 不执行编译运行
 
 ---
 
@@ -231,7 +241,7 @@
   - Template 页：多行编辑框 + Reset to Default 按钮
 - Auto Detect：检查常见 MinGW/TDM-GCC/Dev-Cpp 路径 + PATH 中 g++
 - OK → 保存 Settings JSON；Cancel → 放弃修改
-- compiler_flags 或 env_vars 变化 → 更新 compiler_mtime
+- compiler_path、compiler_flags 或 env_vars 变化 → 更新 compiler_mtime
 - Window state 持久化：`~/.cache/coderunner/window.json`
   - 退出时保存：窗口几何、分割条位置、标签列表、活跃标签、last_file_dir、recent_files
   - 启动时恢复：重新打开标签、恢复 InputPanel 内容、恢复分割条位置
@@ -254,7 +264,7 @@
 - [ ] 打开多个标签 → 退出 → 重新启动 → 标签恢复，InputPanel 内容恢复
 - [ ] 拖拽 .cpp 文件到窗口 → 文件被打开
 - [ ] Recent Files 菜单显示最近打开的文件
-- [ ] 点击已删除的最近文件 → 提示"文件不存在"
+- [ ] 点击已删除的最近文件 → 提示 "File not found"
 
 ---
 
@@ -263,12 +273,13 @@
 **目标**：所有 PRD 功能完整覆盖，细节打磨。
 
 **实现的类**：
-- FindDialog（QDialog）：模态查找
-- ReplaceDialog（QDialog）：模态替换
+- FindDialog（QDialog）：非模态查找
+- ReplaceDialog（QDialog）：非模态替换
 
 **具体内容**：
-- FindDialog：查找文本、大小写敏感、向上/向下、Find Next / Find Prev / Close
-- ReplaceDialog：查找文本 + 替换文本、Replace / Replace All / Close
+- FindDialog：查找文本、大小写敏感、向上/向下 RadioButton、Find Next / Close，非模态，关闭时隐藏保留状态
+- ReplaceDialog：查找文本 + 替换文本、Replace / Replace All / Close，非模态
+- GotoLineDialog：使用 QInputDialog.getInt() 输入目标行号，跳转并居中显示（Ctrl+G）
 - Edit 菜单完善：Undo / Redo / Find (Ctrl+F) / Replace (Ctrl+H) / Goto Line (Ctrl+G)
 - View 菜单完善：Zoom In (Ctrl++) / Zoom Out (Ctrl+-)
 - 编码选择菜单：状态栏编码点击 → QMenu（Reopen with Encoding / Save with Encoding）
@@ -283,8 +294,9 @@
 - 无显著可自动化的新增逻辑（对话框行为为 UI 层）
 
 **手动验收清单**：
-- [ ] Ctrl+F 打开 Find 对话框（模态），查找功能正常
-- [ ] Ctrl+H 打开 Replace 对话框，替换/全部替换功能正常
+- [ ] Ctrl+F 打开 Find 对话框（非模态，可同时编辑代码），查找功能正常
+- [ ] Ctrl+H 打开 Replace 对话框（非模态），替换/全部替换功能正常
+- [ ] Ctrl+G 弹出 Goto Line 对话框，输入行号后跳转正确
 - [ ] Edit 菜单全部动作可用（Undo, Redo, Find, Replace, Goto Line）
 - [ ] View 菜单 Zoom In / Zoom Out 可用
 - [ ] 状态栏编码标签点击 → 弹出编码选择菜单

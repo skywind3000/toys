@@ -14,8 +14,8 @@ MainArea (QSplitter 水平 → CodeEditor | QSplitter 垂直 → InputPanel | Ou
 StatusLine (QStatusBar)
 ```
 
-- TabBar 与 MainArea 协同：切换标签时保存当前标签状态到 TabData，加载新标签状态到可见 Widget
-- MainArea 使用**单一可见 Widget 组**（而非每标签一套 Widget），切换标签时交换 Widget 内容，Splitter 位置全局共享
+- TabBar 与 MainArea 协同：切换标签时通过 `setDocument()` 交换每个 Widget 的 QTextDocument
+- MainArea 使用**单一可见 Widget 组**（而非每标签一套 Widget），每个标签页持有独立的 QTextDocument 三件套（editor_doc / input_doc / output_doc），切换标签时交换 document，Splitter 位置全局共享
 - 状态栏左侧为 QLabel 显示消息，右侧为 QLabel 显示光标位置/编码/模式
 
 ### 类列表
@@ -46,21 +46,31 @@ StatusLine (QStatusBar)
 
 ```python
 class TabData:
-    file_path: str          # 文件路径，None 表示新文件
-    is_new: bool            # True = 从未保存到磁盘（新文件标志）
-    is_dirty: bool          # True = 有未保存更改
-    editor_text: str        # 编辑器文本内容
-    input_text: str         # InputPanel 文本内容
-    output_html: str        # OutputPanel HTML 内容（保留颜色信息）
-    encoding: str           # 文件编码：'UTF-8' 或系统编码名
-    zoom_font_size: int     # 当前 zoom 字号（会话级，不持久化）
-    compiler_mtime: float   # 上次编译时的编译参数修改时间戳，用于判断是否需要重编译
+    file_path: str              # 文件路径，None 表示新文件
+    is_new: bool                # True = 从未保存到磁盘（新文件标志）
+    is_dirty: bool              # True = 有未保存更改
+    editor_doc: QTextDocument   # 编辑器文档（独立实例，含 undo/redo 栈）
+    input_doc: QTextDocument    # InputPanel 文档（独立实例）
+    output_doc: QTextDocument   # OutputPanel 文档（独立实例，含富文本颜色）
+    cursor: QTextCursor         # 编辑器光标位置（含选区）
+    scroll_pos: int             # 编辑器垂直滚动条位置
+    input_cursor: QTextCursor   # InputPanel 光标位置
+    input_scroll: int           # InputPanel 垂直滚动条位置
+    encoding: str               # 文件编码：'UTF-8' 或系统编码名
+    zoom_font_size: int         # 当前 zoom 字号（会话级，不持久化）
+    compiler_mtime: float       # 上次编译时的编译参数修改时间戳，用于判断是否需要重编译
 ```
+
+**QTextDocument 模型说明**：每个标签页持有三个独立的 QTextDocument 实例（editor_doc、input_doc、output_doc）。Widget 层共享单一 QPlainTextEdit/QTextEdit，切换标签时通过 `widget.setDocument(tab.xxx_doc)` 交换文档。此设计的关键优势：
+- **undo/redo 完整保留**：QTextDocument 自带 undo 栈，切换标签不丢失撤销历史
+- **语法高亮状态保留**：CppHighlighter 挂在 editor_doc 上，切换后无需重新解析
+- **无需 setPlainText**：避免内容销毁重建和 undo 栈清空
 
 - `is_new` 标志：新建文件时为 True，首次保存后变为 False
 - `is_dirty` 标志：编辑器文本变化时置 True，保存后置 False；新建文件预填充模板后也视为 dirty
 - 标签名生成规则：`is_new` 且 `is_dirty` → `*untitledN*`；`is_new` 且非 dirty → `untitledN`；已保存文件 dirty → `*filename*`；已保存文件非 dirty → `filename`
-- 退出时持久化：已保存文件记录 file_path；新文件记录 editor_text + input_text
+- 退出时持久化：已保存文件记录 file_path；新文件记录 editor_doc.toPlainText() + input_doc.toPlainText()
+- CppHighlighter 在 TabData 创建时即挂载到 editor_doc，生命周期与 TabData 一致
 
 ### TabManager
 
@@ -76,9 +86,48 @@ class TabManager:
     def get_current() -> TabData: ...
 ```
 
-- 关闭最后一个标签后 `current_index = -1`，MainArea 显示为空（允许空窗口状态）
-- 切换到 -1（空状态）时清空所有 Widget 内容
+- 关闭最后一个标签后 `current_index = -1`，进入零标签状态
 - **Switch Tab 快捷键**：Alt+1 ~ Alt+9 切换到第 1~9 个标签，Alt+0 切换到第 10 个标签。索引超出当前标签数量时忽略。通过 `QShortcut` 或 `QAction` 绑定 `Alt+数字` 快捷键，回调调用 `switch_tab(N-1)`
+
+**标签切换（setDocument 模式）**：
+
+`switch_tab` 通过交换 QTextDocument 实现标签切换，不销毁/重建文本内容。光标和滚动条位置需手动保存/恢复（它们属于 Widget 而非 Document）。使用 `setUpdatesEnabled(False)` 冻结重绘，避免多步操作产生中间帧闪烁。示例流程：
+
+```python
+# 保存旧标签的光标和滚动条状态
+old_tab.cursor = editor.textCursor()
+old_tab.scroll_pos = editor.verticalScrollBar().value()
+old_tab.input_cursor = input_panel.textCursor()
+old_tab.input_scroll = input_panel.verticalScrollBar().value()
+
+# 冻结重绘
+editor.setUpdatesEnabled(False)
+input_panel.setUpdatesEnabled(False)
+
+# 交换文档（undo/redo 栈、高亮状态自动跟随 document）
+editor.setDocument(new_tab.editor_doc)
+input_panel.setDocument(new_tab.input_doc)
+output_panel.setDocument(new_tab.output_doc)
+
+# 恢复新标签的光标和滚动条状态
+editor.setTextCursor(new_tab.cursor)
+editor.verticalScrollBar().setValue(new_tab.scroll_pos)
+input_panel.setTextCursor(new_tab.input_cursor)
+input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
+
+# 解冻
+editor.setUpdatesEnabled(True)
+input_panel.setUpdatesEnabled(True)
+```
+
+注意：`setDocument` 不会触发 `textChanged` 信号，因此不需要 `blockSignals`。但 dirty 状态的 `textChanged` 信号连接需要注意——应连接到 TabData 层的 dirty 标记逻辑，而非直接连接到 Widget。具体做法：每个 TabData 的 editor_doc 创建时连接 `editor_doc.contentsChanged` 信号到该 TabData 的 dirty 标记方法，信号跟随 document 生命周期，不受 Widget 切换影响。
+
+**零标签状态**：
+
+当 `current_index = -1`（无任何标签页打开）时：
+- CodeEditor、InputPanel、OutputPanel 三个面板统一调用 `setEnabled(False)`，呈灰显不可交互状态，内容清空
+- 状态栏右侧清空（不显示行号/编码/模式信息）
+- 新建或打开文件创建标签后，三个面板恢复 `setEnabled(True)`
 
 ### Settings
 
@@ -220,15 +269,15 @@ class Settings:
 - 无行号显示
 - 字号/字体跟随 Settings.io_font_family / io_font_size
 - Tab 键行为同 CodeEditor（插入制表符）
-- 内容随标签切换存入/读出 TabData.input_text
+- 标签切换时通过 `setDocument(tab.input_doc)` 交换文档
 
 ### OutputPanel
 
 继承 QTextEdit，关键配置：
 - `setReadOnly(True)`
 - 字号/字体跟随 Settings.io_font_family / io_font_size
-- 内容随标签切换存入/读出 TabData.output_html
-- 关闭标签时清除对应 TabData 的 output_html
+- 标签切换时通过 `setDocument(tab.output_doc)` 交换文档
+- 关闭标签时对应 TabData 的 output_doc 随 TabData 一起销毁
 
 **颜色渲染**：使用 `QTextCursor` + `QTextCharFormat` 插入不同颜色的文本段：
 
@@ -280,9 +329,9 @@ class ProcessManager(QObject):
 
 **输出路由（跨标签切换场景）**：
 - 启动 Test/Build 时，ProcessManager 记录 `target_tab` 为发起操作的 TabData 引用
-- stdout/stderr 数据到达时，始终写入 `target_tab.output_html`，而非"当前可见标签"
-- 如果 `target_tab` 是当前活跃标签，同步更新可见 OutputPanel Widget；否则仅更新 TabData 缓冲，用户切换回该标签时自动显示
-- 进程结束信号、超时信号同理——状态行和错误信息写入 `target_tab.output_html`
+- stdout/stderr 数据到达时，始终写入 `target_tab.output_doc`（通过 QTextCursor 操作 document），而非"当前可见标签"
+- 由于 QTextDocument 与 Widget 解耦，即使当前显示的是其它标签的 document，写入 target_tab.output_doc 也不会影响当前显示；用户切换回该标签时 `setDocument` 即可看到完整输出
+- 进程结束信号、超时信号同理——状态行和错误信息写入 `target_tab.output_doc`
 - 状态栏消息（左侧 Message）仍然实时更新，不受标签切换影响
 
 **Run 流程**：
@@ -367,14 +416,14 @@ def build_flags(source_encoding):
 ### 文件操作
 
 **New**：
-1. 创建 TabData（is_new=True, is_dirty=True, editor_text=Settings.template_text, encoding='UTF-8'）
+1. 创建 TabData（is_new=True, is_dirty=True, encoding='UTF-8'），editor_doc 初始内容为 Settings.template_text，挂载 CppHighlighter
 2. 递增 untitled_counter 生成名称 `untitledN`
 3. 添加到 TabManager 并切换
 
 **Open**：
 1. QFileDialog 选择文件（初始目录为 window_state.last_file_dir）
 2. EncodingManager 检测编码，读取文件内容
-3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果）
+3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter
 4. 添加到 TabManager 并切换
 5. 更新 last_file_dir 和 recent_files
 
