@@ -11,7 +11,7 @@
 import sys
 import math
 from PyQt5.QtWidgets import (
-    QMainWindow, QApplication, QTabBar, QSplitter, QStyle,
+    QMainWindow, QApplication, QTabBar, QSplitter,
     QPlainTextEdit, QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout
 )
@@ -73,19 +73,129 @@ def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
 #----------------------------------------------------------------------
 # Toolbar icon generation
 #----------------------------------------------------------------------
-# Mapping: button name → QStyle.StandardPixmap (exact or close match)
-_STYLE_ICON_MAP = {
-    'new':    QStyle.SP_FileIcon,              # close: file icon = new file
-    'save':   QStyle.SP_DialogSaveButton,      # exact
-    'open':   QStyle.SP_DirOpenIcon,           # exact: open folder
-}
-
 _ICON_SIZE = 24
 
 # Custom colors for semantic toolbar icons
-_COLOR_RUN  = QColor(0, 160, 0)      # green
-_COLOR_TEST = QColor(50, 100, 220)   # blue
+_COLOR_NEW  = QColor(120, 120, 120)   # gray: neutral
+_COLOR_SAVE = QColor(60, 100, 200)    # blue: floppy disk
+_COLOR_OPEN = QColor(220, 180, 40)    # yellow: folder
+_COLOR_RUN  = QColor(0, 160, 0)      # green: go
+_COLOR_TEST = QColor(50, 100, 220)   # blue: experiment
+_COLOR_STOP = QColor(220, 50, 50)    # red: halt
 _COLOR_STOP = QColor(220, 50, 50)    # red
+
+
+def _generate_new_icon () -> QIcon:
+    """Generate a New icon: document with folded corner, gray border/white fill."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    border = _COLOR_NEW
+    fill = QColor(255, 255, 255)
+    margin = 3
+    fold = 5
+    # Document shape with folded bottom-right corner
+    polygon = QPolygonF([
+        QPointF(margin, margin),
+        QPointF(size - margin, margin),
+        QPointF(size - margin, size - margin - fold),
+        QPointF(size - margin - fold, size - margin),
+        QPointF(margin, size - margin),
+    ])
+    p.setPen(QPen(border, 1.2))
+    p.setBrush(QBrush(fill))
+    p.drawPolygon(polygon)
+    # Fold triangle (gray fill, darker than border to show depth)
+    fold_fill = QColor(180, 180, 180)
+    p.setBrush(QBrush(fold_fill))
+    p.setPen(QPen(border, 0.8))
+    fold_tri = QPolygonF([
+        QPointF(size - margin, size - margin - fold),
+        QPointF(size - margin - fold, size - margin),
+        QPointF(size - margin, size - margin),
+    ])
+    p.drawPolygon(fold_tri)
+    # Text lines inside (black)
+    p.setPen(QPen(QColor(30, 30, 30), 1.3))
+    line_y1 = margin + 7
+    line_y2 = margin + 11
+    line_left = margin + 3
+    line_right = size - margin - fold - 1
+    p.drawLine(QPointF(line_left, line_y1), QPointF(line_right, line_y1))
+    p.drawLine(QPointF(line_left, line_y2), QPointF(line_right - 3, line_y2))
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_save_icon () -> QIcon:
+    """Generate a Save icon: 3.5-inch floppy disk, blue."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = _COLOR_SAVE
+    lighter = QColor(color.red() + 60, color.green() + 60, color.blue() + 40)
+    darker = QColor(color.red() - 20, color.green() - 20, color.blue() - 30)
+    m = 3
+    # Disk body (outer rectangle with rounded corners)
+    p.setPen(QPen(darker, 1.0))
+    p.setBrush(QBrush(color))
+    p.drawRoundedRect(m, m, size - 2 * m, size - 2 * m, 1.5, 1.5)
+    # Metal slider at top (indented rectangle)
+    sl_m = 5  # slider left/right margin from disk edge
+    sl_h = 7
+    p.setPen(QPen(darker, 0.8))
+    p.setBrush(QBrush(lighter))
+    p.drawRect(m + sl_m, m, size - 2 * m - 2 * sl_m, sl_h)
+    # Hole inside slider (two small rectangles)
+    p.setCompositionMode(QPainter.CompositionMode_Clear)
+    hole_w = size - 2 * m - 2 * sl_m - 6
+    hole_h = 3
+    p.drawRect(m + sl_m + 3, m + 2, hole_w, hole_h)
+    p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+    # Label area at bottom (white rectangle with thin border)
+    lb_m = 5
+    lb_h = 6
+    lb_top = size - m - lb_h - 2
+    p.setPen(QPen(darker, 0.8))
+    p.setBrush(QBrush(QColor(255, 255, 255, 230)))
+    p.drawRect(m + lb_m, lb_top, size - 2 * m - 2 * lb_m, lb_h)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_open_icon () -> QIcon:
+    """Generate an Open icon: Win2K-style folder, yellow."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = _COLOR_OPEN
+    darker = QColor(color.red() - 50, color.green() - 50, color.blue() - 10)
+    p.setPen(QPen(darker, 1.0))
+    p.setBrush(QBrush(color))
+    m = 3
+    # Back panel (full folder rectangle)
+    p.drawRoundedRect(m, 6, size - 2 * m, size - m - 6, 1.0, 1.0)
+    # Tab at top-left sticking up (folder tab)
+    tab_w = 8
+    p.setBrush(QBrush(darker))
+    p.drawRoundedRect(m, 2, tab_w, 6, 1.0, 1.0)
+    # Front flap (open, offset forward — the "open" look)
+    # Draw as a slightly shifted rectangle that overlaps the bottom part
+    flap_m = m + 3  # shifted right to show depth
+    flap_top = 8
+    p.setBrush(QBrush(color))
+    p.drawRoundedRect(flap_m, flap_top, size - flap_m - m, size - m - flap_top, 1.0, 1.0)
+    # Highlight line on front flap top edge (simulates open folder crease)
+    p.setPen(QPen(QColor(255, 255, 255, 100), 1.0))
+    p.drawLine(QPointF(flap_m + 1, flap_top + 0.5), QPointF(size - m - 1, flap_top + 0.5))
+    p.end()
+    return QIcon(pixmap)
 
 
 def _generate_test_icon () -> QIcon:
@@ -211,14 +321,11 @@ def _generate_stop_icon () -> QIcon:
 
 
 def _create_toolbar_icons () -> dict:
-    """Create toolbar icons using QStyle standard pixmaps where available,
-    and QPainter-generated icons for the rest."""
-    style = QApplication.style()
+    """Create all toolbar icons as self-drawn, color-coded."""
     icons = {}
-    # QStyle standard icons (exact or close matches)
-    for name, sp in _STYLE_ICON_MAP.items():
-        icons[name] = style.standardIcon(sp)
-    # Generated icons (colored + no suitable QStyle match)
+    icons['new'] = _generate_new_icon()
+    icons['save'] = _generate_save_icon()
+    icons['open'] = _generate_open_icon()
     icons['run'] = _generate_run_icon()
     icons['test'] = _generate_test_icon()
     icons['stop'] = _generate_stop_icon()
