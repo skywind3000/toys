@@ -2,6 +2,8 @@
 
 这是一个 PyQt5 开发的代码运行器，方便信奥学生进行 C++ 代码的编写和运行，不同于普通编辑器 / IDE，除了代码编辑区外，最重要的是右边有一个 Input 面板和一个 Output 面板，点运行后会把 Input 面板的东西设置成程序的 stdin，并且把程序的 stdout/stderr 显示到 Output 面板，如果有编译错误，会自动显示在 Output 面板。
 
+整个程序源代码只有一个文件 Apps/CodeRunner/CodeRunner.py 即可，全部写在里面，测试放到 Apps/CodeRunner/tests 下面。
+
 ## 界面框架
 
 从上到下分别是：Toolbar，Tabbar，MainArea 三个区域
@@ -54,10 +56,11 @@ MainArea：这是代码编写和运行调试的主要区域，占窗口其余部
 
 ## 设置
 
-软件配置保存在 `~/.config/ccoderunner/settings.json` 文件中，通过 Toolbar 上的 Settings 按钮打开设置面板。主要设置项包括：
+软件配置保存在 `~/.config/coderunner/settings.json` 文件中，通过 Toolbar 上的 Settings 按钮打开设置面板。主要设置项包括：
 
 - **编译器路径**：g++ 编译器的路径（默认使用 PATH 中的 g++）
 - **编译参数**：额外的编译选项（如 `-std=c++14`、`-O2` 等）
+- **环境变量：**编译器运行，和程序运行的提前设置的环境变量，支持 `$PATH` 之类的变量值替换。
 - **运行超时时间**：程序运行的最大时间限制（默认 10 秒）
 - **字体与字号**：代码编辑器及 IO 面板的默认字体和字号
 
