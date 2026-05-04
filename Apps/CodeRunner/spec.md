@@ -124,10 +124,26 @@ input_panel.setUpdatesEnabled(True)
 
 **零标签状态**：
 
-当 `current_index = -1`（无任何标签页打开）时：
-- CodeEditor、InputPanel、OutputPanel 三个面板统一调用 `setEnabled(False)`，呈灰显不可交互状态，内容清空
+QPlainTextEdit/QTextEdit 始终持有一个 QTextDocument，不能为 null。为避免关闭最后一个标签后 Widget 引用已销毁的 TabData.editor_doc 导致崩溃，采用**初始 document 占位**策略：
+
+MainWindow 初始化时，保存三个 Widget 自带的初始空 QTextDocument 引用：
+
+```python
+# MainWindow.__init__
+self.empty_editor_doc = self.editor.document()
+self.empty_input_doc = self.input_panel.document()
+self.empty_output_doc = self.output_panel.document()
+```
+
+进入零标签状态（`current_index = -1`）时：
+- 三个 Widget 切回初始空 document：`editor.setDocument(self.empty_editor_doc)` 等
+- 三个面板统一 `setEnabled(False)` 灰显不可交互
 - 状态栏右侧清空（不显示行号/编码/模式信息）
-- 新建或打开文件创建标签后，三个面板恢复 `setEnabled(True)`
+- TabData 销毁时其 QTextDocument 不再被任何 Widget 引用，可安全释放
+
+从零标签状态恢复（新建或打开文件）时：
+- `editor.setDocument(new_tab.editor_doc)` 切换到新标签的 document
+- 三个面板恢复 `setEnabled(True)`
 
 ### Settings
 
