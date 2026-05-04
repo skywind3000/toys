@@ -10,6 +10,7 @@
 #======================================================================
 import sys
 import os
+import copy
 import math
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
@@ -25,6 +26,17 @@ from PyQt5.QtGui import (
 
 
 #----------------------------------------------------------------------
+# DPI factor
+#----------------------------------------------------------------------
+def _dpi_factor () -> float:
+    """Calculate DPI scaling factor (logical DPI / 96)."""
+    screen = QApplication.primaryScreen()
+    if screen:
+        return screen.logicalDotsPerInch() / 96.0
+    return 1.0
+
+
+#----------------------------------------------------------------------
 # Platform monospace font detection
 #----------------------------------------------------------------------
 _MONOSPACE_PRIORITY = {
@@ -34,6 +46,7 @@ _MONOSPACE_PRIORITY = {
 
 # Linux has many distros, use a common fallback list
 _LINUX_MONOSPACE = ['DejaVu Sans Mono', 'Ubuntu Mono']
+
 
 def _detect_monospace_font () -> str:
     """Detect the best available monospace font for the current platform."""
@@ -46,14 +59,15 @@ def _detect_monospace_font () -> str:
     return 'monospace'
 
 
-def _init_font_defaults () -> None:
+def _init_font_defaults (settings) -> None:
     """Initialize Settings font defaults based on platform."""
     font = _detect_monospace_font()
-    Settings.editor_font_family = font
-    Settings.io_font_family = font
+    settings.editor_font_family = font
+    settings.io_font_family = font
 
 
-def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
+def _make_io_section (settings, label_text:str, text_edit:QWidget,
+                      dpi:float=1.0) -> QWidget:
     """Wrap a text edit widget with a label header (INPUT or OUTPUT)."""
     container = QWidget()
     layout = QVBoxLayout(container)
@@ -63,9 +77,9 @@ def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
     label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     font = label.font()
     font.setBold(True)
-    font.setPointSize(Settings.io_font_size)
+    font.setPointSize(settings.io_font_size)
     label.setFont(font)
-    label.setFixedHeight(label.sizeHint().height() + 4)
+    label.setFixedHeight(label.sizeHint().height() + int(4 * dpi))
     layout.addWidget(label)
     layout.addWidget(text_edit, 1)
     container._section_label = label
@@ -75,149 +89,145 @@ def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
 #----------------------------------------------------------------------
 # Toolbar icon generation
 #----------------------------------------------------------------------
-_ICON_SIZE = 24
+_ICON_BASE = 24
 
 # Custom colors for semantic toolbar icons
-_COLOR_NEW  = QColor(120, 120, 120)   # gray: neutral
-_COLOR_SAVE = QColor(60, 100, 200)    # blue: floppy disk
-_COLOR_OPEN = QColor(220, 180, 40)    # yellow: folder
-_COLOR_RUN  = QColor(0, 160, 0)      # green: go
-_COLOR_TEST = QColor(50, 100, 220)   # blue: experiment
-_COLOR_STOP = QColor(220, 50, 50)    # red: halt
-_COLOR_STOP = QColor(220, 50, 50)    # red
+_COLOR_NEW = QColor(120, 120, 120)  # gray: neutral
+_COLOR_SAVE = QColor(60, 100, 200)  # blue: floppy disk
+_COLOR_OPEN = QColor(220, 180, 40)  # yellow: folder
+_COLOR_RUN = QColor(0, 160, 0)  # green: go
+_COLOR_TEST = QColor(50, 100, 220)  # blue: experiment
+_COLOR_STOP = QColor(220, 50, 50)  # red: halt
 
 
-def _generate_new_icon () -> QIcon:
-    """Generate a New icon: document with folded corner, gray border/white fill."""
-    size = _ICON_SIZE
+def _generate_new_icon (dpi:float=1.0) -> QIcon:
+    """Generate a New icon: document with folded corner,
+    gray border/white fill."""
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     border = _COLOR_NEW
     fill = QColor(255, 255, 255)
     margin = 3
     fold = 5
-    # Document shape with folded bottom-right corner
     polygon = QPolygonF([
         QPointF(margin, margin),
-        QPointF(size - margin, margin),
-        QPointF(size - margin, size - margin - fold),
-        QPointF(size - margin - fold, size - margin),
-        QPointF(margin, size - margin),
+        QPointF(_ICON_BASE - margin, margin),
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
+        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
+        QPointF(margin, _ICON_BASE - margin),
     ])
     p.setPen(QPen(border, 1.2))
     p.setBrush(QBrush(fill))
     p.drawPolygon(polygon)
-    # Fold triangle (gray fill, darker than border to show depth)
     fold_fill = QColor(180, 180, 180)
     p.setBrush(QBrush(fold_fill))
     p.setPen(QPen(border, 0.8))
     fold_tri = QPolygonF([
-        QPointF(size - margin, size - margin - fold),
-        QPointF(size - margin - fold, size - margin),
-        QPointF(size - margin, size - margin),
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
+        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin),
     ])
     p.drawPolygon(fold_tri)
-    # Text lines inside (black)
     p.setPen(QPen(QColor(30, 30, 30), 1.3))
     line_y1 = margin + 7
     line_y2 = margin + 11
     line_left = margin + 3
-    line_right = size - margin - fold - 1
+    line_right = _ICON_BASE - margin - fold - 1
     p.drawLine(QPointF(line_left, line_y1), QPointF(line_right, line_y1))
     p.drawLine(QPointF(line_left, line_y2), QPointF(line_right - 3, line_y2))
     p.end()
     return QIcon(pixmap)
 
 
-def _generate_save_icon () -> QIcon:
+def _generate_save_icon (dpi:float=1.0) -> QIcon:
     """Generate a Save icon: 3.5-inch floppy disk, blue."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = _COLOR_SAVE
     lighter = QColor(color.red() + 60, color.green() + 60, color.blue() + 40)
     darker = QColor(color.red() - 20, color.green() - 20, color.blue() - 30)
     m = 3
-    # Disk body (outer rectangle with rounded corners)
     p.setPen(QPen(darker, 1.0))
     p.setBrush(QBrush(color))
-    p.drawRoundedRect(m, m, size - 2 * m, size - 2 * m, 1.5, 1.5)
-    # Metal slider at top (indented rectangle)
-    sl_m = 5  # slider left/right margin from disk edge
+    p.drawRoundedRect(m, m, _ICON_BASE - 2 * m, _ICON_BASE - 2 * m, 1.5, 1.5)
+    sl_m = 5
     sl_h = 7
     p.setPen(QPen(darker, 0.8))
     p.setBrush(QBrush(lighter))
-    p.drawRect(m + sl_m, m, size - 2 * m - 2 * sl_m, sl_h)
-    # Hole inside slider (two small rectangles)
+    p.drawRect(m + sl_m, m, _ICON_BASE - 2 * m - 2 * sl_m, sl_h)
     p.setCompositionMode(QPainter.CompositionMode_Clear)
-    hole_w = size - 2 * m - 2 * sl_m - 6
+    hole_w = _ICON_BASE - 2 * m - 2 * sl_m - 6
     hole_h = 3
     p.drawRect(m + sl_m + 3, m + 2, hole_w, hole_h)
     p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-    # Label area at bottom (white rectangle with thin border)
     lb_m = 5
     lb_h = 6
-    lb_top = size - m - lb_h - 2
+    lb_top = _ICON_BASE - m - lb_h - 2
     p.setPen(QPen(darker, 0.8))
     p.setBrush(QBrush(QColor(255, 255, 255, 230)))
-    p.drawRect(m + lb_m, lb_top, size - 2 * m - 2 * lb_m, lb_h)
+    p.drawRect(m + lb_m, lb_top, _ICON_BASE - 2 * m - 2 * lb_m, lb_h)
     p.end()
     return QIcon(pixmap)
 
 
-def _generate_open_icon () -> QIcon:
+def _generate_open_icon (dpi:float=1.0) -> QIcon:
     """Generate an Open icon: Win2K-style folder, yellow."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = _COLOR_OPEN
     darker = QColor(color.red() - 50, color.green() - 50, color.blue() - 10)
     p.setPen(QPen(darker, 1.0))
     p.setBrush(QBrush(color))
     m = 3
-    # Back panel (full folder rectangle)
-    p.drawRoundedRect(m, 6, size - 2 * m, size - m - 6, 1.0, 1.0)
-    # Tab at top-left sticking up (folder tab)
+    p.drawRoundedRect(m, 6, _ICON_BASE - 2 * m, _ICON_BASE - m - 6, 1.0, 1.0)
     tab_w = 8
     p.setBrush(QBrush(darker))
     p.drawRoundedRect(m, 2, tab_w, 6, 1.0, 1.0)
-    # Front flap (open, offset forward — the "open" look)
-    # Draw as a slightly shifted rectangle that overlaps the bottom part
-    flap_m = m + 3  # shifted right to show depth
+    flap_m = m + 3
     flap_top = 8
     p.setBrush(QBrush(color))
-    p.drawRoundedRect(flap_m, flap_top, size - flap_m - m, size - m - flap_top, 1.0, 1.0)
-    # Highlight line on front flap top edge (simulates open folder crease)
+    p.drawRoundedRect(flap_m, flap_top, _ICON_BASE - flap_m - m,
+                      _ICON_BASE - m - flap_top, 1.0, 1.0)
     p.setPen(QPen(QColor(255, 255, 255, 100), 1.0))
-    p.drawLine(QPointF(flap_m + 1, flap_top + 0.5), QPointF(size - m - 1, flap_top + 0.5))
+    p.drawLine(QPointF(flap_m + 1, flap_top + 0.5),
+               QPointF(_ICON_BASE - m - 1, flap_top + 0.5))
     p.end()
     return QIcon(pixmap)
 
 
-def _generate_test_icon () -> QIcon:
+def _generate_test_icon (dpi:float=1.0) -> QIcon:
     """Generate a Test icon: Erlenmeyer flask shape (experiment/test), blue."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = _COLOR_TEST
     p.setPen(QPen(color, 1.2))
     p.setBrush(QBrush(color))
-    # Flask: narrow neck + wider conical body
-    # Align bottom with Stop icon (margin=4 → bottom = size - 4)
-    body_bottom = size - 4.0
+    body_bottom = _ICON_BASE - 4.0
     neck_w = 5.0
     body_w = 15.0
     body_h = 11.0
     neck_h = 5.0
-    cx = size / 2.0
+    cx = _ICON_BASE / 2.0
     neck_left = cx - neck_w / 2.0
     neck_right = cx + neck_w / 2.0
     neck_top = body_bottom - body_h - neck_h
@@ -233,32 +243,33 @@ def _generate_test_icon () -> QIcon:
         QPointF(neck_left, neck_bottom),
     ])
     p.drawPolygon(polygon)
-    # Liquid line inside the body
     p.setPen(QPen(color, 1.5))
     liquid_y = body_bottom - 4.0
     liquid_left = body_left + 2.5
     liquid_right = body_right - 2.5
-    p.drawLine(QPointF(liquid_left, liquid_y), QPointF(liquid_right, liquid_y))
+    p.drawLine(QPointF(liquid_left, liquid_y),
+               QPointF(liquid_right, liquid_y))
     p.end()
     return QIcon(pixmap)
 
 
-def _generate_settings_icon () -> QIcon:
+def _generate_settings_icon (dpi:float=1.0) -> QIcon:
     """Generate a Settings icon: simple gear/cog shape."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = QApplication.palette().windowText().color()
     p.setPen(Qt.NoPen)
     p.setBrush(QBrush(color))
-    cx = cy = size / 2.0
+    cx = cy = _ICON_BASE / 2.0
     body_r = 5.5
     tooth_len = 3.5
     tooth_w = 3.5
     num_teeth = 6
-    # Draw teeth as small rounded rectangles around the circle
     for i in range(num_teeth):
         angle = 2.0 * math.pi * i / num_teeth - math.pi / 2.0
         tx = cx + (body_r + tooth_len / 2.0) * math.cos(angle)
@@ -269,32 +280,31 @@ def _generate_settings_icon () -> QIcon:
         p.drawRoundedRect(int(-tooth_w / 2), int(-tooth_len / 2),
                           int(tooth_w), int(tooth_len), 1, 1)
         p.restore()
-    # Draw gear body (filled circle)
     p.setBrush(QBrush(color))
     p.drawEllipse(QPointF(cx, cy), body_r, body_r)
-    # Draw center hole (small circle, transparent to show through)
     p.setCompositionMode(QPainter.CompositionMode_Clear)
     p.drawEllipse(QPointF(cx, cy), 3.0, 3.0)
     p.end()
     return QIcon(pixmap)
 
 
-def _generate_run_icon () -> QIcon:
+def _generate_run_icon (dpi:float=1.0) -> QIcon:
     """Generate a Run icon: play triangle, green."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = _COLOR_RUN
     p.setPen(Qt.NoPen)
     p.setBrush(QBrush(color))
-    # Play triangle pointing right, centered vertically
     margin = 3.0
     tri_top = margin
-    tri_bottom = size - margin
+    tri_bottom = _ICON_BASE - margin
     tri_left = margin
-    tri_right = size - margin
+    tri_right = _ICON_BASE - margin
     mid_y = (tri_top + tri_bottom) / 2.0
     polygon = QPolygonF([
         QPointF(tri_left, tri_top),
@@ -306,32 +316,36 @@ def _generate_run_icon () -> QIcon:
     return QIcon(pixmap)
 
 
-def _generate_stop_icon () -> QIcon:
+def _generate_stop_icon (dpi:float=1.0) -> QIcon:
     """Generate a Stop icon: filled square, red."""
-    size = _ICON_SIZE
+    size = int(_ICON_BASE * dpi)
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
     p = QPainter(pixmap)
     p.setRenderHint(QPainter.Antialiasing)
+    p.scale(dpi, dpi)
     color = _COLOR_STOP
     p.setPen(Qt.NoPen)
     p.setBrush(QBrush(color))
     margin = 4
-    p.drawRoundedRect(margin, margin, size - 2 * margin, size - 2 * margin, 2.0, 2.0)
+    p.drawRoundedRect(margin, margin, _ICON_BASE - 2 * margin,
+                      _ICON_BASE - 2 * margin, 2.0, 2.0)
     p.end()
     return QIcon(pixmap)
 
 
 def _create_toolbar_icons () -> dict:
     """Create all toolbar icons as self-drawn, color-coded."""
+    dpi = _dpi_factor()
     icons = {}
-    icons['new'] = _generate_new_icon()
-    icons['save'] = _generate_save_icon()
-    icons['open'] = _generate_open_icon()
-    icons['run'] = _generate_run_icon()
-    icons['test'] = _generate_test_icon()
-    icons['stop'] = _generate_stop_icon()
-    icons['settings'] = _generate_settings_icon()
+    icons['new'] = _generate_new_icon(dpi)
+    icons['save'] = _generate_save_icon(dpi)
+    icons['open'] = _generate_open_icon(dpi)
+    icons['run'] = _generate_run_icon(dpi)
+    icons['test'] = _generate_test_icon(dpi)
+    icons['stop'] = _generate_stop_icon(dpi)
+    icons['settings'] = _generate_settings_icon(dpi)
     return icons
 
 
@@ -361,7 +375,7 @@ def _read_file (path:str) -> tuple:
     if raw[:3] == b'\xef\xbb\xbf':
         content = raw[3:].decode('utf-8', 'replace')
         return (content, 'UTF-8')
-    # Try UTF-8 strict decode (serves as both detection and decoding)
+    # Try UTF-8 strict decode
     try:
         content = raw.decode('utf-8', 'strict')
         return (content, 'UTF-8')
@@ -374,29 +388,49 @@ def _read_file (path:str) -> tuple:
 
 
 #----------------------------------------------------------------------
-# Settings
+# Settings defaults
 #----------------------------------------------------------------------
-class Settings:
-
-    compiler_path = 'g++'
-    compiler_flags = '-std=c++14'
-    env_vars = {}
-    run_timeout = 10
-    compile_timeout = 20
-    editor_font_family = ''   # set by _init_font_defaults()
-    editor_font_size = 11
-    io_font_family = ''      # set by _init_font_defaults()
-    io_font_size = 11
-    bracket_completion = True
-    word_wrap = False
-    template_text = (
+_SETTINGS_DEFAULTS = {
+    'compiler_path': 'g++',
+    'compiler_flags': '-std=c++14',
+    'env_vars': {},
+    'run_timeout': 10,
+    'compile_timeout': 20,
+    'editor_font_family': '',
+    'editor_font_size': 11,
+    'io_font_family': '',
+    'io_font_size': 11,
+    'bracket_completion': True,
+    'word_wrap': False,
+    'template_text': (
         '#include <iostream>\n'
         '#include <cstdio>\n'
         'using namespace std;\n'
         'int main() {\n'
         '    return 0;\n'
         '}\n'
-    )
+    ),
+}
+
+
+#----------------------------------------------------------------------
+# Settings (instance-based)
+#----------------------------------------------------------------------
+class Settings:
+
+    def __init__ (self, defaults:dict=None):
+        src = defaults or _SETTINGS_DEFAULTS
+        for key, value in src.items():
+            setattr(self, key, value)
+
+    def copy (self):
+        """Create an independent deep copy of this Settings instance."""
+        return Settings(copy.deepcopy(self.__dict__))
+
+    def apply_from (self, other):
+        """Merge all attributes from other into this instance."""
+        for key, value in other.__dict__.items():
+            setattr(self, key, value)
 
 
 #----------------------------------------------------------------------
@@ -447,9 +481,6 @@ class TabData:
         self.editor_doc.blockSignals(False)
 
         # Highlighter created but deferred — not attached to editor_doc yet.
-        # Attaching triggers re-highlight of every block, which costs
-        # ~0.03ms per Python→C++ call; 4000 blocks ≈ 120ms overhead
-        # for an empty highlightBlock. Deferring to Phase 4 avoids this.
         self.highlighter = CppHighlighter()
 
         # Connect dirty tracking via modificationChanged
@@ -473,158 +504,50 @@ class TabData:
 
 
 #----------------------------------------------------------------------
-# TabManager
+# TabManager (pure data manager — no UI coupling)
 #----------------------------------------------------------------------
 class TabManager:
 
-    def __init__ (self, main_window):
+    def __init__ (self):
         self.tabs = []
         self.current_index = -1
         self.untitled_counter = 0
-        self.main_window = main_window
 
     def add_tab (self, tab:TabData) -> int:
+        """Add tab to list, assign untitled number if needed. Returns index."""
         if tab.is_new:
             self.untitled_counter += 1
             tab.untitled_number = self.untitled_counter
         self.tabs.append(tab)
-        index = len(self.tabs) - 1
-        name = tab.tab_name()
-        self.main_window.tabbar.addTab(name)
-        self.switch_tab(index)
-        return index
+        return len(self.tabs) - 1
 
-    def close_tab (self, index:int) -> bool:
-        if index < 0 or index >= len(self.tabs):
-            return False
-        tab = self.tabs[index]
+    def remove_tab (self, index:int):
+        """Remove and return tab at index."""
+        return self.tabs.pop(index)
 
-        if tab.is_dirty:
-            choice = self.main_window._confirm_close_tab(tab)
-            if choice == 'cancel':
-                return False
-            elif choice == 'save':
-                result = self.main_window._save_tab_data(tab)
-                if result < 0:
-                    return False
-
-        # Disconnect signal before removing
-        try:
-            tab.editor_doc.modificationChanged.disconnect(
-                tab._on_modified_changed)
-        except (RuntimeError, TypeError):
-            pass
-
-        # Save current tab's widget state if it's not the one being closed
-        if self.current_index >= 0 and self.current_index != index \
-           and self.current_index < len(self.tabs):
-            old_tab = self.tabs[self.current_index]
-            mw = self.main_window
-            old_tab.cursor = mw.editor.textCursor()
-            old_tab.scroll_pos = mw.editor.verticalScrollBar().value()
-            old_tab.input_cursor = mw.input_panel.textCursor()
-            old_tab.input_scroll = mw.input_panel.verticalScrollBar().value()
-
-        # Mark no active tab so switch_tab won't try to save old state
-        self.current_index = -1
-
-        # Block currentChanged during tabbar manipulation
-        self.main_window._tab_switching = True
-        self.main_window.tabbar.removeTab(index)
-        self.main_window._tab_switching = False
-
-        self.tabs.pop(index)
-
-        if len(self.tabs) == 0:
-            self.current_index = -1
-            self.main_window._enter_zero_tab_state()
-        else:
-            new_index = min(index, len(self.tabs) - 1)
-            self.switch_tab(new_index)
-        return True
-
-    def switch_tab (self, index:int):
-        if index < 0 or index >= len(self.tabs):
-            return
-        old_index = self.current_index
-        mw = self.main_window
-
-        # Save old tab state
-        if old_index >= 0 and old_index < len(self.tabs):
-            old_tab = self.tabs[old_index]
-            old_tab.cursor = mw.editor.textCursor()
-            old_tab.scroll_pos = mw.editor.verticalScrollBar().value()
-            old_tab.input_cursor = mw.input_panel.textCursor()
-            old_tab.input_scroll = mw.input_panel.verticalScrollBar().value()
-
-        self.current_index = index
-        new_tab = self.tabs[index]
-
-        # Exit zero-tab state if needed
-        if old_index == -1:
-            mw._exit_zero_tab_state()
-
-        # Freeze redraw to prevent flicker
-        mw.editor.setUpdatesEnabled(False)
-        mw.input_panel.setUpdatesEnabled(False)
-        mw.output_panel.setUpdatesEnabled(False)
-
-        # Swap documents
-        mw.editor.setDocument(new_tab.editor_doc)
-        mw.input_panel.setDocument(new_tab.input_doc)
-        mw.output_panel.setDocument(new_tab.output_doc)
-
-        # Restore IO cursors (fast, small documents)
-        mw.input_panel.setTextCursor(new_tab.input_cursor)
-        mw.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
-
-        # Restore zoom font size
-        base_size = Settings.editor_font_size
-        zoom_size = max(6, base_size + new_tab.zoom_font_size)
-        font = mw.editor.font()
-        font.setPointSize(zoom_size)
-        mw.editor.setFont(font)
-        mw.editor._on_font_changed()
-
-        # Unfreeze — document content displayed immediately
-        mw.editor.setUpdatesEnabled(True)
-        mw.input_panel.setUpdatesEnabled(True)
-        mw.output_panel.setUpdatesEnabled(True)
-
-        # Update tabbar current index
-        mw._tab_switching = True
-        mw.tabbar.setCurrentIndex(index)
-        mw._tab_switching = False
-
-        # Update status bar (with default cursor for now)
-        self._update_status_info(new_tab)
-
-        # Deferred editor cursor/scroll restore: setTextCursor on
-        # QTextEdit triggers full-document layout (~1s per 7500 blocks);
-        # deferring to next event loop iteration allows instant content
-        # display while the layout calculation runs afterward
-        mw._deferred_restore_tab = index
-        QTimer.singleShot(0, mw._restore_deferred_cursor)
+    def reorder_tabs (self, from_index:int, to_index:int) -> None:
+        """Reorder tabs list after visual drag move."""
+        tab = self.tabs.pop(from_index)
+        self.tabs.insert(to_index, tab)
 
     def get_current (self) -> TabData:
-        if self.current_index < 0 or self.current_index >= len(self.tabs):
-            return None
-        return self.tabs[self.current_index]
+        """Return current TabData, or None if no active tab."""
+        if 0 <= self.current_index < len(self.tabs):
+            return self.tabs[self.current_index]
+        return None
 
-    def _update_status_info (self, tab:TabData):
-        cursor = self.main_window.editor.textCursor()
-        line = cursor.blockNumber() + 1
-        col = cursor.columnNumber() + 1
-        mode = 'INS'
-        text = 'Ln {}, Col {} | {} | {}'.format(
-            line, col, tab.encoding, mode)
-        self.main_window.status_info.setText(text)
+    def get_tab_name (self, index:int) -> str:
+        """Return tab name string for given index."""
+        if 0 <= index < len(self.tabs):
+            return self.tabs[index].tab_name()
+        return ''
 
-    def update_tab_name (self, index:int):
-        if index < 0 or index >= len(self.tabs):
-            return
-        name = self.tabs[index].tab_name()
-        self.main_window.tabbar.setTabText(index, name)
+    def find_tab_index (self, tab:TabData) -> int:
+        """Find index of a specific TabData instance."""
+        for i, t in enumerate(self.tabs):
+            if t is tab:
+                return i
+        return -1
 
 
 #----------------------------------------------------------------------
@@ -676,7 +599,8 @@ class CodeEditor (QTextEdit):
         return space
 
     def _update_line_number_area_width (self):
-        width = self._line_number_width() if self.line_number_area.isVisible() else 0
+        visible = self.line_number_area.isVisible()
+        width = self._line_number_width() if visible else 0
         margins = self.viewportMargins()
         self.setViewportMargins(
             width, margins.top(), margins.right(), margins.bottom())
@@ -706,12 +630,28 @@ class CodeEditor (QTextEdit):
         self._update_tab_width()
         self._update_line_number_area_width()
 
+    def _estimate_first_visible_block (self) -> int:
+        """Estimate first visible block number from scroll position
+        and average block height. Avoids iterating from block 0 for
+        large documents."""
+        scroll_y = self.verticalScrollBar().value()
+        if scroll_y <= 0:
+            return 0
+        layout = self.document().documentLayout()
+        total_h = layout.documentSize().height()
+        count = max(1, self.document().blockCount())
+        avg = total_h / count
+        if avg <= 0:
+            return 0
+        est = int(scroll_y / avg)
+        return max(0, est - 5)
+
     def _paint_line_numbers (self, event):
         painter = QPainter(self.line_number_area)
         painter.fillRect(event.rect(), self._LINE_NUM_BG)
         scroll_y = self.verticalScrollBar().value()
-        block = self.document().begin()
-        block_number = 0
+        start_num = self._estimate_first_visible_block()
+        block = self.document().findBlockByNumber(start_num)
         while block.isValid():
             layout = self.document().documentLayout()
             block_rect = layout.blockBoundingRect(block)
@@ -725,9 +665,8 @@ class CodeEditor (QTextEdit):
                     0, int(y), self._line_number_width() - 3,
                     int(height),
                     Qt.AlignRight | Qt.AlignVCenter,
-                    str(block_number + 1))
+                    str(block.blockNumber() + 1))
             block = block.next()
-            block_number += 1
         painter.end()
 
     def keyPressEvent (self, event):
@@ -771,8 +710,12 @@ class OutputPanel (QTextEdit):
 #----------------------------------------------------------------------
 class MainWindow (QMainWindow):
 
-    def __init__ (self):
+    def __init__ (self, settings=None):
         super().__init__()
+        if settings is None:
+            settings = Settings()
+            _init_font_defaults(settings)
+        self.settings = settings
         self.setWindowTitle('CodeRunner')
         self.resize(1000, 650)
 
@@ -784,6 +727,9 @@ class MainWindow (QMainWindow):
             y = (geo.height() - self.height()) // 2 + geo.y()
             self.move(x, y)
 
+        # DPI factor for scaled drawing
+        self._dpi = _dpi_factor()
+
         # Create icons
         self.icons = _create_toolbar_icons()
 
@@ -794,21 +740,20 @@ class MainWindow (QMainWindow):
 
         # Apply Settings fonts to widgets
         editor_font = self.editor.font()
-        editor_font.setFamily(Settings.editor_font_family)
-        editor_font.setPointSize(Settings.editor_font_size)
+        editor_font.setFamily(self.settings.editor_font_family)
+        editor_font.setPointSize(self.settings.editor_font_size)
         self.editor.setFont(editor_font)
         self.editor._on_font_changed()
 
         io_font = self.input_panel.font()
-        io_font.setFamily(Settings.io_font_family)
-        io_font.setPointSize(Settings.io_font_size)
+        io_font.setFamily(self.settings.io_font_family)
+        io_font.setPointSize(self.settings.io_font_size)
         self.input_panel.setFont(io_font)
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
             self.input_panel.fontMetrics().width('    '))
 
         # Create standalone placeholder docs for zero-tab state
-        # (parent=self so they survive when widget switches documents)
         self.empty_editor_doc = QTextDocument(self)
         self.empty_input_doc = QTextDocument(self)
         self.empty_output_doc = QTextDocument(self)
@@ -816,8 +761,8 @@ class MainWindow (QMainWindow):
         self.input_panel.setDocument(self.empty_input_doc)
         self.output_panel.setDocument(self.empty_output_doc)
 
-        # Tab management
-        self.tab_manager = TabManager(self)
+        # Tab management (pure data — no UI coupling)
+        self.tab_manager = TabManager()
         self._tab_switching = False
         self._last_file_dir = ''
         self._deferred_restore_tab = -1
@@ -910,7 +855,7 @@ class MainWindow (QMainWindow):
     def __build_toolbar (self):
         toolbar = self.addToolBar('Main')
         toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(24, 24))
+        toolbar.setIconSize(QSize(_ICON_BASE, _ICON_BASE))
 
         toolbar.addAction(self.act_new)
         toolbar.addAction(self.act_save)
@@ -925,9 +870,9 @@ class MainWindow (QMainWindow):
     def __build_mainarea (self):
         # Wrap IO panels with label headers
         self.input_section = _make_io_section(
-            'INPUT', self.input_panel)
+            self.settings, 'INPUT', self.input_panel, self._dpi)
         self.output_section = _make_io_section(
-            'OUTPUT', self.output_panel)
+            self.settings, 'OUTPUT', self.output_panel, self._dpi)
 
         # Vertical splitter
         self.v_splitter = QSplitter(Qt.Vertical)
@@ -998,9 +943,11 @@ class MainWindow (QMainWindow):
     def _action_new (self):
         tab = TabData(
             is_new=True, encoding='UTF-8',
-            content=Settings.template_text,
+            content=self.settings.template_text,
             dirty_callback=self._on_tab_dirty_changed)
-        self.tab_manager.add_tab(tab)
+        index = self.tab_manager.add_tab(tab)
+        self.tabbar.addTab(tab.tab_name())
+        self._switch_to_tab(index)
 
     def _action_open (self):
         start_dir = self._last_file_dir or os.path.expanduser('~')
@@ -1014,7 +961,9 @@ class MainWindow (QMainWindow):
             file_path=path, is_new=False,
             encoding=encoding, content=content,
             dirty_callback=self._on_tab_dirty_changed)
-        self.tab_manager.add_tab(tab)
+        index = self.tab_manager.add_tab(tab)
+        self.tabbar.addTab(tab.tab_name())
+        self._switch_to_tab(index)
         self._last_file_dir = os.path.dirname(path)
 
     def _action_save (self):
@@ -1048,11 +997,9 @@ class MainWindow (QMainWindow):
         self._last_file_dir = os.path.dirname(path)
 
     def _action_close (self):
-        tab = self.tab_manager.get_current()
-        if tab is None:
+        if self.tab_manager.current_index < 0:
             return
-        self.tab_manager.close_tab(
-            self.tab_manager.current_index)
+        self._handle_close_tab(self.tab_manager.current_index)
 
     def _action_zoom_in (self):
         tab = self.tab_manager.get_current()
@@ -1065,18 +1012,152 @@ class MainWindow (QMainWindow):
         tab = self.tab_manager.get_current()
         if tab is None:
             return
-        base_size = Settings.editor_font_size
+        base_size = self.settings.editor_font_size
         if base_size + tab.zoom_font_size <= 6:
             return
         tab.zoom_font_size -= 1
         self._apply_zoom(tab)
 
     def _apply_zoom (self, tab):
-        zoom_size = max(6, Settings.editor_font_size + tab.zoom_font_size)
+        zoom_size = max(6, self.settings.editor_font_size + tab.zoom_font_size)
         font = self.editor.font()
         font.setPointSize(zoom_size)
         self.editor.setFont(font)
         self.editor._on_font_changed()
+
+    #----- Tab management (UI operations) -----
+
+    def _switch_to_tab (self, index:int):
+        """Switch to tab: save old state, swap documents, restore new state."""
+        tm = self.tab_manager
+        if index < 0 or index >= len(tm.tabs):
+            return
+        old_index = tm.current_index
+
+        # Save old tab state
+        if old_index >= 0 and old_index < len(tm.tabs):
+            old_tab = tm.tabs[old_index]
+            old_tab.cursor = self.editor.textCursor()
+            old_tab.scroll_pos = self.editor.verticalScrollBar().value()
+            old_tab.input_cursor = self.input_panel.textCursor()
+            old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
+
+        tm.current_index = index
+        new_tab = tm.tabs[index]
+
+        # Exit zero-tab state if needed
+        if old_index == -1:
+            self._exit_zero_tab_state()
+
+        # Freeze redraw to prevent flicker
+        self.editor.setUpdatesEnabled(False)
+        self.input_panel.setUpdatesEnabled(False)
+        self.output_panel.setUpdatesEnabled(False)
+
+        # Swap documents
+        self.editor.setDocument(new_tab.editor_doc)
+        self.input_panel.setDocument(new_tab.input_doc)
+        self.output_panel.setDocument(new_tab.output_doc)
+
+        # Restore IO cursors (fast, small documents)
+        self.input_panel.setTextCursor(new_tab.input_cursor)
+        self.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
+
+        # Restore zoom font size
+        base_size = self.settings.editor_font_size
+        zoom_size = max(6, base_size + new_tab.zoom_font_size)
+        font = self.editor.font()
+        font.setPointSize(zoom_size)
+        self.editor.setFont(font)
+        self.editor._on_font_changed()
+
+        # Unfreeze — document content displayed immediately
+        self.editor.setUpdatesEnabled(True)
+        self.input_panel.setUpdatesEnabled(True)
+        self.output_panel.setUpdatesEnabled(True)
+
+        # Update tabbar current index
+        self._tab_switching = True
+        self.tabbar.setCurrentIndex(index)
+        self._tab_switching = False
+
+        # Update status bar (with default cursor for now)
+        self._update_status_info(new_tab)
+
+        # Deferred editor cursor/scroll restore
+        self._deferred_restore_tab = index
+        QTimer.singleShot(0, self._restore_deferred_cursor)
+
+    def _handle_close_tab (self, index:int) -> bool:
+        """Close tab: confirm/save if dirty, disconnect, remove, adjust UI."""
+        tm = self.tab_manager
+        if index < 0 or index >= len(tm.tabs):
+            return False
+        tab = tm.tabs[index]
+
+        if tab.is_dirty:
+            choice = self._confirm_close_tab(tab)
+            if choice == 'cancel':
+                return False
+            elif choice == 'save':
+                result = self._save_tab_data(tab)
+                if result < 0:
+                    return False
+
+        # Disconnect signal before removing
+        try:
+            tab.editor_doc.modificationChanged.disconnect(
+                tab._on_modified_changed)
+        except (RuntimeError, TypeError):
+            pass
+
+        # Save current tab's widget state if it's not the one being closed
+        if tm.current_index >= 0 and tm.current_index != index \
+           and tm.current_index < len(tm.tabs):
+            old_tab = tm.tabs[tm.current_index]
+            old_tab.cursor = self.editor.textCursor()
+            old_tab.scroll_pos = self.editor.verticalScrollBar().value()
+            old_tab.input_cursor = self.input_panel.textCursor()
+            old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
+
+        # Mark no active tab so switch won't try to save old state
+        tm.current_index = -1
+
+        # Block currentChanged during tabbar manipulation
+        self._tab_switching = True
+        self.tabbar.removeTab(index)
+        self._tab_switching = False
+
+        # Remove from data
+        tm.remove_tab(index)
+
+        if len(tm.tabs) == 0:
+            self._enter_zero_tab_state()
+        else:
+            new_index = min(index, len(tm.tabs) - 1)
+            self._switch_to_tab(new_index)
+        return True
+
+    def _update_status_info (self, tab:TabData):
+        """Update status bar right side with cursor position and encoding."""
+        cursor = self.editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        mode = 'INS'
+        text = 'Ln {}, Col {} | {} | {}'.format(
+            line, col, tab.encoding, mode)
+        self.status_info.setText(text)
+
+    def _update_tab_name (self, index:int):
+        """Update tabbar text for given index."""
+        if 0 <= index < len(self.tab_manager.tabs):
+            name = self.tab_manager.tabs[index].tab_name()
+            self.tabbar.setTabText(index, name)
+
+    def _update_all_tab_names (self):
+        """Update all tabbar texts."""
+        for i in range(len(self.tab_manager.tabs)):
+            self._update_tab_name(i)
 
     #----- Helpers -----
 
@@ -1086,7 +1167,8 @@ class MainWindow (QMainWindow):
             start_dir = self._last_file_dir or os.path.expanduser('~')
             path, _ = QFileDialog.getSaveFileName(
                 self, 'Save File', start_dir,
-                'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
+                'C++ Files (*.cpp *.c *.cc *.cxx *.h '
+                '*.hpp *.hh);;All Files (*)')
             if not path:
                 return -1
             content = tab.editor_doc.toPlainText()
@@ -1133,47 +1215,32 @@ class MainWindow (QMainWindow):
             return 'discard'
         return 'cancel'
 
-    def _switch_to_tab (self, index:int):
-        if index < len(self.tab_manager.tabs):
-            self.tab_manager.switch_tab(index)
-
     #----- Signal handlers -----
 
     def _on_tabbar_current_changed (self, index:int):
         if self._tab_switching:
             return
         if index >= 0 and index < len(self.tab_manager.tabs):
-            self.tab_manager.switch_tab(index)
+            self._switch_to_tab(index)
 
     def _on_tab_close_requested (self, index:int):
-        self.tab_manager.close_tab(index)
+        self._handle_close_tab(index)
 
     def _on_tab_moved (self, from_index:int, to_index:int):
-        # Reorder TabManager.tabs to match the new tabbar visual order
-        tabs = self.tab_manager.tabs
-        tab = tabs.pop(from_index)
-        tabs.insert(to_index, tab)
-        # Update current_index to track the current tab's new position
-        # After tabMoved, QTabBar.currentIndex already reflects the new position,
-        # so we just sync our current_index with it
+        self.tab_manager.reorder_tabs(from_index, to_index)
         self.tab_manager.current_index = self.tabbar.currentIndex()
 
     def _on_tab_dirty_changed (self, tab:TabData):
-        for i, t in enumerate(self.tab_manager.tabs):
-            if t is tab:
-                self.tab_manager.update_tab_name(i)
-                break
+        index = self.tab_manager.find_tab_index(tab)
+        if index >= 0:
+            self._update_tab_name(index)
 
     def _on_cursor_position_changed (self):
         tab = self.tab_manager.get_current()
         if tab is None:
             self.status_info.setText('')
             return
-        self.tab_manager._update_status_info(tab)
-
-    def _update_all_tab_names (self):
-        for i in range(len(self.tab_manager.tabs)):
-            self.tab_manager.update_tab_name(i)
+        self._update_status_info(tab)
 
     #----- Zero-tab state -----
 
@@ -1195,10 +1262,7 @@ class MainWindow (QMainWindow):
         self.output_section.setEnabled(True)
 
     def _restore_deferred_cursor (self):
-        """Deferred cursor/scroll restore after switch_tab.
-        setTextCursor on QTextEdit triggers full-document layout which
-        can take ~1s for large files; deferring it allows instant
-        content display while the layout runs afterward."""
+        """Deferred cursor/scroll restore after _switch_to_tab."""
         index = self._deferred_restore_tab
         if index < 0 or index != self.tab_manager.current_index:
             return
@@ -1208,15 +1272,15 @@ class MainWindow (QMainWindow):
         self.editor.setTextCursor(tab.cursor)
         self.editor.verticalScrollBar().setValue(tab.scroll_pos)
         self._deferred_restore_tab = -1
-        self.tab_manager._update_status_info(tab)
+        self._update_status_info(tab)
 
     #----- Window close -----
 
     def closeEvent (self, event):
         for tab in list(self.tab_manager.tabs):
             if tab.is_dirty:
-                idx = self.tab_manager.tabs.index(tab)
-                self.tab_manager.switch_tab(idx)
+                idx = self.tab_manager.find_tab_index(tab)
+                self._switch_to_tab(idx)
                 choice = self._confirm_close_tab(tab)
                 if choice == 'cancel':
                     event.ignore()
@@ -1243,8 +1307,9 @@ def main ():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    _init_font_defaults()
-    window = MainWindow()
+    settings = Settings()
+    _init_font_defaults(settings)
+    window = MainWindow(settings)
     window.show()
     sys.exit(app.exec_())
 

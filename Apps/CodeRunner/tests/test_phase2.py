@@ -53,10 +53,11 @@ class TestTabData (unittest.TestCase):
         self.assertEqual(tab.compiler_mtime, 0)
 
     def test_new_tab_with_template (self):
+        s = Settings()
         tab = TabData(is_new=True, encoding='UTF-8',
-                      content=Settings.template_text)
+                      content=s.template_text)
         text = tab.editor_doc.toPlainText()
-        self.assertEqual(text, Settings.template_text)
+        self.assertEqual(text, s.template_text)
         self.assertTrue(tab.is_dirty)
 
     def test_opened_tab_defaults (self):
@@ -108,14 +109,12 @@ class TestTabData (unittest.TestCase):
         self.assertIsInstance(tab.editor_doc, QTextDocument)
         self.assertIsInstance(tab.input_doc, QTextDocument)
         self.assertIsInstance(tab.output_doc, QTextDocument)
-        # Each doc is a separate instance
         self.assertIsNot(tab.editor_doc, tab.input_doc)
         self.assertIsNot(tab.editor_doc, tab.output_doc)
 
     def test_highlighter_created (self):
         tab = TabData(is_new=True, content='')
         self.assertIsInstance(tab.highlighter, CppHighlighter)
-        # Highlighter deferred: not attached to document until Phase 4
         self.assertIsNone(tab.highlighter.document())
 
     def test_dirty_callback_on_edit (self):
@@ -124,9 +123,7 @@ class TestTabData (unittest.TestCase):
             changes.append(t)
         tab = TabData(is_new=False, encoding='UTF-8',
                       content='hello', dirty_callback=callback)
-        # is_dirty starts False for opened tab
         self.assertFalse(tab.is_dirty)
-        # Simulate edit: setModified(True)
         tab.editor_doc.setModified(True)
         self.assertTrue(tab.is_dirty)
         self.assertEqual(len(changes), 1)
@@ -137,9 +134,7 @@ class TestTabData (unittest.TestCase):
             changes.append(t)
         tab = TabData(is_new=True, encoding='UTF-8',
                       content='hello', dirty_callback=callback)
-        # is_dirty starts True for new tab
         self.assertTrue(tab.is_dirty)
-        # Another modification: no transition, callback not called
         tab.editor_doc.setModified(True)
         self.assertEqual(len(changes), 0)
 
@@ -149,7 +144,6 @@ class TestTabData (unittest.TestCase):
             changes.append(t)
         tab = TabData(is_new=True, encoding='UTF-8',
                       content='hello', dirty_callback=callback)
-        # Save: setModified(False) → is_dirty False
         tab.editor_doc.setModified(False)
         self.assertFalse(tab.is_dirty)
         self.assertEqual(len(changes), 1)
@@ -179,13 +173,10 @@ class TestEncodingDetection (unittest.TestCase):
         self.assertEqual(_detect_encoding(raw), 'UTF-8')
 
     def test_gbk_chinese (self):
-        # GBK-encoded Chinese (not valid UTF-8)
         raw = '你好'.encode('gbk')
-        # On Windows, should detect as 'gbk'
         if sys.platform == 'win32':
             self.assertEqual(_detect_encoding(raw), 'gbk')
         else:
-            # On non-Windows, might still say utf-8 or system encoding
             enc = _detect_encoding(raw)
             self.assertTrue(enc in ('gbk', 'utf-8', 'latin-1'))
 
@@ -194,7 +185,6 @@ class TestEncodingDetection (unittest.TestCase):
         self.assertEqual(_detect_encoding(raw), 'UTF-8')
 
     def test_mixed_invalid_bytes (self):
-        # Bytes that are not valid UTF-8
         raw = b'\xff\xfe'
         if sys.platform == 'win32':
             self.assertEqual(_detect_encoding(raw), 'gbk')
@@ -221,14 +211,13 @@ class TestEncodingDetection (unittest.TestCase):
             content, encoding = _read_file(path)
             self.assertEqual(encoding, 'UTF-8')
             self.assertIn('#include <iostream>', content)
-            # BOM should be stripped
             self.assertFalse(content.startswith('﻿'))
         finally:
             os.unlink(path)
 
     def test_read_file_gbk (self):
         if sys.platform != 'win32':
-            return  # GBK test only on Windows
+            return
         with tempfile.NamedTemporaryFile(
                 mode='wb', suffix='.cpp', delete=False) as f:
             f.write('你好\n'.encode('gbk'))
@@ -254,7 +243,6 @@ class TestCppHighlighter (unittest.TestCase):
     def test_highlightBlock_does_nothing (self):
         doc = QTextDocument()
         hl = CppHighlighter(doc)
-        # Calling highlightBlock should not crash
         hl.highlightBlock('int main() {}')
 
 
@@ -273,12 +261,11 @@ class TestCodeEditor (unittest.TestCase):
 
 
 #----------------------------------------------------------------------
-# TabManager basics
+# TabManager (pure data)
 #----------------------------------------------------------------------
 class TestTabManager (unittest.TestCase):
 
     def setUp (self):
-        _init_font_defaults()
         self.window = MainWindow()
 
     def test_initial_state (self):
@@ -289,30 +276,30 @@ class TestTabManager (unittest.TestCase):
 
     def test_add_tab_new (self):
         tm = self.window.tab_manager
+        s = self.window.settings
         tab = TabData(is_new=True, encoding='UTF-8',
-                      content=Settings.template_text,
+                      content=s.template_text,
                       dirty_callback=self.window._on_tab_dirty_changed)
         index = tm.add_tab(tab)
         self.assertEqual(index, 0)
         self.assertEqual(len(tm.tabs), 1)
-        self.assertEqual(tm.current_index, 0)
         self.assertEqual(tm.untitled_counter, 1)
         self.assertEqual(tab.untitled_number, 1)
 
     def test_add_multiple_tabs (self):
         tm = self.window.tab_manager
+        s = self.window.settings
         tab1 = TabData(is_new=True, encoding='UTF-8',
-                       content=Settings.template_text,
+                       content=s.template_text,
                        dirty_callback=self.window._on_tab_dirty_changed)
         tab2 = TabData(is_new=True, encoding='UTF-8',
-                       content=Settings.template_text,
+                       content=s.template_text,
                        dirty_callback=self.window._on_tab_dirty_changed)
         tm.add_tab(tab1)
         tm.add_tab(tab2)
         self.assertEqual(tm.untitled_counter, 2)
         self.assertEqual(tab1.untitled_number, 1)
         self.assertEqual(tab2.untitled_number, 2)
-        self.assertEqual(tm.current_index, 1)
 
     def test_get_current_none (self):
         tm = self.window.tab_manager
@@ -320,102 +307,167 @@ class TestTabManager (unittest.TestCase):
 
     def test_get_current_valid (self):
         tm = self.window.tab_manager
+        s = self.window.settings
         tab = TabData(is_new=True, encoding='UTF-8',
-                      content=Settings.template_text,
+                      content=s.template_text,
                       dirty_callback=self.window._on_tab_dirty_changed)
         tm.add_tab(tab)
+        tm.current_index = 0
         self.assertEqual(tm.get_current(), tab)
 
-    def test_switch_tab (self):
+    def test_find_tab_index (self):
         tm = self.window.tab_manager
+        s = self.window.settings
         tab1 = TabData(is_new=True, encoding='UTF-8',
-                       content='content1',
+                       content='c1',
                        dirty_callback=self.window._on_tab_dirty_changed)
         tab2 = TabData(is_new=True, encoding='UTF-8',
-                       content='content2',
+                       content='c2',
                        dirty_callback=self.window._on_tab_dirty_changed)
         tm.add_tab(tab1)
         tm.add_tab(tab2)
-        # Current is tab2 (index 1)
-        self.assertEqual(tm.current_index, 1)
-        # Switch to tab1
-        tm.switch_tab(0)
-        self.assertEqual(tm.current_index, 0)
-        # Editor should show tab1's content
-        self.assertEqual(
-            self.window.editor.document().toPlainText(),
-            tab1.editor_doc.toPlainText())
+        self.assertEqual(tm.find_tab_index(tab1), 0)
+        self.assertEqual(tm.find_tab_index(tab2), 1)
 
-    def test_close_tab_last (self):
+    def test_remove_tab (self):
         tm = self.window.tab_manager
         tab = TabData(file_path='/tmp/test.cpp', is_new=False,
-                      encoding='UTF-8', content='',
-                      dirty_callback=self.window._on_tab_dirty_changed)
+                      encoding='UTF-8', content='')
         tm.add_tab(tab)
-        result = tm.close_tab(0)
-        self.assertTrue(result)
+        removed = tm.remove_tab(0)
+        self.assertEqual(removed, tab)
         self.assertEqual(len(tm.tabs), 0)
-        self.assertEqual(tm.current_index, -1)
-        self.assertFalse(self.window.editor.isEnabled())
 
-    def test_close_tab_one_of_many (self):
+    def test_reorder_tabs (self):
         tm = self.window.tab_manager
-        tab1 = TabData(file_path='/tmp/t1.cpp', is_new=False,
-                       encoding='UTF-8', content='c1',
-                       dirty_callback=self.window._on_tab_dirty_changed)
-        tab2 = TabData(file_path='/tmp/t2.cpp', is_new=False,
-                       encoding='UTF-8', content='c2',
-                       dirty_callback=self.window._on_tab_dirty_changed)
+        tab1 = TabData(file_path='/tmp/a.cpp', is_new=False,
+                       encoding='UTF-8', content='a')
+        tab2 = TabData(file_path='/tmp/b.cpp', is_new=False,
+                       encoding='UTF-8', content='b')
+        tab3 = TabData(file_path='/tmp/c.cpp', is_new=False,
+                       encoding='UTF-8', content='c')
         tm.add_tab(tab1)
         tm.add_tab(tab2)
-        # Close tab1 (index 0)
-        result = tm.close_tab(0)
-        self.assertTrue(result)
-        self.assertEqual(len(tm.tabs), 1)
-        self.assertEqual(tm.current_index, 0)
+        tm.add_tab(tab3)
+        tm.reorder_tabs(0, 2)
+        self.assertEqual(tm.tabs[0], tab2)
+        self.assertEqual(tm.tabs[1], tab3)
+        self.assertEqual(tm.tabs[2], tab1)
 
-    def test_tabbar_count_matches (self):
+    def test_no_main_window_attribute (self):
         tm = self.window.tab_manager
-        tab = TabData(is_new=True, encoding='UTF-8',
-                      content=Settings.template_text,
-                      dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab)
-        self.assertEqual(self.window.tabbar.count(), 1)
-
-    def test_exit_zero_tab_on_add (self):
-        tm = self.window.tab_manager
-        # Initially in zero-tab state
-        self.assertFalse(self.window.editor.isEnabled())
-        tab = TabData(is_new=True, encoding='UTF-8',
-                      content=Settings.template_text,
-                      dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab)
-        # Should be enabled now
-        self.assertTrue(self.window.editor.isEnabled())
+        self.assertFalse(hasattr(tm, 'main_window'))
 
 
 #----------------------------------------------------------------------
-# Settings defaults (extended for Phase 2)
+# Settings defaults (Phase 2)
 #----------------------------------------------------------------------
 class TestSettingsPhase2 (unittest.TestCase):
 
     def test_defaults (self):
-        _init_font_defaults()
-        self.assertEqual(Settings.compiler_path, 'g++')
-        self.assertEqual(Settings.compiler_flags, '-std=c++14')
-        self.assertEqual(Settings.env_vars, {})
-        self.assertEqual(Settings.run_timeout, 10)
-        self.assertEqual(Settings.compile_timeout, 20)
-        self.assertTrue(len(Settings.editor_font_family) > 0)
-        self.assertEqual(Settings.editor_font_size, 11)
-        self.assertTrue(len(Settings.io_font_family) > 0)
-        self.assertEqual(Settings.io_font_size, 11)
-        self.assertTrue(Settings.bracket_completion)
+        s = Settings()
+        _init_font_defaults(s)
+        self.assertEqual(s.compiler_path, 'g++')
+        self.assertEqual(s.compiler_flags, '-std=c++14')
+        self.assertEqual(s.env_vars, {})
+        self.assertEqual(s.run_timeout, 10)
+        self.assertEqual(s.compile_timeout, 20)
+        self.assertTrue(len(s.editor_font_family) > 0)
+        self.assertEqual(s.editor_font_size, 11)
+        self.assertTrue(len(s.io_font_family) > 0)
+        self.assertEqual(s.io_font_size, 11)
+        self.assertTrue(s.bracket_completion)
 
     def test_template_content (self):
-        self.assertIn('#include <iostream>', Settings.template_text)
-        self.assertIn('int main()', Settings.template_text)
-        self.assertTrue(Settings.template_text.endswith('\n'))
+        s = Settings()
+        self.assertIn('#include <iostream>', s.template_text)
+        self.assertIn('int main()', s.template_text)
+        self.assertTrue(s.template_text.endswith('\n'))
+
+
+#----------------------------------------------------------------------
+# MainWindow tab operations (migrated from TabManager)
+#----------------------------------------------------------------------
+class TestMainWindowTabOps (unittest.TestCase):
+
+    def setUp (self):
+        self.window = MainWindow()
+
+    def test_switch_to_tab (self):
+        w = self.window
+        s = w.settings
+        tab1 = TabData(is_new=True, encoding='UTF-8',
+                       content='content1',
+                       dirty_callback=w._on_tab_dirty_changed)
+        tab2 = TabData(is_new=True, encoding='UTF-8',
+                       content='content2',
+                       dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab1)
+        w.tabbar.addTab(tab1.tab_name())
+        w.tab_manager.add_tab(tab2)
+        w.tabbar.addTab(tab2.tab_name())
+        w._switch_to_tab(1)
+        self.assertEqual(w.tab_manager.current_index, 1)
+        w._switch_to_tab(0)
+        self.assertEqual(w.tab_manager.current_index, 0)
+        self.assertEqual(
+            w.editor.document().toPlainText(),
+            tab1.editor_doc.toPlainText())
+
+    def test_handle_close_tab_last (self):
+        w = self.window
+        tab = TabData(file_path='/tmp/test.cpp', is_new=False,
+                      encoding='UTF-8', content='',
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
+        result = w._handle_close_tab(0)
+        self.assertTrue(result)
+        self.assertEqual(len(w.tab_manager.tabs), 0)
+        self.assertEqual(w.tab_manager.current_index, -1)
+        self.assertFalse(w.editor.isEnabled())
+
+    def test_handle_close_tab_one_of_many (self):
+        w = self.window
+        tab1 = TabData(file_path='/tmp/t1.cpp', is_new=False,
+                       encoding='UTF-8', content='c1',
+                       dirty_callback=w._on_tab_dirty_changed)
+        tab2 = TabData(file_path='/tmp/t2.cpp', is_new=False,
+                       encoding='UTF-8', content='c2',
+                       dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab1)
+        w.tabbar.addTab(tab1.tab_name())
+        w.tab_manager.add_tab(tab2)
+        w.tabbar.addTab(tab2.tab_name())
+        w._switch_to_tab(1)
+        result = w._handle_close_tab(0)
+        self.assertTrue(result)
+        self.assertEqual(len(w.tab_manager.tabs), 1)
+        self.assertEqual(w.tab_manager.current_index, 0)
+
+    def test_tabbar_count_matches (self):
+        w = self.window
+        s = w.settings
+        tab = TabData(is_new=True, encoding='UTF-8',
+                      content=s.template_text,
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
+        self.assertEqual(w.tabbar.count(), 1)
+
+    def test_exit_zero_tab_on_add (self):
+        w = self.window
+        self.assertFalse(w.editor.isEnabled())
+        s = w.settings
+        tab = TabData(is_new=True, encoding='UTF-8',
+                      content=s.template_text,
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
+        self.assertTrue(w.editor.isEnabled())
 
 
 #----------------------------------------------------------------------
@@ -442,58 +494,50 @@ class _MockCloseEvent:
 class TestCloseTabStateFix (unittest.TestCase):
 
     def setUp (self):
-        _init_font_defaults()
         self.window = MainWindow()
 
     def test_close_current_tab_preserves_remaining_state (self):
-        """Closing the viewed tab should NOT corrupt other tabs' saved state."""
-        tm = self.window.tab_manager
+        w = self.window
         tab_a = TabData(file_path='/tmp/a.cpp', is_new=False,
                         encoding='UTF-8', content='aaa\nbbb\nccc\n',
-                        dirty_callback=self.window._on_tab_dirty_changed)
+                        dirty_callback=w._on_tab_dirty_changed)
         tab_c = TabData(file_path='/tmp/c.cpp', is_new=False,
                         encoding='UTF-8', content='line1\nline2\nline3\n',
-                        dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab_a)
-        tm.add_tab(tab_c)
-        # Switch to tab_c and set cursor to a known position
-        tm.switch_tab(1)
-        cursor = self.window.editor.textCursor()
+                        dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab_a)
+        w.tabbar.addTab(tab_a.tab_name())
+        w.tab_manager.add_tab(tab_c)
+        w.tabbar.addTab(tab_c.tab_name())
+        w._switch_to_tab(1)
+        cursor = w.editor.textCursor()
         cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 2)
-        self.window.editor.setTextCursor(cursor)
-        # Switch to tab_a (saves tab_c's state)
-        tm.switch_tab(0)
-        # Modify cursor in tab_a to a different position
-        cursor = self.window.editor.textCursor()
+        w.editor.setTextCursor(cursor)
+        w._switch_to_tab(0)
+        cursor = w.editor.textCursor()
         cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 1)
-        self.window.editor.setTextCursor(cursor)
-        # Record tab_c's saved cursor position before close
+        w.editor.setTextCursor(cursor)
         c_cursor_pos_before = tab_c.cursor.position()
-        # Close tab_a (the currently viewed tab)
-        tm.close_tab(0)
-        # tab_c's saved cursor should NOT have been overwritten
+        w._handle_close_tab(0)
         self.assertEqual(tab_c.cursor.position(), c_cursor_pos_before)
 
     def test_close_non_current_tab_saves_current_state (self):
-        """Closing a non-current tab should properly save current tab's state."""
-        tm = self.window.tab_manager
+        w = self.window
         tab_a = TabData(file_path='/tmp/a.cpp', is_new=False,
                         encoding='UTF-8', content='aaa\nbbb\n',
-                        dirty_callback=self.window._on_tab_dirty_changed)
+                        dirty_callback=w._on_tab_dirty_changed)
         tab_b = TabData(file_path='/tmp/b.cpp', is_new=False,
                         encoding='UTF-8', content='xxx\nyyy\nzzz\n',
-                        dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab_a)
-        tm.add_tab(tab_b)
-        # Currently viewing tab_b (index 1)
-        # Set cursor to a known position
-        cursor = self.window.editor.textCursor()
+                        dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab_a)
+        w.tabbar.addTab(tab_a.tab_name())
+        w.tab_manager.add_tab(tab_b)
+        w.tabbar.addTab(tab_b.tab_name())
+        w._switch_to_tab(1)
+        cursor = w.editor.textCursor()
         cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 2)
-        self.window.editor.setTextCursor(cursor)
-        expected_pos = self.window.editor.textCursor().position()
-        # Close tab_a (index 0, not current)
-        tm.close_tab(0)
-        # Verify tab_b's saved cursor matches what we set
+        w.editor.setTextCursor(cursor)
+        expected_pos = w.editor.textCursor().position()
+        w._handle_close_tab(0)
         self.assertEqual(tab_b.cursor.position(), expected_pos)
 
 
@@ -503,26 +547,25 @@ class TestCloseTabStateFix (unittest.TestCase):
 class TestCloseEventSignalDisconnect (unittest.TestCase):
 
     def setUp (self):
-        _init_font_defaults()
         self.window = MainWindow()
 
     def test_close_event_disconnects_all_signals (self):
-        """After closeEvent, modificationChanged signals should all be disconnected."""
-        tm = self.window.tab_manager
+        w = self.window
         tab1 = TabData(file_path='/tmp/t1.cpp', is_new=False,
                        encoding='UTF-8', content='c1',
-                       dirty_callback=self.window._on_tab_dirty_changed)
+                       dirty_callback=w._on_tab_dirty_changed)
         tab2 = TabData(file_path='/tmp/t2.cpp', is_new=False,
                        encoding='UTF-8', content='c2',
-                       dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab1)
-        tm.add_tab(tab2)
-        # Simulate closeEvent with no dirty tabs
+                       dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab1)
+        w.tabbar.addTab(tab1.tab_name())
+        w.tab_manager.add_tab(tab2)
+        w.tabbar.addTab(tab2.tab_name())
+        w._switch_to_tab(0)
         event = _MockCloseEvent()
-        self.window.closeEvent(event)
+        w.closeEvent(event)
         self.assertTrue(event.isAccepted())
-        # Verify all signals disconnected: disconnect should raise RuntimeError
-        for tab in tm.tabs:
+        for tab in w.tab_manager.tabs:
             with self.assertRaises(TypeError):
                 tab.editor_doc.modificationChanged.disconnect(
                     tab._on_modified_changed)
@@ -534,27 +577,25 @@ class TestCloseEventSignalDisconnect (unittest.TestCase):
 class TestSaveAsDelegation (unittest.TestCase):
 
     def setUp (self):
-        _init_font_defaults()
         self.window = MainWindow()
 
     def test_save_as_delegates_to_save (self):
-        """Save As delegates file writing to _save_tab_data."""
-        tm = self.window.tab_manager
+        w = self.window
         tab = TabData(is_new=True, encoding='UTF-8',
                       content='test content',
-                      dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab)
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
         with tempfile.NamedTemporaryFile(
                 suffix='.cpp', delete=False) as f:
             save_path = f.name
         try:
             with patch('CodeRunner.QFileDialog.getSaveFileName',
                        return_value=(save_path, '')):
-                self.window._action_save_as()
-            # Verify file was written by _save_tab_data
+                w._action_save_as()
             with open(save_path, 'r', encoding='UTF-8') as f:
                 self.assertEqual(f.read(), 'test content')
-            # Verify tab state updated correctly
             self.assertFalse(tab.is_new)
             self.assertEqual(tab.file_path, save_path)
             self.assertFalse(tab.is_dirty)
@@ -562,21 +603,20 @@ class TestSaveAsDelegation (unittest.TestCase):
             os.unlink(save_path)
 
     def test_save_as_rollback_on_write_failure (self):
-        """Save As should rollback tab state if _save_tab_data fails."""
-        tm = self.window.tab_manager
+        w = self.window
         tab = TabData(is_new=True, encoding='UTF-8', content='test',
-                      dirty_callback=self.window._on_tab_dirty_changed)
-        tm.add_tab(tab)
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
         old_path = tab.file_path
         old_is_new = tab.is_new
-        # Use a path under a nonexistent directory to force write failure
         bad_path = os.path.join(tempfile.gettempdir(),
                                 'nonexistent_dir_42', 'test.cpp')
         with patch('CodeRunner.QFileDialog.getSaveFileName',
                    return_value=(bad_path, '')):
             with patch('CodeRunner.QMessageBox.warning'):
-                self.window._action_save_as()
-        # Verify rollback: tab state unchanged
+                w._action_save_as()
         self.assertEqual(tab.file_path, old_path)
         self.assertEqual(tab.is_new, old_is_new)
 

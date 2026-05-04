@@ -24,6 +24,9 @@ if _app is None:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     _app = QApplication(sys.argv)
 
+# Add parent dir to path so we can import CodeRunner
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 from CodeRunner import Settings, InputPanel, OutputPanel, MainWindow
 from CodeRunner import _detect_monospace_font, _init_font_defaults
 from CodeRunner import _create_toolbar_icons
@@ -37,8 +40,8 @@ from CodeRunner import _COLOR_RUN, _COLOR_TEST, _COLOR_STOP
 class TestSettings (unittest.TestCase):
 
     def test_defaults (self):
-        _init_font_defaults()
         s = Settings()
+        _init_font_defaults(s)
         self.assertEqual(s.compiler_path, 'g++')
         self.assertEqual(s.compiler_flags, '-std=c++14')
         self.assertEqual(s.env_vars, {})
@@ -140,8 +143,10 @@ class TestMainWindow (unittest.TestCase):
     def test_menu_run_empty (self):
         self.assertEqual(len(self.window.menu_run.actions()), 0)
 
-    def test_menu_view_empty (self):
-        self.assertEqual(len(self.window.menu_view.actions()), 0)
+    def test_menu_view_has_zoom (self):
+        # Phase 2: View menu has zoom actions
+        actions = self.window.menu_view.actions()
+        self.assertGreater(len(actions), 0)
 
     def test_toolbar_actions (self):
         # Check that all actions exist
@@ -283,6 +288,9 @@ class TestMainWindow (unittest.TestCase):
         self.assertEqual(self.window.output_panel.document(),
                          self.window.empty_output_doc)
 
+    def test_settings_instance (self):
+        self.assertIsInstance(self.window.settings, Settings)
+
 
 #----------------------------------------------------------------------
 # Font detection
@@ -294,10 +302,11 @@ class TestFontDetection (unittest.TestCase):
         self.assertTrue(len(font) > 0)
 
     def test_init_sets_font_defaults (self):
-        _init_font_defaults()
-        self.assertTrue(len(Settings.editor_font_family) > 0)
-        self.assertTrue(len(Settings.io_font_family) > 0)
-        self.assertEqual(Settings.editor_font_family, Settings.io_font_family)
+        s = Settings()
+        _init_font_defaults(s)
+        self.assertTrue(len(s.editor_font_family) > 0)
+        self.assertTrue(len(s.io_font_family) > 0)
+        self.assertEqual(s.editor_font_family, s.io_font_family)
 
     def test_priority_list_win32 (self):
         from CodeRunner import _MONOSPACE_PRIORITY
@@ -314,10 +323,7 @@ class TestFontDetection (unittest.TestCase):
         self.assertIn('DejaVu Sans Mono', _LINUX_MONOSPACE)
 
     def test_fallback_is_monospace (self):
-        # When no candidate font is available (e.g., offscreen), fallback is 'monospace'
         font = _detect_monospace_font()
-        # In offscreen mode, families() is empty, so we always get 'monospace'
-        # On real display, we'd get Consolas/Menlo/etc.
         self.assertTrue(font in ('Consolas', 'Menlo', 'DejaVu Sans Mono',
                                  'Courier New', 'SF Mono', 'Ubuntu Mono',
                                  'monospace'))
@@ -339,7 +345,6 @@ class TestToolbarIcons (unittest.TestCase):
             self.assertFalse(icon.isNull(), f'{name} icon is null')
 
     def test_all_icons_are_generated (self):
-        # All toolbar icons are now self-generated (no QStyle)
         icons = _create_toolbar_icons()
         self.assertEqual(len(icons), 7)
 
@@ -352,7 +357,6 @@ class TestToolbarIcons (unittest.TestCase):
         self.assertTrue(_COLOR_STOP.isValid())
 
     def test_icon_colors_are_distinct (self):
-        # All icon colors should be different from each other
         colors = [_COLOR_NEW, _COLOR_SAVE, _COLOR_OPEN,
                   _COLOR_RUN, _COLOR_TEST, _COLOR_STOP]
         hex_colors = [c.name() for c in colors]
@@ -366,7 +370,6 @@ class TestToolbarIcons (unittest.TestCase):
 class TestDPI (unittest.TestCase):
 
     def test_high_dpi_scaling_attribute (self):
-        # Verify AA_EnableHighDpiScaling was set
         self.assertTrue(QApplication.testAttribute(Qt.AA_EnableHighDpiScaling))
 
 
