@@ -26,7 +26,8 @@ StatusLine (QStatusBar)
 | 类 | 基类 | 职责 |
 |----|------|------|
 | MainWindow | QMainWindow | 主窗口，协调所有组件 |
-| CodeEditor | QTextEdit (setAcceptRichText=False) | 代码编辑器，语法高亮/括号补全/自动缩进/改写模式。因 PyQt5 QPlainTextEdit.setDocument() 不工作，改用 QTextEdit |
+| CodeEditor | QTextEdit (setAcceptRichText=False) | 代码编辑器，行号显示/Tab制表符/Zoom/语法高亮/括号补全/自动缩进/改写模式。因 PyQt5 QPlainTextEdit.setDocument() 不工作，改用 QTextEdit |
+| LineNumberArea | QWidget | 行号区域，作为 CodeEditor 子Widget，paintEvent 委托给 CodeEditor._paint_line_numbers |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮规则 |
 | InputPanel | QTextEdit (setAcceptRichText=False) | 输入面板，纯文本，外层包装 QWidget + QLabel "INPUT"。同 CodeEditor 原因改用 QTextEdit |
 | OutputPanel | QTextEdit | 输出面板，只读，支持多色富文本，外层包装 QWidget + QLabel "OUTPUT" |

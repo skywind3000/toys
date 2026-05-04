@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QSize, QPointF, QTimer
+from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
     QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
@@ -584,6 +584,7 @@ class TabManager:
         font = mw.editor.font()
         font.setPointSize(zoom_size)
         mw.editor.setFont(font)
+        mw.editor._on_font_changed()
 
         # Unfreeze — document content displayed immediately
         mw.editor.setUpdatesEnabled(True)
@@ -627,15 +628,107 @@ class TabManager:
 
 
 #----------------------------------------------------------------------
+# LineNumberArea
+#----------------------------------------------------------------------
+class LineNumberArea (QWidget):
+
+    def __init__ (self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def paintEvent (self, event):
+        self.editor._paint_line_numbers(event)
+
+    def sizeHint (self):
+        return QSize(self.editor._line_number_width(), 0)
+
+
+#----------------------------------------------------------------------
 # CodeEditor (uses QTextEdit for setDocument compatibility)
 #----------------------------------------------------------------------
 class CodeEditor (QTextEdit):
 
+    _LINE_NUM_COLOR = QColor(120, 120, 120)
+    _LINE_NUM_BG = QColor(235, 235, 235)
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
-        self.setTabStopWidth(self.fontMetrics().width('    '))
         self.setLineWrapMode(QTextEdit.NoWrap)
+        self._update_tab_width()
+        self.line_number_area = LineNumberArea(self)
+        self.document().blockCountChanged.connect(
+            self._update_line_number_area_width)
+        self.verticalScrollBar().valueChanged.connect(
+            self.line_number_area.update)
+        self._update_line_number_area_width()
+
+    def _update_tab_width (self):
+        self.setTabStopWidth(self.fontMetrics().width('    '))
+
+    def _line_number_width (self) -> int:
+        digits = 1
+        count = max(1, self.document().blockCount())
+        while count >= 10:
+            count //= 10
+            digits += 1
+        space = 3 + self.fontMetrics().width('9') * digits
+        return space
+
+    def _update_line_number_area_width (self):
+        width = self._line_number_width()
+        margins = self.viewportMargins()
+        self.setViewportMargins(
+            width, margins.top(), margins.right(), margins.bottom())
+        cr = self.contentsRect()
+        self.line_number_area.setGeometry(
+            QRect(cr.left(), cr.top(), width, cr.height()))
+        self.line_number_area.update()
+
+    def setDocument (self, doc):
+        old_doc = self.document()
+        if old_doc:
+            try:
+                old_doc.blockCountChanged.disconnect(
+                    self._update_line_number_area_width)
+            except (RuntimeError, TypeError):
+                pass
+        super().setDocument(doc)
+        doc.blockCountChanged.connect(
+            self._update_line_number_area_width)
+        self._update_line_number_area_width()
+
+    def resizeEvent (self, event):
+        super().resizeEvent(event)
+        self._update_line_number_area_width()
+
+    def _on_font_changed (self):
+        self._update_tab_width()
+        self._update_line_number_area_width()
+
+    def _paint_line_numbers (self, event):
+        painter = QPainter(self.line_number_area)
+        painter.fillRect(event.rect(), self._LINE_NUM_BG)
+        scroll_y = self.verticalScrollBar().value()
+        block = self.document().begin()
+        block_number = 0
+        while block.isValid():
+            layout = self.document().documentLayout()
+            block_rect = layout.blockBoundingRect(block)
+            y = block_rect.y() - scroll_y
+            height = block_rect.height()
+            if y > event.rect().bottom():
+                break
+            if y + height >= event.rect().top():
+                painter.setPen(self._LINE_NUM_COLOR)
+                painter.drawText(
+                    0, int(y), self._line_number_width() - 3,
+                    int(height),
+                    Qt.AlignRight | Qt.AlignVCenter,
+                    str(block_number + 1))
+            block = block.next()
+            block_number += 1
+        painter.end()
 
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
@@ -704,6 +797,7 @@ class MainWindow (QMainWindow):
         editor_font.setFamily(Settings.editor_font_family)
         editor_font.setPointSize(Settings.editor_font_size)
         self.editor.setFont(editor_font)
+        self.editor._on_font_changed()
 
         io_font = self.input_panel.font()
         io_font.setFamily(Settings.io_font_family)
@@ -784,12 +878,24 @@ class MainWindow (QMainWindow):
             self.icons['settings'], 'Settings', self)
         self.act_settings.setToolTip('Settings')
 
+        self.act_zoom_in = QAction('Zoom In', self)
+        self.act_zoom_in.setShortcuts([
+            QKeySequence('Ctrl++'), QKeySequence('Ctrl+=')])
+        self.act_zoom_in.setToolTip('Zoom In (Ctrl++)')
+
+        self.act_zoom_out = QAction('Zoom Out', self)
+        self.act_zoom_out.setShortcuts([
+            QKeySequence('Ctrl+-')])
+        self.act_zoom_out.setToolTip('Zoom Out (Ctrl+-)')
+
     def __build_menubar (self):
         menubar = self.menuBar()
         self.menu_file = menubar.addMenu('File')
         self.menu_edit = menubar.addMenu('Edit')
         self.menu_run = menubar.addMenu('Run')
         self.menu_view = menubar.addMenu('View')
+        self.menu_view.addAction(self.act_zoom_in)
+        self.menu_view.addAction(self.act_zoom_out)
 
         # Populate File menu
         self.menu_file.addAction(self.act_new)
@@ -864,6 +970,8 @@ class MainWindow (QMainWindow):
         self.act_save.triggered.connect(self._action_save)
         self.act_save_as.triggered.connect(self._action_save_as)
         self.act_close.triggered.connect(self._action_close)
+        self.act_zoom_in.triggered.connect(self._action_zoom_in)
+        self.act_zoom_out.triggered.connect(self._action_zoom_out)
 
         # Tabbar signals
         self.tabbar.currentChanged.connect(
@@ -945,6 +1053,30 @@ class MainWindow (QMainWindow):
             return
         self.tab_manager.close_tab(
             self.tab_manager.current_index)
+
+    def _action_zoom_in (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        tab.zoom_font_size += 1
+        self._apply_zoom(tab)
+
+    def _action_zoom_out (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        base_size = Settings.editor_font_size
+        if base_size + tab.zoom_font_size <= 6:
+            return
+        tab.zoom_font_size -= 1
+        self._apply_zoom(tab)
+
+    def _apply_zoom (self, tab):
+        zoom_size = max(6, Settings.editor_font_size + tab.zoom_font_size)
+        font = self.editor.font()
+        font.setPointSize(zoom_size)
+        self.editor.setFont(font)
+        self.editor._on_font_changed()
 
     #----- Helpers -----
 
