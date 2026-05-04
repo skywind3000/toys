@@ -32,11 +32,11 @@
 ║─────────────────────────────────────────────────────────────────────────║
 ║ [📄 test.cpp] [📄 hello.cpp]                                            ║
 ╠═══════════════════════════════════╦═════════════════════════════════════╣
-║ 1  #include <stdio.h>             ║ INPUT                               ║
+║ 1  #include <stdio.h>             ║ INPUT:                              ║
 ║ 2  #include <stdlib.h>            ║ 233 666                             ║
 ║ 3  using namespace std;           ║                                     ║
 ║ 4  int main() {                   ║─────────────────────────────────────║
-║ 5      int a, b;                  ║ OUTPUT                              ║
+║ 5      int a, b;                  ║ OUTPUT:                             ║
 ║ 6      scanf("%d %d", &a, &b);    ║ 899                                 ║
 ║ 7      printf("%d", a + b);       ║ --------                            ║
 ║ 8      return 0;                  ║ exit with code 0 in 0.015s, 1.2MB   ║
@@ -75,11 +75,11 @@ MainArea 左侧的代码编辑区域，用于编写 C++ 代码。支持：
 
 ### InputPanel
 
-MainArea 右上的输入面板，用户在此粘贴 OJ 题目的样例输入。点击 Test 时，面板内容将作为程序的标准输入传递（详见 Actions 节中的 Test）。**InputPanel 的内容是 per-tab 的，切换标签时输入内容随之切换，退出时随标签页一起持久化保存，重启后恢复。**
+MainArea 右上的输入面板，顶部有一个固定的 "INPUT:" 标签文字，下方是文本编辑区域。用户在此粘贴 OJ 题目的样例输入。点击 Test 时，文本编辑区的内容将作为程序的标准输入传递（详见 Actions 节中的 Test）。**InputPanel 的内容是 per-tab 的，切换标签时输入内容随之切换，退出时随标签页一起持久化保存，重启后恢复。**
 
 ### OutputPanel
 
-MainArea 右下的输出面板，用于显示：
+MainArea 右下的输出面板，顶部有一个固定的 "OUTPUT:" 标签文字，下方是只读文本区域。用于显示：
 
 - Test 运行后程序的标准输出（stdout）使用默认字体颜色，标准错误（stderr）使用灰色字体区分显示；每次 Test 替换 OutputPanel 的全部内容，不追加
 - 编译错误信息（以**红色字体**显示），正常程序输出使用默认字体颜色

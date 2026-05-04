@@ -10,7 +10,7 @@ MainWindow 为 QMainWindow，从上到下五个区域：
 MenuBar (QMenuBar)
 Toolbar (QToolBar)
 TabBar  (QTabBar)
-MainArea (QSplitter 水平 → CodeEditor | QSplitter 垂直 → InputPanel | OutputPanel)
+MainArea (QSplitter 水平 → CodeEditor | QSplitter 垂直 → InputSection(QLabel "INPUT:" + InputPanel) | OutputSection(QLabel "OUTPUT:" + OutputPanel))
 StatusLine (QStatusBar)
 ```
 
@@ -27,8 +27,8 @@ StatusLine (QStatusBar)
 | MainWindow | QMainWindow | 主窗口，协调所有组件 |
 | CodeEditor | QPlainTextEdit | 代码编辑器，语法高亮/括号补全/自动缩进/改写模式 |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮规则 |
-| InputPanel | QPlainTextEdit | 输入面板，纯文本 |
-| OutputPanel | QTextEdit | 输出面板，只读，支持多色富文本 |
+| InputPanel | QPlainTextEdit | 输入面板，纯文本，外层包装 QWidget + QLabel "INPUT:" |
+| OutputPanel | QTextEdit | 输出面板，只读，支持多色富文本，外层包装 QWidget + QLabel "OUTPUT:" |
 | TabData | object | 单个标签页的全部状态数据 |
 | TabManager | object | 标签页列表管理与切换逻辑 |
 | ProcessManager | QObject | 编译/运行进程管理（QProcess），busy 状态控制 |
@@ -282,15 +282,18 @@ class Settings:
 
 ### InputPanel
 
-继承 QPlainTextEdit，基本配置：
+继承 QPlainTextEdit，外层用 QWidget + QVBoxLayout 包装，顶部放 QLabel 显示固定文字 "INPUT:"：
+- QLabel 文字使用小号粗体，与 IO 面板字体一致
 - 无行号显示
 - 字号/字体跟随 Settings.io_font_family / io_font_size
 - Tab 键行为同 CodeEditor（插入制表符）
 - 标签切换时通过 `setDocument(tab.input_doc)` 交换文档
+- 整个 InputSection（标签 + 编辑区）在零标签状态下随 InputPanel 一起灰显
 
 ### OutputPanel
 
-继承 QTextEdit，关键配置：
+继承 QTextEdit，外层用 QWidget + QVBoxLayout 包装，顶部放 QLabel 显示固定文字 "OUTPUT:"：
+- QLabel 文字使用小号粗体，与 IO 面板字体一致
 - `setReadOnly(True)`
 - 字号/字体跟随 Settings.io_font_family / io_font_size
 - 标签切换时通过 `setDocument(tab.output_doc)` 交换文档

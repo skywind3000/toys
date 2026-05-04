@@ -8,7 +8,7 @@
 
 | 阶段 | 状态 |
 |------|------|
-| 1. 骨架与布局 | pending |
+| 1. 骨架与布局 | done |
 | 2. 标签管理与文件操作 | pending |
 | 3. 编辑器核心 | pending |
 | 4. 语法高亮与编辑器特性 | pending |
@@ -16,25 +16,25 @@
 | 6. 设置与持久化 | pending |
 | 7. 查找替换与收尾 | pending |
 
-## 阶段 1：骨架与布局 **[pending]**
+## 阶段 1：骨架与布局 **[done]**
 
 **目标**：启动后能看到完整的界面骨架，各区域位置正确，分割条可拖动。
 
 **实现的类**：
 - MainWindow（QMainWindow）：五大区域布局搭建
-- InputPanel（QPlainTextEdit）：占位，无特殊配置
-- OutputPanel（QTextEdit）：占位，setReadOnly(True)
+- InputPanel（QPlainTextEdit）：占位，外层 QWidget + QLabel "INPUT:" 包装
+- OutputPanel（QTextEdit）：占位，setReadOnly(True)，外层 QWidget + QLabel "OUTPUT:" 包装
 - Settings（object）：仅默认值，不读写文件
 
 **具体内容**：
 - MenuBar：四个菜单（File / Edit / Run / View），菜单项为空占位
 - Toolbar：七个按钮（New / Save / Open / Run / Test / Stop / Settings），点击无响应
 - TabBar（QTabBar）：空状态，无标签页
-- MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputPanel / 下 OutputPanel）），默认 1:1
+- MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputSection: QLabel "INPUT:" + InputPanel / 下 OutputSection: QLabel "OUTPUT:" + OutputPanel）），默认 1:1
 - StatusBar：左 QLabel（空消息）+ 右 QLabel（零标签时清空）
 - DPI：`Qt.AA_EnableHighDpiScaling`
 - 主入口：`def main()`，窗口 1000x650 居中
-- 启动时无标签页，CodeEditor / InputPanel / OutputPanel 三个面板 `setEnabled(False)` 灰显，内容为空
+- 启动时无标签页，CodeEditor / InputSection / OutputSection 三个区域 `setEnabled(False)` 灰显，内容为空
 
 **自动测试项**：无（纯视觉）
 
@@ -42,7 +42,8 @@
 - [ ] `python CodeRunner.py` 启动，看到完整五区域布局
 - [ ] 水平分割条可左右拖动，垂直分割条可上下拖动
 - [ ] 窗口大小约 1000x650
-- [ ] 无标签页时 CodeEditor / InputPanel / OutputPanel 三个面板灰显不可交互
+- [ ] InputPanel 顶部显示 "INPUT:" 标签，OutputPanel 顶部显示 "OUTPUT:" 标签
+- [ ] 无标签页时 CodeEditor / InputSection / OutputSection 灰显不可交互
 - [ ] 无标签页时状态栏右侧为空（不显示行号/编码/模式）
 
 ---

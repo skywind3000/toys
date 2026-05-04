@@ -18,6 +18,25 @@ from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QKeySequence
 
 
+def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
+    """Wrap a text edit widget with a label header (INPUT: or OUTPUT:)."""
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    label = QLabel(label_text)
+    label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    font = label.font()
+    font.setBold(True)
+    font.setPointSize(Settings.io_font_size)
+    label.setFont(font)
+    label.setFixedHeight(label.sizeHint().height() + 4)
+    layout.addWidget(label)
+    layout.addWidget(text_edit, 1)
+    container._section_label = label
+    return container
+
+
 #----------------------------------------------------------------------
 # Settings
 #----------------------------------------------------------------------
@@ -152,10 +171,14 @@ class MainWindow (QMainWindow):
         toolbar.addAction(self.act_settings)
 
     def __build_mainarea (self):
-        # Vertical splitter: InputPanel (top) / OutputPanel (bottom)
+        # Wrap IO panels with label headers
+        self.input_section = _make_io_section('INPUT:', self.input_panel)
+        self.output_section = _make_io_section('OUTPUT:', self.output_panel)
+
+        # Vertical splitter: InputSection (top) / OutputSection (bottom)
         self.v_splitter = QSplitter(Qt.Vertical)
-        self.v_splitter.addWidget(self.input_panel)
-        self.v_splitter.addWidget(self.output_panel)
+        self.v_splitter.addWidget(self.input_section)
+        self.v_splitter.addWidget(self.output_section)
         self.v_splitter.setSizes([325, 325])
 
         # Horizontal splitter: CodeEditor (left) / v_splitter (right)
@@ -192,14 +215,14 @@ class MainWindow (QMainWindow):
         self.input_panel.setDocument(self.empty_input_doc)
         self.output_panel.setDocument(self.empty_output_doc)
         self.editor.setEnabled(False)
-        self.input_panel.setEnabled(False)
-        self.output_panel.setEnabled(False)
+        self.input_section.setEnabled(False)
+        self.output_section.setEnabled(False)
         self.status_info.setText('')
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
-        self.input_panel.setEnabled(True)
-        self.output_panel.setEnabled(True)
+        self.input_section.setEnabled(True)
+        self.output_section.setEnabled(True)
 
 
 #----------------------------------------------------------------------
