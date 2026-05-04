@@ -41,14 +41,14 @@
 **自动测试项**：无（纯视觉）
 
 **手动验收清单**：
-- [ ] `python CodeRunner.py` 启动，看到完整五区域布局
-- [ ] 水平分割条可左右拖动，垂直分割条可上下拖动
-- [ ] 窗口大小约 1000x650
-- [ ] InputPanel 顶部显示 "INPUT" 标签，OutputPanel 顶部显示 "OUTPUT" 标签
-- [ ] 无标签页时 CodeEditor / InputSection / OutputSection 灰显不可交互
-- [ ] 无标签页时状态栏右侧为空（不显示行号/编码/模式）
-- [ ] Toolbar 七个按钮都有彩色图标（New灰/Save蓝/Open黄/Run绿/Test蓝/Stop红/Settings灰齿轮）
-- [ ] Fusion 主题风格统一
+- [x] `python CodeRunner.py` 启动，看到完整五区域布局
+- [x] 水平分割条可左右拖动，垂直分割条可上下拖动
+- [x] 窗口大小约 1000x650
+- [x] InputPanel 顶部显示 "INPUT" 标签，OutputPanel 顶部显示 "OUTPUT" 标签
+- [x] 无标签页时 CodeEditor / InputSection / OutputSection 灰显不可交互
+- [x] 无标签页时状态栏右侧为空（不显示行号/编码/模式）
+- [x] Toolbar 七个按钮都有彩色图标（New灰/Save蓝/Open黄/Run绿/Test蓝/Stop红/Settings灰齿轮）
+- [x] Fusion 主题风格统一
 
 ---
 
