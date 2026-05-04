@@ -404,6 +404,20 @@ class MainWindow (QMainWindow):
         self.input_panel = InputPanel()
         self.output_panel = OutputPanel()
 
+        # Apply Settings fonts to widgets
+        editor_font = self.editor.font()
+        editor_font.setFamily(Settings.editor_font_family)
+        editor_font.setPointSize(Settings.editor_font_size)
+        self.editor.setFont(editor_font)
+
+        io_font = self.input_panel.font()
+        io_font.setFamily(Settings.io_font_family)
+        io_font.setPointSize(Settings.io_font_size)
+        self.input_panel.setFont(io_font)
+        self.output_panel.setFont(io_font)
+        self.input_panel.setTabStopWidth(
+            self.input_panel.fontMetrics().width('    '))
+
         # Save placeholder docs for zero-tab state
         self.empty_editor_doc = self.editor.document()
         self.empty_input_doc = self.input_panel.document()
