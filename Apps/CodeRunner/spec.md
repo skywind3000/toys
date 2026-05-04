@@ -86,7 +86,8 @@ class TabManager:
     def get_current() -> TabData: ...
 ```
 
-- 关闭最后一个标签后 `current_index = -1`，进入零标签状态
+- 首次启动时 `current_index = -1`，即零标签状态；用户通过 New 或 Open 创建第一个标签页
+- 关闭最后一个标签后 `current_index = -1`，重新进入零标签状态
 - **Switch Tab 快捷键**：Alt+1 ~ Alt+9 切换到第 1~9 个标签，Alt+0 切换到第 10 个标签。索引超出当前标签数量时忽略。通过 `QShortcut` 或 `QAction` 绑定 `Alt+数字` 快捷键，回调调用 `switch_tab(N-1)`
 
 **标签切换（setDocument 模式）**：
@@ -330,7 +331,7 @@ class ProcessManager(QObject):
 **Test 流程**：
 1. MainWindow 调用 `save_if_dirty()`（见文件操作章节）。如果返回失败（用户取消了保存对话框），则终止整个 Test 流程，不继续编译和运行
 2. EncodingManager 生成编译命令（见编码章节）
-3. 判断是否需要重编译：exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime → 需要重编译
+3. 判断是否需要重编译：exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime → 需要重编译。编译产物（exe）放在源文件同目录下，文件名与源文件同名（如 `test.cpp` → `test.exe`），与 Dev-C++ 单文件模式行为一致
 4. 如需重编译：ProcessManager 启动 QProcess 执行编译命令，等待 compile_finished 信号
    - 编译成功：继续步骤 5
    - 编译失败：OutputPanel 显示红色错误信息，状态栏显示 Build failed，结束
@@ -338,7 +339,7 @@ class ProcessManager(QObject):
    - 设置工作目录为 exe 所在目录
    - 设置环境变量（Settings.env_vars 展开 $VAR_NAME 后合并到 QProcessEnvironment）
    - 将 InputPanel 内容转换为平台编码后写入 stdin
-   - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）
+   - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）。此"追加"是指在单次运行的输出中逐步追加新到达的数据；跨运行间则整体替换（每次 Test/Build 开始时先清空 OutputPanel 再写入新内容）
    - 进程结束时：显示退出状态行（灰色），返回码非 0 标红色 Runtime Error
    - 运行超时：QTimer 计时，到期后 kill 进程，OutputPanel 末尾追加红色超时信息
    - 内存占用：如果 `psutil` 可用，进程启动后启动一个 QTimer（间隔约 100ms）定期轮询 `psutil.Process(pid).memory_info()`，记录 `rss`（Linux/macOS）或 `rss`（Windows）的峰值到局部变量 `peak_memory`。每次轮询用 try/except 捕获 `NoSuchProcess`（进程已结束时忽略）。进程结束时停止 QTimer，将 `peak_memory` 追加到退出状态行（如 "exit with code 0 in 0.015s, 1.2MB"）。此方案不依赖进程结束时仍然存活，是最可靠的采集方式
@@ -357,7 +358,7 @@ class ProcessManager(QObject):
 4. 编译成功后：启动外部终端窗口运行 exe
    - Windows：使用固定批处理 + 环境变量方案（详见下方"Run 外部终端实现"）
    - Linux/macOS：`QProcess.startDetached('xterm', ['-e', exe_path])`，或检测可用终端模拟器
-5. startDetached 成功后立即标记 Run 完成，busy 状态解除
+5. startDetached 成功后立即标记 Run 完成，busy 状态解除；如果 startDetached 返回 False（启动失败），状态栏显示 "Failed to launch terminal" 提示用户
 
 **Run 外部终端实现（Windows）**：
 
@@ -393,6 +394,7 @@ exit %CR_EXITCODE%
 
 **Busy 状态控制**：
 - busy 为 True 时：Build/Test/Run 不启动新进程，弹出 QMessageBox 提示 "A process is currently running. Please wait or press Stop before starting a new operation."
+- Toolbar 上的 Build/Test/Run/Stop 按钮**保持可点击状态，不禁用灰显**——用户始终能看到并点击这些按钮，busy 时通过弹出提示而非视觉禁用来阻止操作
 - Stop 按钮调用 `process.kill()`，终止当前编译或运行进程
 - Run（外部终端）不占用 busy 状态
 
