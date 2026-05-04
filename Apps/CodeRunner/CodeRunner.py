@@ -879,7 +879,7 @@ class MainWindow (QMainWindow):
         start_dir = self._last_file_dir or os.path.expanduser('~')
         path, _ = QFileDialog.getOpenFileName(
             self, 'Open File', start_dir,
-            'C++ Files (*.cpp *.c);;All Files (*)')
+            'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
         if not path:
             return
         content, encoding = _read_file(path)
@@ -905,7 +905,7 @@ class MainWindow (QMainWindow):
             start_dir = os.path.dirname(tab.file_path)
         path, _ = QFileDialog.getSaveFileName(
             self, 'Save As', start_dir,
-            'C++ Files (*.cpp *.c);;All Files (*)')
+            'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
         if not path:
             return
         old_path = tab.file_path
@@ -935,7 +935,7 @@ class MainWindow (QMainWindow):
             start_dir = self._last_file_dir or os.path.expanduser('~')
             path, _ = QFileDialog.getSaveFileName(
                 self, 'Save File', start_dir,
-                'C++ Files (*.cpp *.c);;All Files (*)')
+                'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
             if not path:
                 return -1
             content = tab.editor_doc.toPlainText()
