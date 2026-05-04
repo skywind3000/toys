@@ -17,6 +17,7 @@ StatusLine (QStatusBar)
 - TabBar 与 MainArea 协同：切换标签时通过 `setDocument()` 交换每个 Widget 的 QTextDocument
 - MainArea 使用**单一可见 Widget 组**（而非每标签一套 Widget），每个标签页持有独立的 QTextDocument 三件套（editor_doc / input_doc / output_doc），切换标签时交换 document，Splitter 位置全局共享
 - 状态栏左侧为 QLabel 显示消息，右侧为 QLabel 显示光标位置/编码/模式
+- 应用主题使用 Fusion（`app.setStyle('Fusion')`），Toolbar 七个按钮使用自绘彩色图标
 
 ### 类列表
 
@@ -561,18 +562,36 @@ OK 按钮点击后：验证数据 → 更新 Settings 对象 → 写入 JSON →
 - 字号由 Qt 的 DPI 缩放自动处理，无需手动乘 DPI factor
 - 状态栏、Toolbar 按钮等默认尺寸由 Qt 自动缩放
 
+## Toolbar 图标
+
+Toolbar 七个按钮均使用 QPainter 自绘图标，风格统一（扁平 + 抗锯齿），24x24 尺寸，使用 `QApplication.setStyle('Fusion')` 主题。每个按钮的图标形状和颜色如下：
+
+| 按钮 | 形状 | 颜色 | 说明 |
+|------|------|------|------|
+| New | 文档折角 | 灰色边框 + 白色填充 + 黑色文字行 | 矩形文档右下角折叠，内部两条黑色横线模拟文字 |
+| Save | 3.5 寸软盘 | 蓝色 (60,100,200) | 蓝色磁盘主体 + 浅蓝色顶部金属滑块 + 白色底部标签区 |
+| Open | Win2K 文件夹 | 黄色 (220,180,40) | 深黄色标签页 + 黄色前后两层面板 + 顶部高光折痕线 |
+| Run | 播放三角 | 绿色 (0,160,0) | 右指实心三角形 |
+| Test | 烧瓶 | 蓝色 (50,100,220) | 锥形瓶身（窄颈+宽体），底部与 Stop 对齐，内含液位线 |
+| Stop | 圆角方块 | 红色 (220,50,50) | 红色实心圆角矩形 |
+| Settings | 齿轮 | palette.windowText() | 6 齿齿轮 + 中心透明孔 |
+
+图标生成函数：`_generate_new_icon()` / `_generate_save_icon()` / `_generate_open_icon()` / `_generate_run_icon()` / `_generate_test_icon()` / `_generate_stop_icon()` / `_generate_settings_icon()`，由 `_create_toolbar_icons()` 统一创建返回 dict。所有 QAction 通过 `QAction(icon, text, self)` 构造，toolbar 显示图标+文字，菜单显示文字。
+
 ## 主程序入口
 
 ```python
 def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    _init_font_defaults()
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
 ```
 
-窗口默认大小 1000x650，首次启动居中显示。
+窗口默认大小 1000x650，首次启动居中显示。`app.setStyle('Fusion')` 统一跨平台外观。`_init_font_defaults()` 按 platform 优先列表检测 monospace 字体设为 Settings 默认值。
 
 ## 编码风格注意
 

@@ -28,11 +28,13 @@
 
 **具体内容**：
 - MenuBar：四个菜单（File / Edit / Run / View），菜单项为空占位
-- Toolbar：七个按钮（New / Save / Open / Run / Test / Stop / Settings），点击无响应
+- Toolbar：七个按钮（New / Save / Open / Run / Test / Stop / Settings），自绘彩色图标，点击无响应
 - TabBar（QTabBar）：空状态，无标签页
 - MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputSection: QLabel "INPUT" + InputPanel / 下 OutputSection: QLabel "OUTPUT" + OutputPanel）），默认 1:1
 - StatusBar：左 QLabel（空消息）+ 右 QLabel（零标签时清空）
 - DPI：`Qt.AA_EnableHighDpiScaling`
+- 主题：`app.setStyle('Fusion')`
+- 字体：按平台优先列表检测 monospace 字体设为 Settings 默认值
 - 主入口：`def main()`，窗口 1000x650 居中
 - 启动时无标签页，CodeEditor / InputSection / OutputSection 三个区域 `setEnabled(False)` 灰显，内容为空
 
@@ -42,9 +44,11 @@
 - [ ] `python CodeRunner.py` 启动，看到完整五区域布局
 - [ ] 水平分割条可左右拖动，垂直分割条可上下拖动
 - [ ] 窗口大小约 1000x650
-- [ ] InputPanel 顶部显示 "INPUT:" 标签，OutputPanel 顶部显示 "OUTPUT:" 标签
+- [ ] InputPanel 顶部显示 "INPUT" 标签，OutputPanel 顶部显示 "OUTPUT" 标签
 - [ ] 无标签页时 CodeEditor / InputSection / OutputSection 灰显不可交互
 - [ ] 无标签页时状态栏右侧为空（不显示行号/编码/模式）
+- [ ] Toolbar 七个按钮都有彩色图标（New灰/Save蓝/Open黄/Run绿/Test蓝/Stop红/Settings灰齿轮）
+- [ ] Fusion 主题风格统一
 
 ---
 
