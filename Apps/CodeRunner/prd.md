@@ -22,7 +22,7 @@
 
 ## 界面框架
 
-从上到下分别是：MenuBar，Toolbar，Tabbar，MainArea 四个区域。窗口默认大小 1000x650，CodeEditor 与右侧面板默认按 1:1 左右分割，中间可拖动调整。
+从上到下分别是：MenuBar，Toolbar，Tabbar，MainArea，StatusLine 五个区域。窗口默认大小 1000x650，CodeEditor 与右侧面板默认按 1:1 左右分割，中间可拖动调整。
 
 ```
 ╔═════════════════════════════════════════════════════════════════════════╗
@@ -41,7 +41,9 @@
 ║ 7      printf("%d", a + b);       ║ --------                            ║
 ║ 8      return 0;                  ║ exit with code 0 in 0.015s, 1.2MB   ║
 ║ 9  }                              ║                                     ║
-╚═══════════════════════════════════╩═════════════════════════════════════╝
+╠═══════════════════════════════════╩═════════════════════════════════════╣
+║ Build successful                             Ln 4, Col 12 | GBK | INS   ║
+╚═════════════════════════════════════════════════════════════════════════╝
 ```
 
 ### MenuBar
@@ -96,6 +98,18 @@ OutputPanel 的颜色规范汇总：
 **OutputPanel 的内容是 per-tab 的，切换标签时输出内容随之切换，标签关闭时内容一起清除，不做持久化保存。** InputPanel 和 OutputPanel 属于各自标签页的内容容器的一部分，如果在 Tab A 运行 Test 期间用户切换到 Tab B，Tab B 显示自己的 Input/Output 内容；Tab A 的运行结果完成后写入 Tab A 所拥有的 OutputPanel，用户切换回 Tab A 时即可看到。
 
 InputPanel 和 OutputPanel 默认上下平分，中间有可拖动的分割条，用户可以自由调整两个面板的比例。
+
+### StatusLine
+
+窗口最底部的状态栏，横跨整个窗口宽度，分为左右两部分：
+
+- **左侧（Message）**：显示重要的操作提示信息，如编译成功/失败提醒、运行结果摘要等。Message 在触发新操作时更新，平时保持显示上一条消息。典型消息示例：
+  - `"Build successful"` — 编译成功
+  - `"Build failed with 3 error(s)"` — 编译失败，显示错误数量
+  - `"Program exited with code 0"` — 程序正常退出
+  - `"Runtime Error (exit code -1)"` — 程序异常退出
+  - `"Timeout after 10 seconds"` — 运行超时
+- **右侧（光标位置与编码）**：显示当前 CodeEditor 的光标位置、文件编码和编辑模式，格式为 `Ln {行号}, Col {列号} | {编码} | {模式}`（如 `Ln 4, Col 12 | GBK | INS`）。行号和列号均从 1 开始计数，随光标移动实时更新。编辑模式为固定三字符宽度：`INS`（Insert 插入模式）或 `OVR`（Overwrite 改写模式），通过 Insert 键切换
 
 ## Actions
 
