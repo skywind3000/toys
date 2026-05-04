@@ -1,0 +1,461 @@
+# CodeRunner 技术规格
+
+## 架构概览
+
+### 顶层布局
+
+MainWindow 为 QMainWindow，从上到下五个区域：
+
+```
+MenuBar (QMenuBar)
+Toolbar (QToolBar)
+TabBar  (QTabBar)
+MainArea (QSplitter 水平 → CodeEditor | QSplitter 垂直 → InputPanel | OutputPanel)
+StatusLine (QStatusBar)
+```
+
+- TabBar 与 MainArea 协同：切换标签时保存当前标签状态到 TabData，加载新标签状态到可见 Widget
+- MainArea 使用**单一可见 Widget 组**（而非每标签一套 Widget），切换标签时交换 Widget 内容，Splitter 位置全局共享
+- 状态栏左侧为 QLabel 显示消息，右侧为 QLabel 显示光标位置/编码/模式
+
+### 类列表
+
+所有类集中在 `CodeRunner.py` 单文件中：
+
+| 类 | 基类 | 职责 |
+|----|------|------|
+| MainWindow | QMainWindow | 主窗口，协调所有组件 |
+| CodeEditor | QPlainTextEdit | 代码编辑器，语法高亮/括号补全/自动缩进/改写模式 |
+| CppHighlighter | QSyntaxHighlighter | C++ 语法高亮规则 |
+| InputPanel | QPlainTextEdit | 输入面板，纯文本 |
+| OutputPanel | QTextEdit | 输出面板，只读，支持多色富文本 |
+| TabData | object | 单个标签页的全部状态数据 |
+| TabManager | object | 标签页列表管理与切换逻辑 |
+| ProcessManager | QObject | 编译/运行进程管理（QProcess），busy 状态控制 |
+| EncodingManager | object | 编码检测、编译标志生成、I/O 编码转换 |
+| Settings | object | 配置数据，JSON 读写 |
+| SettingsDialog | QDialog | 设置面板（三页 Tab） |
+| FindDialog | QDialog | 模态查找对话框 |
+| ReplaceDialog | QDialog | 模态替换对话框 |
+
+## 数据模型
+
+### TabData
+
+每个标签页的状态封装：
+
+```python
+class TabData:
+    file_path: str          # 文件路径，None 表示新文件
+    is_new: bool            # True = 从未保存到磁盘（新文件标志）
+    is_dirty: bool          # True = 有未保存更改
+    editor_text: str        # 编辑器文本内容
+    input_text: str         # InputPanel 文本内容
+    output_html: str        # OutputPanel HTML 内容（保留颜色信息）
+    encoding: str           # 文件编码：'UTF-8' 或系统编码名
+    zoom_font_size: int     # 当前 zoom 字号（会话级，不持久化）
+    compiler_mtime: float   # 上次编译时的编译参数修改时间戳，用于判断是否需要重编译
+```
+
+- `is_new` 标志：新建文件时为 True，首次保存后变为 False
+- `is_dirty` 标志：编辑器文本变化时置 True，保存后置 False；新建文件预填充模板后也视为 dirty
+- 标签名生成规则：`is_new` 且 `is_dirty` → `*untitledN*`；`is_new` 且非 dirty → `untitledN`；已保存文件 dirty → `*filename*`；已保存文件非 dirty → `filename`
+- 退出时持久化：已保存文件记录 file_path；新文件记录 editor_text + input_text
+
+### TabManager
+
+```python
+class TabManager:
+    tabs: list              # TabData 列表
+    current_index: int      # 当前活跃标签索引，-1 表示无标签
+    untitled_counter: int   # untitled 编号递增器
+
+    def switch_tab(index): ...     # 保存旧标签状态，加载新标签状态到 Widget
+    def add_tab(tab_data): ...     # 添加新标签并切换
+    def close_tab(index): ...      # 关闭标签，返回是否成功（用户可能取消保存）
+    def get_current() -> TabData: ...
+```
+
+- 关闭最后一个标签后 `current_index = -1`，MainArea 显示为空（允许空窗口状态）
+- 切换到 -1（空状态）时清空所有 Widget 内容
+
+### Settings
+
+配置数据结构，从 `~/.config/coderunner/settings.json` 读写：
+
+```python
+class Settings:
+    compiler_path: str          # g++ 路径，默认 'g++'
+    compiler_flags: str         # 编译参数，默认 '-std=c++14'
+    env_vars: dict              # 环境变量 {key: value}
+    run_timeout: int            # 运行超时秒数，默认 10
+    compile_timeout: int        # 编译超时秒数，默认 20
+    editor_font_family: str     # 编辑器字体，默认 'Consolas'
+    editor_font_size: int       # 编辑器字号，默认 11
+    io_font_family: str         # IO 面板字体，默认 'Consolas'
+    io_font_size: int           # IO 面板字号，默认 11
+    template_text: str          # 新建模板内容
+```
+
+- 修改 `compiler_flags` 或 `env_vars` 时，记录当前时间戳到 `compiler_mtime`，供重编译判断使用
+- `env_vars` 的值中 `$VAR_NAME` 语法在运行时展开为实际环境变量值
+
+### Settings JSON 格式
+
+```json
+{
+    "compiler_path": "g++",
+    "compiler_flags": "-std=c++14",
+    "env_vars": {"PATH": "$PATH;/custom/bin"},
+    "run_timeout": 10,
+    "compile_timeout": 20,
+    "editor_font_family": "Consolas",
+    "editor_font_size": 11,
+    "io_font_family": "Consolas",
+    "io_font_size": 11,
+    "template_text": "#include <iostream>\n..."
+}
+```
+
+首次运行不存在配置文件时使用默认值。
+
+### Window State JSON 格式
+
+`~/.cache/coderunner/window.json`：
+
+```json
+{
+    "geometry": {"x": 100, "y": 100, "w": 1000, "h": 650},
+    "h_splitter": [500, 500],
+    "v_splitter": [325, 325],
+    "last_file_dir": "C:/Users/xxx/Documents",
+    "tabs": [
+        {
+            "file_path": "C:/Users/xxx/test.cpp",
+            "input_text": "3 5"
+        },
+        {
+            "is_new": true,
+            "editor_text": "#include ...",
+            "input_text": ""
+        }
+    ],
+    "active_tab": 0,
+    "recent_files": ["C:/Users/xxx/test.cpp", ...]
+}
+```
+
+- `h_splitter` / `v_splitter`：Splitter 各段尺寸列表，用于恢复分割条位置
+- `recent_files`：最近文件列表，最多 10 条，按时间倒序
+- OutputPanel 内容不持久化，重启后为空
+
+## 核心组件实现
+
+### CodeEditor
+
+继承 QPlainTextEdit，扩展功能：
+
+**行号显示**：使用 QPlainTextEdit 的 `blockCountChanged` / `updateRequest` 信号，在左侧绘制行号区域（参考 Qt Line Number Example）。行号区域宽度按最大行号位数动态调整。
+
+**C++ 语法高亮**：CppHighlighter 挂载到 CodeEditor.document()，规则见下方 CppHighlighter 章节。
+
+**括号补全**：覆盖 `keyPressEvent`，输入以下开符号时自动插入对应闭符号，并将光标置于两者之间：
+
+| 开符号 | 闭符号 |
+|--------|--------|
+| `(` | `)` |
+| `{` | `}` |
+| `[` | `]` |
+| `"` | `"` |
+| `'` | `'` |
+
+额外行为：
+- 输入闭符号且光标右侧恰好是同一闭符号时：跳过（不重复插入），直接右移光标
+- 删除开符号时：如果右侧紧邻对应闭符号，一并删除
+- 括号补全功能可通过设置开关控制（默认开启）
+
+**自动缩进**：覆盖 `keyPressEvent`，Enter 键行为：
+1. 取当前行的前导空白（缩进）作为新行基础缩进
+2. 如果当前行末尾是 `{`，新行增加一级缩进（+4 个空格或 1 个 Tab，取决于当前行缩进字符类型）
+3. 如果下一行（原光标右侧）以 `}` 开头且当前行是 `{`，则在 `}` 行减少一级缩进（光标停留在增加缩进的新行）
+
+**Tab 键**：插入 Tab 制表符（`\t`），不转换为空格。Tab 宽度设为 4（`setTabStopWidth` 或 `setTabStopDistance`）。
+
+**改写模式（Overtype）**：
+- `overwrite_mode: bool` 属性，初始为 False（Insert 模式）
+- Insert 键切换 overwrite_mode
+- 覆盖 `keyPressEvent`：在 overwrite_mode 下，输入普通字符时先删除光标右侧一个字符再插入（模拟覆盖），而非默认的插入行为
+- 状态栏右侧显示 `INS` 或 `OVR`，随模式切换实时更新
+- Paste 操作在 overwrite_mode 下仍为插入行为（不逐字符覆盖）
+
+**Zoom**：
+- Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小字号（步长 1pt，最小 6pt）
+- Zoom 仅改变 CodeEditor 字号，不影响 IO 面板；仅会话有效，不写入 Settings
+- Zoom 字号存入 TabData.zoom_font_size，切换标签时恢复对应标签的 zoom 状态
+
+### CppHighlighter
+
+规则分组与颜色：
+
+| 分组 | 正则/规则 | 颜色 |
+|------|-----------|------|
+| 关键字 | `\b(int|float|double|char|void|bool|long|short|unsigned|signed|const|static|extern|inline|virtual|override|final|class|struct|enum|union|namespace|using|template|typename|public|private|protected|if|else|while|for|do|switch|case|default|break|continue|return|try|catch|throw|new|delete|this|nullptr|true|false|sizeof|typedef|auto|register|volatile|friend|operator|explicit|mutable|constexpr|decltype|static_assert|noexcept|thread_local|alignas|alignof)\b` | 蓝色粗体 |
+| 预处理器 | `^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning)\b` | 绿色 |
+| 字符串 | `"..."`（双引号，不含换行） | 深红色 |
+| 字符 | `'.'`（单引号字符常量） | 深红色 |
+| 注释单行 | `//[^\n]*` | 灰色 |
+| 注释多行 | `/\*...\*/`（multiline 模式） | 灰色 |
+| 数字 | `\b[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*\b` | 深蓝色 |
+
+高亮器使用 `QRegularExpression` + `QSyntaxHighlighter`，按规则顺序依次匹配，同一文本区域只应用最先匹配的规则（关键字优先级高于数字等）。
+
+多行注释需要特殊处理：使用 `setCurrentBlockState` / `previousBlockState` 机制跟踪跨块注释状态。
+
+### InputPanel
+
+继承 QPlainTextEdit，基本配置：
+- 无行号显示
+- 字号/字体跟随 Settings.io_font_family / io_font_size
+- Tab 键行为同 CodeEditor（插入制表符）
+- 内容随标签切换存入/读出 TabData.input_text
+
+### OutputPanel
+
+继承 QTextEdit，关键配置：
+- `setReadOnly(True)`
+- 字号/字体跟随 Settings.io_font_family / io_font_size
+- 内容随标签切换存入/读出 TabData.output_html
+- 关闭标签时清除对应 TabData 的 output_html
+
+**颜色渲染**：使用 `QTextCursor` + `QTextCharFormat` 插入不同颜色的文本段：
+
+| 内容类型 | QTextCharFormat 颜色 |
+|----------|----------------------|
+| stdout | 默认前景色（QPalette.Text） |
+| stderr | 灰色（Qt.gray） |
+| 退出状态行 | 灰色 |
+| Build 成功 | 灰色 |
+| 编译错误 | 红色（Qt.red） |
+| Runtime Error | 红色 |
+| 超时信息 | 红色 |
+
+每次 Test/Build 清空 OutputPanel 后重新写入全部内容，不追加。
+
+### ProcessManager
+
+继承 QObject，管理编译和运行进程：
+
+```python
+class ProcessManager(QObject):
+    process: QProcess         # 当前活跃的 QProcess（编译或运行）
+    busy: bool                # True = 正在编译或运行
+    mode: str                 # 'compile' / 'run' / None
+
+    signals:
+        compile_finished(exit_code, stderr_text)
+        run_finished(exit_code, stdout_text, stderr_text, elapsed_ms)
+        run_timeout()
+        compile_timeout()
+```
+
+**Test 流程**：
+1. MainWindow 调用 `save_if_dirty()`（见文件操作章节）
+2. EncodingManager 生成编译命令（见编码章节）
+3. 判断是否需要重编译：exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime → 需要重编译
+4. 如需重编译：ProcessManager 启动 QProcess 执行编译命令，等待 compile_finished 信号
+   - 编译成功：继续步骤 5
+   - 编译失败：OutputPanel 显示红色错误信息，状态栏显示 Build failed，结束
+5. 启动 QProcess 运行 exe：
+   - 设置工作目录为 exe 所在目录
+   - 设置环境变量（Settings.env_vars 展开 $VAR_NAME 后合并到 QProcessEnvironment）
+   - 将 InputPanel 内容转换为平台编码后写入 stdin
+   - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）
+   - 进程结束时：显示退出状态行（灰色），返回码非 0 标红色 Runtime Error
+   - 运行超时：QTimer 计时，到期后 kill 进程，OutputPanel 末尾追加红色超时信息
+   - 内存占用：如果 `psutil` 可用，在进程启动后尝试读取 `psutil.Process(pid).memory_info().peak_wss`（Windows）或 `peak_rss`（Linux），进程结束后追加到退出状态行
+
+**Run 流程**：
+1. MainWindow 调用 `save_if_dirty()`
+2. 同 Test 步骤 2-3 判断是否重编译
+3. 如需重编译：编译（同 Test 步骤 4）
+4. 编译成功后：启动外部终端窗口运行 exe
+   - Windows：生成临时 .bat 文件（`cd /d <work_dir> && <exe_path> & pause`），用 `QProcess.startDetached('cmd', ['/c', 'start', '', bat_path])` 启动
+   - Linux/macOS：`QProcess.startDetached('xterm', ['-e', exe_path])`，或检测可用终端模拟器
+5. startDetached 成功后立即标记 Run 完成，busy 状态解除
+
+**Build 流程**：
+1. MainWindow 调用 `save_if_dirty()`
+2. 强制重新编译（不判断是否需要）
+3. 结果显示到 OutputPanel：成功灰色 "Build OK in X.XXXs"，失败红色错误信息
+
+**Busy 状态控制**：
+- busy 为 True 时：Build/Test/Run 不启动新进程，弹出 QMessageBox 提示 "程序正在运行，请等待运行结束或 Stop 后再使用"
+- Stop 按钮调用 `process.kill()`，终止当前编译或运行进程
+- Run（外部终端）不占用 busy 状态
+
+**QProcess 配置**：
+- 合并 stderr 到独立通道：`setProcessChannelMode(QProcess.SeparateChannels)`
+- stdin：Test 模式下写入后关闭写入通道 `closeWriteChannel()`
+- 编译进程：只读 stderr（g++ 错误信息在 stderr）
+- 运行进程：分别读 stdout 和 stderr
+
+### EncodingManager
+
+编码检测与转换的核心逻辑：
+
+**文件编码检测**（打开文件时）：
+1. 读取文件前 3 字节，如果为 `\xEF\xBB\xBF` → UTF-8 BOM，跳过 BOM 后解码
+2. 尭试将整个文件用 UTF-8 严格解码（`bytes.decode('utf-8', 'strict')`）→ 成功则 UTF-8
+3. 以上失败 → 系统编码（Windows 为 'gbk'，其他平台为 'utf-8'）
+
+**编译标志生成**（根据源文件编码）：
+```python
+def build_flags(source_encoding):
+    flags = []
+    platform_charset = 'gbk' if sys.platform == 'win32' else 'utf-8'
+    flags.append(f'-fexec-charset={platform_charset}')
+    if source_encoding.lower().replace('-', '') == 'utf8':
+        flags.append('-finput-charset=UTF-8')
+    return flags
+```
+
+**I/O 编码转换**（Test 模式）：
+- InputPanel → stdin：`text.encode(platform_charset)` 转为 bytes 写入 QProcess stdin
+- stdout → OutputPanel：QProcess stdout bytes → `bytes.decode(platform_charset, 'replace')` 转为 str 显示
+- stderr → OutputPanel：同 stdout 转换方式
+
+**保存文件**：使用检测到的原始编码写回，UTF-8 文件不加 BOM。
+
+### 文件操作
+
+**New**：
+1. 创建 TabData（is_new=True, is_dirty=True, editor_text=Settings.template_text, encoding='UTF-8'）
+2. 递增 untitled_counter 生成名称 `untitledN`
+3. 添加到 TabManager 并切换
+
+**Open**：
+1. QFileDialog 选择文件（初始目录为 window_state.last_file_dir）
+2. EncodingManager 检测编码，读取文件内容
+3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果）
+4. 添加到 TabManager 并切换
+5. 更新 last_file_dir 和 recent_files
+
+**Save**：
+- 新文件（is_new=True）：弹出 QFileDialog 让用户选择路径，保存后 is_new→False, file_path→路径, is_dirty→False
+- 已保存文件：直接写入 file_path，使用 TabData.encoding 编码
+- 保存成功后刷新标签名显示
+
+**Save As**：
+- 始终弹出 QFileDialog，保存后更新 file_path 和 encoding
+
+**Close Tab**：
+- 如果 is_dirty：弹出 QMessageBox（Save / Don't Save / Cancel）
+  - Save → 执行 Save 流程后关闭
+  - Don't Save → 直接关闭
+  - Cancel → 取消关闭，返回 False
+- 否则直接关闭
+
+**拖放打开**：
+- MainWindow 设置 `setAcceptDrops(True)`
+- dragEnterEvent 检查 MIME 类型含文件路径且后缀为 .cpp/.c
+- dropEvent 获取文件路径，执行 Open 流程
+
+**Recent Files**：
+- 存储在 window.json 的 recent_files 列表
+- File 菜单下 Recent Files 子菜单（QMenu），最多 10 条
+- 点击已删除文件时弹出 QMessageBox 提示"文件不存在"
+
+## 对话框
+
+### SettingsDialog
+
+模态 QDialog，底部 OK / Cancel 按钮。使用 QTabWidget 分三个页：
+
+**Compiler 页**：
+- 编译器路径：QLineEdit + "Auto Detect" 按钮
+  - Auto Detect 逻辑：依次检查以下路径是否存在 g++/gcc 可执行文件：
+    - `C:\MinGW\bin\g++.exe`、`C:\TDM-GCC-64\bin\g++.exe`、`C:\Program Files\Dev-Cpp\MinGW64\bin\g++.exe`
+    - `C:\Program Files (x86)\Dev-Cpp\MinGW64\bin\g++.exe`、`C:\msys64\mingw64\bin\g++.exe`
+    - PATH 环境变量中的 g++
+  - 检测到后填入 QLineEdit
+- 编译参数：QLineEdit（如 `-std=c++14 -O2`）
+- 环境变量：QTableWidget（2 列：Key / Value），每行右侧有删除按钮，底部有"Add Row"按钮
+  - Value 中 `$VAR_NAME` 在 tooltip 中提示"将展开为实际环境变量值"
+- 运行超时：QSpinBox（范围 1-300，默认 10）
+- 编译超时：QSpinBox（范围 1-300，默认 20）
+
+**Editor 页**：
+- 编辑器字体：QFontComboBox
+- 编辑器字号：QSpinBox（范围 6-72，默认 11）
+- IO 面板字体：QFontComboBox
+- IO 面板字号：QSpinBox（范围 6-72，默认 11）
+- 括号补全：QCheckBox（默认勾选）
+
+**Template 页**：
+- QPlainTextEdit，多行编辑模板文本
+- 右侧 "Reset to Default" 按钮，恢复默认 C++ 骨架
+
+OK 按钮点击后：验证数据 → 更新 Settings 对象 → 写入 JSON → 如果 compiler_flags 或 env_vars 变化则更新 compiler_mtime
+
+### FindDialog
+
+模态 QDialog，参考 Dev-C++ 风格：
+- QLineEdit 输入查找文本
+- QCheckBox 大小写敏感
+- 向上 / 向下 QRadioButton
+- Find Next / Find Prev / Close 三个按钮
+- 查找目标为 CodeEditor（QPlainTextEdit），使用 `QTextDocument.find()` 方法
+- 未找到时状态栏提示 "Not found"
+
+### ReplaceDialog
+
+模态 QDialog，在 FindDialog 基础增加：
+- QLineEdit 输入替换文本
+- Replace / Replace All 按钮
+- Replace 替换当前选中并跳到下一个匹配
+- Replace All 替换全部匹配
+
+### 编码选择菜单
+
+状态栏编码标签点击后弹出 QMenu：
+- "Reopen with Encoding"：列出常见编码（UTF-8、GBK、Big5、Shift_JIS、ISO-8859-1 等），选择后用指定编码重新加载文件内容
+- "Save with Encoding"：同上列表，选择后用指定编码保存文件
+
+### 保存确认对话框
+
+关闭 dirty 标签时使用 QMessageBox：
+- 标题为 "Save Changes?"
+- 文本为 "File '{filename}' has unsaved changes."
+- 三个按钮：Save（Default）、Don't Save、Cancel
+
+退出程序时如果有多个 dirty 标签，逐个弹出确认（不使用 "Save All" 批量按钮，保持简单）。
+
+## DPI 处理
+
+- `QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)` 启用高 DPI 缩放
+- 所有固定尺寸值（如行号区域宽度、Splitter 初始尺寸等）乘以 DPI factor
+- DPI factor 通过 `QScreen.logicalDotsPerInch() / 96.0` 计算
+- 字号由 Qt 的 DPI 缩放自动处理，无需手动乘 DPI factor
+- 状态栏、Toolbar 按钮等默认尺寸由 Qt 自动缩放
+
+## 主程序入口
+
+```python
+def main():
+    app = QApplication(sys.argv)
+    app.setAttribute(Qt.AA_EnableHighDpiScaling)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+```
+
+窗口默认大小 1000x650，首次启动居中显示。
+
+## 编码风格注意
+
+遵循 AGENTS.md 中的编码规范：
+- `def method (self, arg)` — 参数括号前有空格
+- `arg:QWidget` — 类型注解紧凑格式
+- 字符串优先单引号
+- 成功返回 0，失败返回 -1/-2
+- Python 3.8 兼容（无 walrus operator、无 str.removeprefix 等）
