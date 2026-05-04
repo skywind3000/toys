@@ -496,8 +496,24 @@ class TabManager:
                     return False
 
         # Disconnect signal before removing
-        tab.editor_doc.modificationChanged.disconnect(
-            tab._on_modified_changed)
+        try:
+            tab.editor_doc.modificationChanged.disconnect(
+                tab._on_modified_changed)
+        except (RuntimeError, TypeError):
+            pass
+
+        # Save current tab's widget state if it's not the one being closed
+        if self.current_index >= 0 and self.current_index != index \
+           and self.current_index < len(self.tabs):
+            old_tab = self.tabs[self.current_index]
+            mw = self.main_window
+            old_tab.cursor = mw.editor.textCursor()
+            old_tab.scroll_pos = mw.editor.verticalScrollBar().value()
+            old_tab.input_cursor = mw.input_panel.textCursor()
+            old_tab.input_scroll = mw.input_panel.verticalScrollBar().value()
+
+        # Mark no active tab so switch_tab won't try to save old state
+        self.current_index = -1
 
         # Block currentChanged during tabbar manipulation
         self.main_window._tab_switching = True
@@ -510,13 +526,8 @@ class TabManager:
             self.current_index = -1
             self.main_window._enter_zero_tab_state()
         else:
-            if self.current_index > index:
-                self.current_index -= 1
-            elif self.current_index == index:
-                self.current_index = min(index, len(self.tabs) - 1)
-            self.current_index = max(0, min(
-                self.current_index, len(self.tabs) - 1))
-            self.switch_tab(self.current_index)
+            new_index = min(index, len(self.tabs) - 1)
+            self.switch_tab(new_index)
         return True
 
     def switch_tab (self, index:int):
@@ -897,20 +908,17 @@ class MainWindow (QMainWindow):
             'C++ Files (*.cpp *.c);;All Files (*)')
         if not path:
             return
-        content = tab.editor_doc.toPlainText()
-        try:
-            with open(path, 'w', encoding=tab.encoding) as f:
-                f.write(content)
-        except Exception as e:
-            QMessageBox.warning(self, 'Save Error', str(e))
-            return
+        old_path = tab.file_path
+        old_is_new = tab.is_new
         tab.file_path = path
         tab.is_new = False
-        tab.editor_doc.setModified(False)
+        result = self._save_tab_data(tab)
+        if result < 0:
+            # Rollback on failure
+            tab.file_path = old_path
+            tab.is_new = old_is_new
+            return
         self._last_file_dir = os.path.dirname(path)
-        self._update_all_tab_names()
-        self.status_message.setText(
-            'Saved: {}'.format(os.path.basename(path)))
 
     def _action_close (self):
         tab = self.tab_manager.get_current()
@@ -1048,6 +1056,13 @@ class MainWindow (QMainWindow):
                     if result < 0:
                         event.ignore()
                         return
+        # Disconnect all signals before Qt destruction
+        for tab in self.tab_manager.tabs:
+            try:
+                tab.editor_doc.modificationChanged.disconnect(
+                    tab._on_modified_changed)
+            except RuntimeError:
+                pass
         event.accept()
 
 

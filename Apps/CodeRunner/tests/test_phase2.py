@@ -12,6 +12,7 @@ import sys
 import os
 import unittest
 import tempfile
+from unittest.mock import patch
 
 # Force offscreen platform so tests run without display
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -414,6 +415,169 @@ class TestSettingsPhase2 (unittest.TestCase):
         self.assertIn('#include <iostream>', Settings.template_text)
         self.assertIn('int main()', Settings.template_text)
         self.assertTrue(Settings.template_text.endswith('\n'))
+
+
+#----------------------------------------------------------------------
+# Mock event for closeEvent testing
+#----------------------------------------------------------------------
+class _MockCloseEvent:
+    """Mock QCloseEvent for testing closeEvent without Qt event system."""
+    def __init__ (self):
+        self._accepted = False
+
+    def accept (self):
+        self._accepted = True
+
+    def ignore (self):
+        self._accepted = False
+
+    def isAccepted (self):
+        return self._accepted
+
+
+#----------------------------------------------------------------------
+# P0: close_tab state corruption fix
+#----------------------------------------------------------------------
+class TestCloseTabStateFix (unittest.TestCase):
+
+    def setUp (self):
+        _init_font_defaults()
+        self.window = MainWindow()
+
+    def test_close_current_tab_preserves_remaining_state (self):
+        """Closing the viewed tab should NOT corrupt other tabs' saved state."""
+        tm = self.window.tab_manager
+        tab_a = TabData(file_path='/tmp/a.cpp', is_new=False,
+                        encoding='UTF-8', content='aaa\nbbb\nccc\n',
+                        dirty_callback=self.window._on_tab_dirty_changed)
+        tab_c = TabData(file_path='/tmp/c.cpp', is_new=False,
+                        encoding='UTF-8', content='line1\nline2\nline3\n',
+                        dirty_callback=self.window._on_tab_dirty_changed)
+        tm.add_tab(tab_a)
+        tm.add_tab(tab_c)
+        # Switch to tab_c and set cursor to a known position
+        tm.switch_tab(1)
+        cursor = self.window.editor.textCursor()
+        cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 2)
+        self.window.editor.setTextCursor(cursor)
+        # Switch to tab_a (saves tab_c's state)
+        tm.switch_tab(0)
+        # Modify cursor in tab_a to a different position
+        cursor = self.window.editor.textCursor()
+        cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 1)
+        self.window.editor.setTextCursor(cursor)
+        # Record tab_c's saved cursor position before close
+        c_cursor_pos_before = tab_c.cursor.position()
+        # Close tab_a (the currently viewed tab)
+        tm.close_tab(0)
+        # tab_c's saved cursor should NOT have been overwritten
+        self.assertEqual(tab_c.cursor.position(), c_cursor_pos_before)
+
+    def test_close_non_current_tab_saves_current_state (self):
+        """Closing a non-current tab should properly save current tab's state."""
+        tm = self.window.tab_manager
+        tab_a = TabData(file_path='/tmp/a.cpp', is_new=False,
+                        encoding='UTF-8', content='aaa\nbbb\n',
+                        dirty_callback=self.window._on_tab_dirty_changed)
+        tab_b = TabData(file_path='/tmp/b.cpp', is_new=False,
+                        encoding='UTF-8', content='xxx\nyyy\nzzz\n',
+                        dirty_callback=self.window._on_tab_dirty_changed)
+        tm.add_tab(tab_a)
+        tm.add_tab(tab_b)
+        # Currently viewing tab_b (index 1)
+        # Set cursor to a known position
+        cursor = self.window.editor.textCursor()
+        cursor.movePosition(QTextCursor.Down, QTextCursor.MoveAnchor, 2)
+        self.window.editor.setTextCursor(cursor)
+        expected_pos = self.window.editor.textCursor().position()
+        # Close tab_a (index 0, not current)
+        tm.close_tab(0)
+        # Verify tab_b's saved cursor matches what we set
+        self.assertEqual(tab_b.cursor.position(), expected_pos)
+
+
+#----------------------------------------------------------------------
+# P1: closeEvent signal disconnect
+#----------------------------------------------------------------------
+class TestCloseEventSignalDisconnect (unittest.TestCase):
+
+    def setUp (self):
+        _init_font_defaults()
+        self.window = MainWindow()
+
+    def test_close_event_disconnects_all_signals (self):
+        """After closeEvent, modificationChanged signals should all be disconnected."""
+        tm = self.window.tab_manager
+        tab1 = TabData(file_path='/tmp/t1.cpp', is_new=False,
+                       encoding='UTF-8', content='c1',
+                       dirty_callback=self.window._on_tab_dirty_changed)
+        tab2 = TabData(file_path='/tmp/t2.cpp', is_new=False,
+                       encoding='UTF-8', content='c2',
+                       dirty_callback=self.window._on_tab_dirty_changed)
+        tm.add_tab(tab1)
+        tm.add_tab(tab2)
+        # Simulate closeEvent with no dirty tabs
+        event = _MockCloseEvent()
+        self.window.closeEvent(event)
+        self.assertTrue(event.isAccepted())
+        # Verify all signals disconnected: disconnect should raise RuntimeError
+        for tab in tm.tabs:
+            with self.assertRaises(TypeError):
+                tab.editor_doc.modificationChanged.disconnect(
+                    tab._on_modified_changed)
+
+
+#----------------------------------------------------------------------
+# P1: Save As delegation to _save_tab_data
+#----------------------------------------------------------------------
+class TestSaveAsDelegation (unittest.TestCase):
+
+    def setUp (self):
+        _init_font_defaults()
+        self.window = MainWindow()
+
+    def test_save_as_delegates_to_save (self):
+        """Save As delegates file writing to _save_tab_data."""
+        tm = self.window.tab_manager
+        tab = TabData(is_new=True, encoding='UTF-8',
+                      content='test content',
+                      dirty_callback=self.window._on_tab_dirty_changed)
+        tm.add_tab(tab)
+        with tempfile.NamedTemporaryFile(
+                suffix='.cpp', delete=False) as f:
+            save_path = f.name
+        try:
+            with patch('CodeRunner.QFileDialog.getSaveFileName',
+                       return_value=(save_path, '')):
+                self.window._action_save_as()
+            # Verify file was written by _save_tab_data
+            with open(save_path, 'r', encoding='UTF-8') as f:
+                self.assertEqual(f.read(), 'test content')
+            # Verify tab state updated correctly
+            self.assertFalse(tab.is_new)
+            self.assertEqual(tab.file_path, save_path)
+            self.assertFalse(tab.is_dirty)
+        finally:
+            os.unlink(save_path)
+
+    def test_save_as_rollback_on_write_failure (self):
+        """Save As should rollback tab state if _save_tab_data fails."""
+        tm = self.window.tab_manager
+        tab = TabData(is_new=True, encoding='UTF-8', content='test',
+                      dirty_callback=self.window._on_tab_dirty_changed)
+        tm.add_tab(tab)
+        old_path = tab.file_path
+        old_is_new = tab.is_new
+        # Use a path under a nonexistent directory to force write failure
+        bad_path = os.path.join(tempfile.gettempdir(),
+                                'nonexistent_dir_42', 'test.cpp')
+        with patch('CodeRunner.QFileDialog.getSaveFileName',
+                   return_value=(bad_path, '')):
+            with patch('CodeRunner.QMessageBox.warning'):
+                self.window._action_save_as()
+        # Verify rollback: tab state unchanged
+        self.assertEqual(tab.file_path, old_path)
+        self.assertEqual(tab.is_new, old_is_new)
 
 
 if __name__ == '__main__':
