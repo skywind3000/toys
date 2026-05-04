@@ -13,7 +13,7 @@ import os
 import math
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
-    QPlainTextEdit, QTextEdit, QLabel, QWidget, QAction,
+    QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt, QSize, QPointF, QTimer
@@ -961,7 +961,7 @@ class MainWindow (QMainWindow):
             try:
                 with open(path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
-            except Exception as e:
+            except (IOError, OSError) as e:
                 QMessageBox.warning(self, 'Save Error', str(e))
                 return -2
             tab.file_path = path
@@ -972,7 +972,7 @@ class MainWindow (QMainWindow):
             try:
                 with open(tab.file_path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
-            except Exception as e:
+            except (IOError, OSError) as e:
                 QMessageBox.warning(self, 'Save Error', str(e))
                 return -2
 
