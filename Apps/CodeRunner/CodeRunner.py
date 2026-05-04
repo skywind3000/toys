@@ -676,7 +676,7 @@ class CodeEditor (QTextEdit):
         return space
 
     def _update_line_number_area_width (self):
-        width = self._line_number_width()
+        width = self._line_number_width() if self.line_number_area.isVisible() else 0
         margins = self.viewportMargins()
         self.setViewportMargins(
             width, margins.top(), margins.right(), margins.bottom())
@@ -1182,6 +1182,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setDocument(self.empty_input_doc)
         self.output_panel.setDocument(self.empty_output_doc)
         self.editor.setEnabled(False)
+        self.editor.line_number_area.hide()
         self.input_section.setEnabled(False)
         self.output_section.setEnabled(False)
         self.status_info.setText('')
@@ -1189,6 +1190,7 @@ class MainWindow (QMainWindow):
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
+        self.editor.line_number_area.show()
         self.input_section.setEnabled(True)
         self.output_section.setEnabled(True)
 
