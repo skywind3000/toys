@@ -35,8 +35,8 @@ StatusLine (QStatusBar)
 | EncodingManager | object | 编码检测、编译标志生成、I/O 编码转换 |
 | Settings | object | 配置数据，JSON 读写 |
 | SettingsDialog | QDialog | 设置面板（三页 Tab） |
-| FindDialog | QDialog | 模态查找对话框 |
-| ReplaceDialog | QDialog | 模态替换对话框 |
+| FindDialog | QDialog | 非模态查找对话框 |
+| ReplaceDialog | QDialog | 非模态替换对话框 |
 
 ## 数据模型
 
@@ -78,6 +78,7 @@ class TabManager:
 
 - 关闭最后一个标签后 `current_index = -1`，MainArea 显示为空（允许空窗口状态）
 - 切换到 -1（空状态）时清空所有 Widget 内容
+- **Switch Tab 快捷键**：Alt+1 ~ Alt+9 切换到第 1~9 个标签，Alt+0 切换到第 10 个标签。索引超出当前标签数量时忽略。通过 `QShortcut` 或 `QAction` 绑定 `Alt+数字` 快捷键，回调调用 `switch_tab(N-1)`
 
 ### Settings
 
@@ -94,10 +95,11 @@ class Settings:
     editor_font_size: int       # 编辑器字号，默认 11
     io_font_family: str         # IO 面板字体，默认 'Consolas'
     io_font_size: int           # IO 面板字号，默认 11
+    bracket_completion: bool    # 括号补全开关，默认 True
     template_text: str          # 新建模板内容
 ```
 
-- 修改 `compiler_flags` 或 `env_vars` 时，记录当前时间戳到 `compiler_mtime`，供重编译判断使用
+- 修改 `compiler_path`、`compiler_flags` 或 `env_vars` 时，记录当前时间戳到 `compiler_mtime`，供重编译判断使用（`compiler_path` 变更意味着使用不同编译器，旧产物需要重编译；`env_vars` 变更可能影响编译器搜索路径等行为，属于刻意扩展的安全策略）
 - `env_vars` 的值中 `$VAR_NAME` 语法在运行时展开为实际环境变量值
 
 ### Settings JSON 格式
@@ -113,6 +115,7 @@ class Settings:
     "editor_font_size": 11,
     "io_font_family": "Consolas",
     "io_font_size": 11,
+    "bracket_completion": true,
     "template_text": "#include <iostream>\n..."
 }
 ```
@@ -250,6 +253,7 @@ class ProcessManager(QObject):
     process: QProcess         # 当前活跃的 QProcess（编译或运行）
     busy: bool                # True = 正在编译或运行
     mode: str                 # 'compile' / 'run' / None
+    target_tab: TabData       # 发起本次操作的标签页引用，输出路由目标
 
     signals:
         compile_finished(exit_code, stderr_text)
@@ -259,7 +263,7 @@ class ProcessManager(QObject):
 ```
 
 **Test 流程**：
-1. MainWindow 调用 `save_if_dirty()`（见文件操作章节）
+1. MainWindow 调用 `save_if_dirty()`（见文件操作章节）。如果返回失败（用户取消了保存对话框），则终止整个 Test 流程，不继续编译和运行
 2. EncodingManager 生成编译命令（见编码章节）
 3. 判断是否需要重编译：exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime → 需要重编译
 4. 如需重编译：ProcessManager 启动 QProcess 执行编译命令，等待 compile_finished 信号
@@ -272,24 +276,58 @@ class ProcessManager(QObject):
    - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）
    - 进程结束时：显示退出状态行（灰色），返回码非 0 标红色 Runtime Error
    - 运行超时：QTimer 计时，到期后 kill 进程，OutputPanel 末尾追加红色超时信息
-   - 内存占用：如果 `psutil` 可用，在进程启动后尝试读取 `psutil.Process(pid).memory_info().peak_wss`（Windows）或 `peak_rss`（Linux），进程结束后追加到退出状态行
+   - 内存占用：如果 `psutil` 可用，进程启动后启动一个 QTimer（间隔约 100ms）定期轮询 `psutil.Process(pid).memory_info()`，记录 `rss`（Linux/macOS）或 `rss`（Windows）的峰值到局部变量 `peak_memory`。每次轮询用 try/except 捕获 `NoSuchProcess`（进程已结束时忽略）。进程结束时停止 QTimer，将 `peak_memory` 追加到退出状态行（如 "exit with code 0 in 0.015s, 1.2MB"）。此方案不依赖进程结束时仍然存活，是最可靠的采集方式
+
+**输出路由（跨标签切换场景）**：
+- 启动 Test/Build 时，ProcessManager 记录 `target_tab` 为发起操作的 TabData 引用
+- stdout/stderr 数据到达时，始终写入 `target_tab.output_html`，而非"当前可见标签"
+- 如果 `target_tab` 是当前活跃标签，同步更新可见 OutputPanel Widget；否则仅更新 TabData 缓冲，用户切换回该标签时自动显示
+- 进程结束信号、超时信号同理——状态行和错误信息写入 `target_tab.output_html`
+- 状态栏消息（左侧 Message）仍然实时更新，不受标签切换影响
 
 **Run 流程**：
-1. MainWindow 调用 `save_if_dirty()`
+1. MainWindow 调用 `save_if_dirty()`，失败则终止 Run 流程
 2. 同 Test 步骤 2-3 判断是否重编译
 3. 如需重编译：编译（同 Test 步骤 4）
 4. 编译成功后：启动外部终端窗口运行 exe
-   - Windows：生成临时 .bat 文件（`cd /d <work_dir> && <exe_path> & pause`），用 `QProcess.startDetached('cmd', ['/c', 'start', '', bat_path])` 启动
+   - Windows：使用固定批处理 + 环境变量方案（详见下方"Run 外部终端实现"）
    - Linux/macOS：`QProcess.startDetached('xterm', ['-e', exe_path])`，或检测可用终端模拟器
 5. startDetached 成功后立即标记 Run 完成，busy 状态解除
 
+**Run 外部终端实现（Windows）**：
+
+使用固定路径 `%TEMP%\coderunner.cmd` 作为启动批处理，内容固定不变：
+
+```batch
+@echo off
+call %CR_COMMAND%
+set CR_EXITCODE=%ERRORLEVEL%
+call %CR_PAUSE%
+exit %CR_EXITCODE%
+```
+
+变化部分通过环境变量传入：
+- `CR_COMMAND`：要运行的 exe 完整路径（如 `"C:\Users\xxx\test.exe"`）
+- `CR_PAUSE`：程序结束后的行为，正常 Run 设为 `pause`（显示"Press any key..."），不需要暂停时设为 `rem`（无操作）
+
+**设计要点**：
+- **固定文件名**：避免每次 Run 生成新临时文件，崩溃/死机后不会残留大量垃圾文件
+- **固定内容**：多个 Run 并发时，即使互相覆盖写入也写入相同内容，消除批处理"边运行边读取"导致的竞态破坏
+- **环境变量隔离**：每个 `cmd.exe` 子进程在创建时获得环境变量的独立副本，多个 Run 之间天然隔离
+
+**启动流程**：
+1. 检查 `%TEMP%\coderunner.cmd` 是否存在：不存在则创建；已存在则读取内容与预期对比，内容一致时跳过写入，不一致时才覆盖重写。避免每次 Run 都触发文件写操作，减少与正在运行的批处理之间的临界情况
+2. 临时修改 `os.environ`：设置 `CR_COMMAND` 为 exe 路径，`CR_PAUSE` 为 `pause`
+3. 调用 `QProcess.startDetached('cmd', ['/c', 'start', '', '/D', work_dir, bat_path])`（startDetached 同步返回，子进程创建完毕即拿到环境副本）
+4. 还原 `os.environ`（删除 `CR_COMMAND` 和 `CR_PAUSE`）
+
 **Build 流程**：
-1. MainWindow 调用 `save_if_dirty()`
+1. MainWindow 调用 `save_if_dirty()`，失败则终止 Build 流程
 2. 强制重新编译（不判断是否需要）
 3. 结果显示到 OutputPanel：成功灰色 "Build OK in X.XXXs"，失败红色错误信息
 
 **Busy 状态控制**：
-- busy 为 True 时：Build/Test/Run 不启动新进程，弹出 QMessageBox 提示 "程序正在运行，请等待运行结束或 Stop 后再使用"
+- busy 为 True 时：Build/Test/Run 不启动新进程，弹出 QMessageBox 提示 "A process is currently running. Please wait or press Stop before starting a new operation."
 - Stop 按钮调用 `process.kill()`，终止当前编译或运行进程
 - Run（外部终端）不占用 busy 状态
 
@@ -363,7 +401,7 @@ def build_flags(source_encoding):
 **Recent Files**：
 - 存储在 window.json 的 recent_files 列表
 - File 菜单下 Recent Files 子菜单（QMenu），最多 10 条
-- 点击已删除文件时弹出 QMessageBox 提示"文件不存在"
+- 点击已删除文件时弹出 QMessageBox 提示 "File not found"
 
 ## 对话框
 
@@ -395,25 +433,31 @@ def build_flags(source_encoding):
 - QPlainTextEdit，多行编辑模板文本
 - 右侧 "Reset to Default" 按钮，恢复默认 C++ 骨架
 
-OK 按钮点击后：验证数据 → 更新 Settings 对象 → 写入 JSON → 如果 compiler_flags 或 env_vars 变化则更新 compiler_mtime
+OK 按钮点击后：验证数据 → 更新 Settings 对象 → 写入 JSON → 如果 compiler_path、compiler_flags 或 env_vars 变化则更新 compiler_mtime
 
 ### FindDialog
 
-模态 QDialog，参考 Dev-C++ 风格：
+非模态 QDialog（用户可在查找窗口打开的同时编辑代码），参考 Windows 记事本 / Dev-C++ 风格：
 - QLineEdit 输入查找文本
 - QCheckBox 大小写敏感
-- 向上 / 向下 QRadioButton
-- Find Next / Find Prev / Close 三个按钮
+- 向上 / 向下 QRadioButton（控制搜索方向，默认向下）
+- Find Next / Close 两个按钮（Find Next 按当前方向搜索）
 - 查找目标为 CodeEditor（QPlainTextEdit），使用 `QTextDocument.find()` 方法
 - 未找到时状态栏提示 "Not found"
+- 对话框关闭时不销毁，隐藏即可（`hide()`），再次打开时保留上次输入内容
 
 ### ReplaceDialog
 
-模态 QDialog，在 FindDialog 基础增加：
+非模态 QDialog，在 FindDialog 基础增加：
 - QLineEdit 输入替换文本
 - Replace / Replace All 按钮
 - Replace 替换当前选中并跳到下一个匹配
 - Replace All 替换全部匹配
+- 同样非模态，关闭时隐藏保留状态
+
+### GotoLineDialog
+
+使用 `QInputDialog.getInt()` 弹出简易对话框，输入目标行号（范围 1 ~ 当前文档总行数）。确认后将 CodeEditor 光标移动到目标行首，并滚动视图使目标行居中可见。快捷键 Ctrl+G。
 
 ### 编码选择菜单
 
@@ -442,8 +486,8 @@ OK 按钮点击后：验证数据 → 更新 Settings 对象 → 写入 JSON →
 
 ```python
 def main():
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
-    app.setAttribute(Qt.AA_EnableHighDpiScaling)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
