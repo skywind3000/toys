@@ -9,13 +9,17 @@
 #
 #======================================================================
 import sys
+import math
 from PyQt5.QtWidgets import (
-    QMainWindow, QApplication, QTabBar, QSplitter,
+    QMainWindow, QApplication, QTabBar, QSplitter, QStyle,
     QPlainTextEdit, QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout
 )
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QKeySequence, QFontDatabase
+from PyQt5.QtCore import Qt, QSize, QPointF
+from PyQt5.QtGui import (
+    QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
+    QColor, QPen, QBrush, QPolygonF
+)
 
 
 #----------------------------------------------------------------------
@@ -48,7 +52,7 @@ def _init_font_defaults () -> None:
 
 
 def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
-    """Wrap a text edit widget with a label header (INPUT: or OUTPUT:)."""
+    """Wrap a text edit widget with a label header (INPUT or OUTPUT)."""
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
@@ -64,6 +68,162 @@ def _make_io_section (label_text:str, text_edit:QWidget) -> QWidget:
     layout.addWidget(text_edit, 1)
     container._section_label = label
     return container
+
+
+#----------------------------------------------------------------------
+# Toolbar icon generation
+#----------------------------------------------------------------------
+# Mapping: button name → QStyle.StandardPixmap (exact or close match)
+_STYLE_ICON_MAP = {
+    'new':    QStyle.SP_FileIcon,              # close: file icon = new file
+    'save':   QStyle.SP_DialogSaveButton,      # exact
+    'open':   QStyle.SP_DirOpenIcon,           # exact: open folder
+}
+
+_ICON_SIZE = 24
+
+# Custom colors for semantic toolbar icons
+_COLOR_RUN  = QColor(0, 160, 0)      # green
+_COLOR_TEST = QColor(50, 100, 220)   # blue
+_COLOR_STOP = QColor(220, 50, 50)    # red
+
+
+def _generate_test_icon () -> QIcon:
+    """Generate a Test icon: Erlenmeyer flask shape (experiment/test), blue."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = _COLOR_TEST
+    p.setPen(QPen(color, 1.2))
+    p.setBrush(QBrush(color))
+    # Flask: narrow neck + wider conical body
+    # Align bottom with Stop icon (margin=4 → bottom = size - 4)
+    body_bottom = size - 4.0
+    neck_w = 5.0
+    body_w = 15.0
+    body_h = 11.0
+    neck_h = 5.0
+    cx = size / 2.0
+    neck_left = cx - neck_w / 2.0
+    neck_right = cx + neck_w / 2.0
+    neck_top = body_bottom - body_h - neck_h
+    neck_bottom = body_bottom - body_h
+    body_left = cx - body_w / 2.0
+    body_right = cx + body_w / 2.0
+    polygon = QPolygonF([
+        QPointF(neck_left, neck_top),
+        QPointF(neck_right, neck_top),
+        QPointF(neck_right, neck_bottom),
+        QPointF(body_right, body_bottom),
+        QPointF(body_left, body_bottom),
+        QPointF(neck_left, neck_bottom),
+    ])
+    p.drawPolygon(polygon)
+    # Liquid line inside the body
+    p.setPen(QPen(color, 1.5))
+    liquid_y = body_bottom - 4.0
+    liquid_left = body_left + 2.5
+    liquid_right = body_right - 2.5
+    p.drawLine(QPointF(liquid_left, liquid_y), QPointF(liquid_right, liquid_y))
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_settings_icon () -> QIcon:
+    """Generate a Settings icon: simple gear/cog shape."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = QApplication.palette().windowText().color()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    cx = cy = size / 2.0
+    body_r = 5.5
+    tooth_len = 3.5
+    tooth_w = 3.5
+    num_teeth = 6
+    # Draw teeth as small rounded rectangles around the circle
+    for i in range(num_teeth):
+        angle = 2.0 * math.pi * i / num_teeth - math.pi / 2.0
+        tx = cx + (body_r + tooth_len / 2.0) * math.cos(angle)
+        ty = cy + (body_r + tooth_len / 2.0) * math.sin(angle)
+        p.save()
+        p.translate(tx, ty)
+        p.rotate(math.degrees(angle) + 90.0)
+        p.drawRoundedRect(int(-tooth_w / 2), int(-tooth_len / 2),
+                          int(tooth_w), int(tooth_len), 1, 1)
+        p.restore()
+    # Draw gear body (filled circle)
+    p.setBrush(QBrush(color))
+    p.drawEllipse(QPointF(cx, cy), body_r, body_r)
+    # Draw center hole (small circle, transparent to show through)
+    p.setCompositionMode(QPainter.CompositionMode_Clear)
+    p.drawEllipse(QPointF(cx, cy), 3.0, 3.0)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_run_icon () -> QIcon:
+    """Generate a Run icon: play triangle, green."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = _COLOR_RUN
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    # Play triangle pointing right, centered vertically
+    margin = 3.0
+    tri_top = margin
+    tri_bottom = size - margin
+    tri_left = margin
+    tri_right = size - margin
+    mid_y = (tri_top + tri_bottom) / 2.0
+    polygon = QPolygonF([
+        QPointF(tri_left, tri_top),
+        QPointF(tri_right, mid_y),
+        QPointF(tri_left, tri_bottom),
+    ])
+    p.drawPolygon(polygon)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_stop_icon () -> QIcon:
+    """Generate a Stop icon: filled square, red."""
+    size = _ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.Antialiasing)
+    color = _COLOR_STOP
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    margin = 4
+    p.drawRoundedRect(margin, margin, size - 2 * margin, size - 2 * margin, 2.0, 2.0)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _create_toolbar_icons () -> dict:
+    """Create toolbar icons using QStyle standard pixmaps where available,
+    and QPainter-generated icons for the rest."""
+    style = QApplication.style()
+    icons = {}
+    # QStyle standard icons (exact or close matches)
+    for name, sp in _STYLE_ICON_MAP.items():
+        icons[name] = style.standardIcon(sp)
+    # Generated icons (colored + no suitable QStyle match)
+    icons['run'] = _generate_run_icon()
+    icons['test'] = _generate_test_icon()
+    icons['stop'] = _generate_stop_icon()
+    icons['settings'] = _generate_settings_icon()
+    return icons
 
 
 #----------------------------------------------------------------------
@@ -129,6 +289,9 @@ class MainWindow (QMainWindow):
             y = (geo.height() - self.height()) // 2 + geo.y()
             self.move(x, y)
 
+        # Create icons
+        self.icons = _create_toolbar_icons()
+
         # Create editor and IO panels
         self.editor = QPlainTextEdit()
         self.input_panel = InputPanel()
@@ -139,7 +302,7 @@ class MainWindow (QMainWindow):
         self.empty_input_doc = self.input_panel.document()
         self.empty_output_doc = self.output_panel.document()
 
-        # Build UI in correct order: splitters -> tabbar -> layout -> menu/toolbar/status
+        # Build UI in correct order
         self.__build_menubar()
         self.__build_toolbar()
         self.__build_mainarea()
@@ -161,41 +324,41 @@ class MainWindow (QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
 
-        self.act_new = QAction('New', self)
+        self.act_new = QAction(self.icons['new'], 'New', self)
         self.act_new.setShortcut(QKeySequence('Ctrl+N'))
         self.act_new.setToolTip('New (Ctrl+N)')
         toolbar.addAction(self.act_new)
 
-        self.act_save = QAction('Save', self)
+        self.act_save = QAction(self.icons['save'], 'Save', self)
         self.act_save.setShortcut(QKeySequence('Ctrl+S'))
         self.act_save.setToolTip('Save (Ctrl+S)')
         toolbar.addAction(self.act_save)
 
-        self.act_open = QAction('Open', self)
+        self.act_open = QAction(self.icons['open'], 'Open', self)
         self.act_open.setShortcut(QKeySequence('Ctrl+O'))
         self.act_open.setToolTip('Open (Ctrl+O)')
         toolbar.addAction(self.act_open)
 
         toolbar.addSeparator()
 
-        self.act_run = QAction('Run', self)
+        self.act_run = QAction(self.icons['run'], 'Run', self)
         self.act_run.setShortcut(QKeySequence('F5'))
         self.act_run.setToolTip('Run (F5)')
         toolbar.addAction(self.act_run)
 
-        self.act_test = QAction('Test', self)
+        self.act_test = QAction(self.icons['test'], 'Test', self)
         self.act_test.setShortcut(QKeySequence('F9'))
         self.act_test.setToolTip('Test (F9)')
         toolbar.addAction(self.act_test)
 
-        self.act_stop = QAction('Stop', self)
+        self.act_stop = QAction(self.icons['stop'], 'Stop', self)
         self.act_stop.setShortcut(QKeySequence('F7'))
         self.act_stop.setToolTip('Stop (F7)')
         toolbar.addAction(self.act_stop)
 
         toolbar.addSeparator()
 
-        self.act_settings = QAction('Settings', self)
+        self.act_settings = QAction(self.icons['settings'], 'Settings', self)
         self.act_settings.setToolTip('Settings')
         toolbar.addAction(self.act_settings)
 
@@ -260,6 +423,7 @@ class MainWindow (QMainWindow):
 def main ():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
     _init_font_defaults()
     window = MainWindow()
     window.show()
