@@ -378,6 +378,7 @@ class Settings:
     io_font_family = ''      # set by _init_font_defaults()
     io_font_size = 11
     bracket_completion = True
+    word_wrap = False
     template_text = (
         '#include <iostream>\n'
         '#include <cstdio>\n'
@@ -605,6 +606,7 @@ class CodeEditor (QTextEdit):
         super().__init__(parent)
         self.setAcceptRichText(False)
         self.setTabStopWidth(self.fontMetrics().width('    '))
+        self.setLineWrapMode(QTextEdit.NoWrap)
 
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
@@ -838,6 +840,7 @@ class MainWindow (QMainWindow):
             self._on_tabbar_current_changed)
         self.tabbar.tabCloseRequested.connect(
             self._on_tab_close_requested)
+        self.tabbar.tabMoved.connect(self._on_tab_moved)
 
         # Editor cursor position → update status bar
         self.editor.cursorPositionChanged.connect(
@@ -985,6 +988,16 @@ class MainWindow (QMainWindow):
 
     def _on_tab_close_requested (self, index:int):
         self.tab_manager.close_tab(index)
+
+    def _on_tab_moved (self, from_index:int, to_index:int):
+        # Reorder TabManager.tabs to match the new tabbar visual order
+        tabs = self.tab_manager.tabs
+        tab = tabs.pop(from_index)
+        tabs.insert(to_index, tab)
+        # Update current_index to track the current tab's new position
+        # After tabMoved, QTabBar.currentIndex already reflects the new position,
+        # so we just sync our current_index with it
+        self.tab_manager.current_index = self.tabbar.currentIndex()
 
     def _on_tab_dirty_changed (self, tab:TabData):
         for i, t in enumerate(self.tab_manager.tabs):
