@@ -93,7 +93,9 @@ class TabManager:
 
 **标签切换（setDocument 模式）**：
 
-`switch_tab` 通过交换 QTextDocument 实现标签切换，不销毁/重建文本内容。光标和滚动条位置需手动保存/恢复（它们属于 Widget 而非 Document）。使用 `setUpdatesEnabled(False)` 冻结重绘，避免多步操作产生中间帧闪烁。示例流程：
+`switch_tab` 通过交换 QTextDocument 实现标签切换，不销毁/重建文本内容。光标和滚动条位置需手动保存/恢复（它们属于 Widget 而非 Document）。使用 `setUpdatesEnabled(False)` 冻结重绘，避免多步操作产生中间帧闪烁。
+
+**性能优化：延迟光标恢复**。QTextEdit.setTextCursor() 会触发 QTextDocumentLayout 对全文档做布局计算，7500 行文件约需 1.2 秒。将编辑器光标/滚动位置的恢复延迟到下一个事件循环迭代（`QTimer.singleShot(0)`），使文档内容先瞬间显示（~3ms），光标随后恢复。IO 面板的光标恢复不延迟（文档小，无性能问题）。延迟恢复回调检查标签索引是否仍是当前标签，防止快速切换时的竞态。示例流程：
 
 ```python
 # 保存旧标签的光标和滚动条状态
@@ -105,21 +107,24 @@ old_tab.input_scroll = input_panel.verticalScrollBar().value()
 # 冻结重绘
 editor.setUpdatesEnabled(False)
 input_panel.setUpdatesEnabled(False)
+output_panel.setUpdatesEnabled(False)
 
-# 交换文档（undo/redo 栈、高亮状态自动跟随 document）
+# 交换文档（undo/redo 栈自动跟随 document）
 editor.setDocument(new_tab.editor_doc)
 input_panel.setDocument(new_tab.input_doc)
 output_panel.setDocument(new_tab.output_doc)
 
-# 恢复新标签的光标和滚动条状态
-editor.setTextCursor(new_tab.cursor)
-editor.verticalScrollBar().setValue(new_tab.scroll_pos)
+# 恢复 IO 光标（小文档，无延迟）
 input_panel.setTextCursor(new_tab.input_cursor)
 input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
 
-# 解冻
+# 解冻 — 文档内容瞬间显示
 editor.setUpdatesEnabled(True)
 input_panel.setUpdatesEnabled(True)
+output_panel.setUpdatesEnabled(True)
+
+# 延迟恢复编辑器光标和滚动条（避免 setTextCursor 的全文档布局开销）
+QTimer.singleShot(0, _restore_deferred_cursor)
 ```
 
 注意：`setDocument` 不会触发 `textChanged` 信号，因此不需要 `blockSignals`。但 dirty 状态的 `textChanged` 信号连接需要注意——应连接到 TabData 层的 dirty 标记逻辑，而非直接连接到 Widget。具体做法：每个 TabData 的 editor_doc 创建时连接 `editor_doc.contentsChanged` 信号到该 TabData 的 dirty 标记方法，信号跟随 document 生命周期，不受 Widget 切换影响。

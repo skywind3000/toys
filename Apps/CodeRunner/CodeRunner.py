@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QSize, QPointF
+from PyQt5.QtCore import Qt, QSize, QPointF, QTimer
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
     QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
@@ -574,9 +574,7 @@ class TabManager:
         mw.input_panel.setDocument(new_tab.input_doc)
         mw.output_panel.setDocument(new_tab.output_doc)
 
-        # Restore cursor and scroll state
-        mw.editor.setTextCursor(new_tab.cursor)
-        mw.editor.verticalScrollBar().setValue(new_tab.scroll_pos)
+        # Restore IO cursors (fast, small documents)
         mw.input_panel.setTextCursor(new_tab.input_cursor)
         mw.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
 
@@ -587,7 +585,7 @@ class TabManager:
         font.setPointSize(zoom_size)
         mw.editor.setFont(font)
 
-        # Unfreeze
+        # Unfreeze — document content displayed immediately
         mw.editor.setUpdatesEnabled(True)
         mw.input_panel.setUpdatesEnabled(True)
         mw.output_panel.setUpdatesEnabled(True)
@@ -597,8 +595,15 @@ class TabManager:
         mw.tabbar.setCurrentIndex(index)
         mw._tab_switching = False
 
-        # Update status bar
+        # Update status bar (with default cursor for now)
         self._update_status_info(new_tab)
+
+        # Deferred editor cursor/scroll restore: setTextCursor on
+        # QTextEdit triggers full-document layout (~1s per 7500 blocks);
+        # deferring to next event loop iteration allows instant content
+        # display while the layout calculation runs afterward
+        mw._deferred_restore_tab = index
+        QTimer.singleShot(0, mw._restore_deferred_cursor)
 
     def get_current (self) -> TabData:
         if self.current_index < 0 or self.current_index >= len(self.tabs):
@@ -721,6 +726,7 @@ class MainWindow (QMainWindow):
         self.tab_manager = TabManager(self)
         self._tab_switching = False
         self._last_file_dir = ''
+        self._deferred_restore_tab = -1
 
         # Create actions first (needed by menubar and toolbar)
         self.__create_actions()
@@ -1047,11 +1053,28 @@ class MainWindow (QMainWindow):
         self.input_section.setEnabled(False)
         self.output_section.setEnabled(False)
         self.status_info.setText('')
+        self._deferred_restore_tab = -1
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
         self.input_section.setEnabled(True)
         self.output_section.setEnabled(True)
+
+    def _restore_deferred_cursor (self):
+        """Deferred cursor/scroll restore after switch_tab.
+        setTextCursor on QTextEdit triggers full-document layout which
+        can take ~1s for large files; deferring it allows instant
+        content display while the layout runs afterward."""
+        index = self._deferred_restore_tab
+        if index < 0 or index != self.tab_manager.current_index:
+            return
+        if index >= len(self.tab_manager.tabs):
+            return
+        tab = self.tab_manager.tabs[index]
+        self.editor.setTextCursor(tab.cursor)
+        self.editor.verticalScrollBar().setValue(tab.scroll_pos)
+        self._deferred_restore_tab = -1
+        self.tab_manager._update_status_info(tab)
 
     #----- Window close -----
 
