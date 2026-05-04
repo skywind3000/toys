@@ -172,8 +172,8 @@ class MainWindow (QMainWindow):
 
     def __build_mainarea (self):
         # Wrap IO panels with label headers
-        self.input_section = _make_io_section('INPUT:', self.input_panel)
-        self.output_section = _make_io_section('OUTPUT:', self.output_panel)
+        self.input_section = _make_io_section('INPUT', self.input_panel)
+        self.output_section = _make_io_section('OUTPUT', self.output_panel)
 
         # Vertical splitter: InputSection (top) / OutputSection (bottom)
         self.v_splitter = QSplitter(Qt.Vertical)

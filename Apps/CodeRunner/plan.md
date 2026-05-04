@@ -22,15 +22,15 @@
 
 **实现的类**：
 - MainWindow（QMainWindow）：五大区域布局搭建
-- InputPanel（QPlainTextEdit）：占位，外层 QWidget + QLabel "INPUT:" 包装
-- OutputPanel（QTextEdit）：占位，setReadOnly(True)，外层 QWidget + QLabel "OUTPUT:" 包装
+- InputPanel（QPlainTextEdit）：占位，外层 QWidget + QLabel "INPUT" 包装
+- OutputPanel（QTextEdit）：占位，setReadOnly(True)，外层 QWidget + QLabel "OUTPUT" 包装
 - Settings（object）：仅默认值，不读写文件
 
 **具体内容**：
 - MenuBar：四个菜单（File / Edit / Run / View），菜单项为空占位
 - Toolbar：七个按钮（New / Save / Open / Run / Test / Stop / Settings），点击无响应
 - TabBar（QTabBar）：空状态，无标签页
-- MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputSection: QLabel "INPUT:" + InputPanel / 下 OutputSection: QLabel "OUTPUT:" + OutputPanel）），默认 1:1
+- MainArea：水平 QSplitter（左 CodeEditor 占位 / 右垂直 QSplitter（上 InputSection: QLabel "INPUT" + InputPanel / 下 OutputSection: QLabel "OUTPUT" + OutputPanel）），默认 1:1
 - StatusBar：左 QLabel（空消息）+ 右 QLabel（零标签时清空）
 - DPI：`Qt.AA_EnableHighDpiScaling`
 - 主入口：`def main()`，窗口 1000x650 居中
@@ -281,7 +281,7 @@
 - FindDialog：查找文本、大小写敏感、向上/向下 RadioButton、Find Next / Close，非模态，关闭时隐藏保留状态
 - ReplaceDialog：查找文本 + 替换文本、Replace / Replace All / Close，非模态
 - GotoLineDialog：使用 QInputDialog.getInt() 输入目标行号，跳转并居中显示（Ctrl+G）
-- Edit 菜单完善：Undo / Redo / Find (Ctrl+F) / Replace (Ctrl+H) / Goto Line (Ctrl+G)
+- Edit 菜单完善：Undo / Redo / Cut / Copy / Paste / Find (Ctrl+F) / Replace (Ctrl+H) / Goto Line (Ctrl+G)
 - View 菜单完善：Zoom In (Ctrl++) / Zoom Out (Ctrl+-)
 - 编码选择菜单：状态栏编码点击 → QMenu（Reopen with Encoding / Save with Encoding）
 - Reopen with Encoding：列出常见编码（UTF-8, GBK, Big5, Shift_JIS, ISO-8859-1），选择后重新加载文件
@@ -298,7 +298,7 @@
 - [ ] Ctrl+F 打开 Find 对话框（非模态，可同时编辑代码），查找功能正常
 - [ ] Ctrl+H 打开 Replace 对话框（非模态），替换/全部替换功能正常
 - [ ] Ctrl+G 弹出 Goto Line 对话框，输入行号后跳转正确
-- [ ] Edit 菜单全部动作可用（Undo, Redo, Find, Replace, Goto Line）
+- [ ] Edit 菜单全部动作可用（Undo, Redo, Cut, Copy, Paste, Find, Replace, Goto Line）
 - [ ] View 菜单 Zoom In / Zoom Out 可用
 - [ ] 状态栏编码标签点击 → 弹出编码选择菜单
 - [ ] Reopen with Encoding 重新加载文件内容
