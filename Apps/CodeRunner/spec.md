@@ -26,9 +26,9 @@ StatusLine (QStatusBar)
 | 类 | 基类 | 职责 |
 |----|------|------|
 | MainWindow | QMainWindow | 主窗口，协调所有组件 |
-| CodeEditor | QPlainTextEdit | 代码编辑器，语法高亮/括号补全/自动缩进/改写模式 |
+| CodeEditor | QTextEdit (setAcceptRichText=False) | 代码编辑器，语法高亮/括号补全/自动缩进/改写模式。因 PyQt5 QPlainTextEdit.setDocument() 不工作，改用 QTextEdit |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮规则 |
-| InputPanel | QPlainTextEdit | 输入面板，纯文本，外层包装 QWidget + QLabel "INPUT" |
+| InputPanel | QTextEdit (setAcceptRichText=False) | 输入面板，纯文本，外层包装 QWidget + QLabel "INPUT"。同 CodeEditor 原因改用 QTextEdit |
 | OutputPanel | QTextEdit | 输出面板，只读，支持多色富文本，外层包装 QWidget + QLabel "OUTPUT" |
 | TabData | object | 单个标签页的全部状态数据 |
 | TabManager | object | 标签页列表管理与切换逻辑 |
@@ -232,7 +232,7 @@ class Settings:
 
 ### CodeEditor
 
-继承 QPlainTextEdit，扩展功能：
+继承 QTextEdit（setAcceptRichText=False），扩展功能：
 
 **行号显示**：使用 QPlainTextEdit 的 `blockCountChanged` / `updateRequest` 信号，在左侧绘制行号区域（参考 Qt Line Number Example）。行号区域宽度按最大行号位数动态调整。
 
@@ -292,7 +292,7 @@ class Settings:
 
 ### InputPanel
 
-继承 QPlainTextEdit，外层用 QWidget + QVBoxLayout 包装，顶部放 QLabel 显示固定文字 "INPUT"：
+继承 QTextEdit（setAcceptRichText=False），外层用 QWidget + QVBoxLayout 包装，顶部放 QLabel 显示固定文字 "INPUT"：
 - QLabel 文字使用小号粗体，与 IO 面板字体一致
 - 无行号显示
 - 字号/字体跟随 Settings.io_font_family / io_font_size

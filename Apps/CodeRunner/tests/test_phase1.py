@@ -129,9 +129,10 @@ class TestMainWindow (unittest.TestCase):
     def test_menu_view_exists (self):
         self.assertIsNotNone(self.window.menu_view)
 
-    def test_menu_file_empty (self):
-        # Phase 1: menu items are empty placeholders
-        self.assertEqual(len(self.window.menu_file.actions()), 0)
+    def test_menu_file_has_items (self):
+        # Phase 2: File menu is populated
+        actions = self.window.menu_file.actions()
+        self.assertGreater(len(actions), 0)
 
     def test_menu_edit_empty (self):
         self.assertEqual(len(self.window.menu_edit.actions()), 0)

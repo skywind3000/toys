@@ -9,16 +9,18 @@
 #
 #======================================================================
 import sys
+import os
 import math
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
     QPlainTextEdit, QTextEdit, QLabel, QWidget, QAction,
-    QVBoxLayout
+    QVBoxLayout, QShortcut, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt, QSize, QPointF
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
-    QColor, QPen, QBrush, QPolygonF
+    QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
+    QTextDocument, QTextCursor
 )
 
 
@@ -334,6 +336,34 @@ def _create_toolbar_icons () -> dict:
 
 
 #----------------------------------------------------------------------
+# File encoding detection
+#----------------------------------------------------------------------
+def _detect_encoding (raw:bytes) -> str:
+    """Detect file encoding: UTF-8 BOM → UTF-8 strict → system encoding."""
+    if raw[:3] == b'\xef\xbb\xbf':
+        return 'UTF-8'
+    try:
+        raw.decode('utf-8', 'strict')
+        return 'UTF-8'
+    except UnicodeDecodeError:
+        pass
+    if sys.platform == 'win32':
+        return 'gbk'
+    return 'utf-8'
+
+
+def _read_file (path:str) -> tuple:
+    """Read file with auto encoding detection. Returns (content, encoding)."""
+    with open(path, 'rb') as f:
+        raw = f.read()
+    encoding = _detect_encoding(raw)
+    if raw[:3] == b'\xef\xbb\xbf':
+        raw = raw[3:]
+    content = raw.decode(encoding, 'replace')
+    return (content, encoding)
+
+
+#----------------------------------------------------------------------
 # Settings
 #----------------------------------------------------------------------
 class Settings:
@@ -359,13 +389,247 @@ class Settings:
 
 
 #----------------------------------------------------------------------
+# CppHighlighter (placeholder for Phase 4)
+#----------------------------------------------------------------------
+class CppHighlighter (QSyntaxHighlighter):
+
+    def __init__ (self, parent:QTextDocument=None):
+        super().__init__(parent)
+
+    def highlightBlock (self, text:str):
+        pass
+
+
+#----------------------------------------------------------------------
+# TabData
+#----------------------------------------------------------------------
+class TabData:
+
+    def __init__ (self, file_path:str=None, is_new:bool=True,
+                  encoding:str='UTF-8', content:str='',
+                  dirty_callback=None):
+        self.file_path = file_path
+        self.is_new = is_new
+        self.is_dirty = is_new
+        self.untitled_number = 0
+        self._dirty_callback = dirty_callback
+
+        self.editor_doc = QTextDocument()
+        self.input_doc = QTextDocument()
+        self.output_doc = QTextDocument()
+
+        self.cursor = QTextCursor(self.editor_doc)
+        self.scroll_pos = 0
+        self.input_cursor = QTextCursor(self.input_doc)
+        self.input_scroll = 0
+
+        self.encoding = encoding
+        self.zoom_font_size = 0
+        self.compiler_mtime = 0
+
+        # Set initial content without triggering modificationChanged
+        self.editor_doc.blockSignals(True)
+        if content:
+            self.editor_doc.setPlainText(content)
+        if not is_new:
+            self.editor_doc.setModified(False)
+        self.editor_doc.blockSignals(False)
+
+        # Attach highlighter (empty rules for now, Phase 4)
+        self.highlighter = CppHighlighter(self.editor_doc)
+
+        # Connect dirty tracking via modificationChanged
+        self.editor_doc.modificationChanged.connect(
+            self._on_modified_changed)
+
+    def _on_modified_changed (self, modified:bool):
+        old_dirty = self.is_dirty
+        self.is_dirty = modified
+        if old_dirty != self.is_dirty and self._dirty_callback:
+            self._dirty_callback(self)
+
+    def tab_name (self) -> str:
+        if self.is_new:
+            name = 'untitled{}'.format(self.untitled_number)
+        else:
+            name = os.path.basename(self.file_path)
+        if self.is_dirty:
+            return '*{}*'.format(name)
+        return name
+
+
+#----------------------------------------------------------------------
+# TabManager
+#----------------------------------------------------------------------
+class TabManager:
+
+    def __init__ (self, main_window):
+        self.tabs = []
+        self.current_index = -1
+        self.untitled_counter = 0
+        self.main_window = main_window
+
+    def add_tab (self, tab:TabData) -> int:
+        if tab.is_new:
+            self.untitled_counter += 1
+            tab.untitled_number = self.untitled_counter
+        self.tabs.append(tab)
+        index = len(self.tabs) - 1
+        name = tab.tab_name()
+        self.main_window.tabbar.addTab(name)
+        self.switch_tab(index)
+        return index
+
+    def close_tab (self, index:int) -> bool:
+        if index < 0 or index >= len(self.tabs):
+            return False
+        tab = self.tabs[index]
+
+        if tab.is_dirty:
+            choice = self.main_window._confirm_close_tab(tab)
+            if choice == 'cancel':
+                return False
+            elif choice == 'save':
+                result = self.main_window._save_tab_data(tab)
+                if result < 0:
+                    return False
+
+        # Disconnect signal before removing
+        tab.editor_doc.modificationChanged.disconnect(
+            tab._on_modified_changed)
+
+        # Block currentChanged during tabbar manipulation
+        self.main_window._tab_switching = True
+        self.main_window.tabbar.removeTab(index)
+        self.main_window._tab_switching = False
+
+        self.tabs.pop(index)
+
+        if len(self.tabs) == 0:
+            self.current_index = -1
+            self.main_window._enter_zero_tab_state()
+        else:
+            if self.current_index > index:
+                self.current_index -= 1
+            elif self.current_index == index:
+                self.current_index = min(index, len(self.tabs) - 1)
+            self.current_index = max(0, min(
+                self.current_index, len(self.tabs) - 1))
+            self.switch_tab(self.current_index)
+        return True
+
+    def switch_tab (self, index:int):
+        if index < 0 or index >= len(self.tabs):
+            return
+        old_index = self.current_index
+        mw = self.main_window
+
+        # Save old tab state
+        if old_index >= 0 and old_index < len(self.tabs):
+            old_tab = self.tabs[old_index]
+            old_tab.cursor = mw.editor.textCursor()
+            old_tab.scroll_pos = mw.editor.verticalScrollBar().value()
+            old_tab.input_cursor = mw.input_panel.textCursor()
+            old_tab.input_scroll = mw.input_panel.verticalScrollBar().value()
+
+        self.current_index = index
+        new_tab = self.tabs[index]
+
+        # Exit zero-tab state if needed
+        if old_index == -1:
+            mw._exit_zero_tab_state()
+
+        # Freeze redraw to prevent flicker
+        mw.editor.setUpdatesEnabled(False)
+        mw.input_panel.setUpdatesEnabled(False)
+        mw.output_panel.setUpdatesEnabled(False)
+
+        # Swap documents
+        mw.editor.setDocument(new_tab.editor_doc)
+        mw.input_panel.setDocument(new_tab.input_doc)
+        mw.output_panel.setDocument(new_tab.output_doc)
+
+        # Restore cursor and scroll state
+        mw.editor.setTextCursor(new_tab.cursor)
+        mw.editor.verticalScrollBar().setValue(new_tab.scroll_pos)
+        mw.input_panel.setTextCursor(new_tab.input_cursor)
+        mw.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
+
+        # Restore zoom font size
+        base_size = Settings.editor_font_size
+        zoom_size = max(6, base_size + new_tab.zoom_font_size)
+        font = mw.editor.font()
+        font.setPointSize(zoom_size)
+        mw.editor.setFont(font)
+
+        # Unfreeze
+        mw.editor.setUpdatesEnabled(True)
+        mw.input_panel.setUpdatesEnabled(True)
+        mw.output_panel.setUpdatesEnabled(True)
+
+        # Update tabbar current index
+        mw._tab_switching = True
+        mw.tabbar.setCurrentIndex(index)
+        mw._tab_switching = False
+
+        # Update status bar
+        self._update_status_info(new_tab)
+
+    def get_current (self) -> TabData:
+        if self.current_index < 0 or self.current_index >= len(self.tabs):
+            return None
+        return self.tabs[self.current_index]
+
+    def _update_status_info (self, tab:TabData):
+        cursor = self.main_window.editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        mode = 'INS'
+        text = 'Ln {}, Col {} | {} | {}'.format(
+            line, col, tab.encoding, mode)
+        self.main_window.status_info.setText(text)
+
+    def update_tab_name (self, index:int):
+        if index < 0 or index >= len(self.tabs):
+            return
+        name = self.tabs[index].tab_name()
+        self.main_window.tabbar.setTabText(index, name)
+
+
+#----------------------------------------------------------------------
+# CodeEditor (uses QTextEdit for setDocument compatibility)
+#----------------------------------------------------------------------
+class CodeEditor (QTextEdit):
+
+    def __init__ (self, parent=None):
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+        self.setTabStopWidth(self.fontMetrics().width('    '))
+
+    def keyPressEvent (self, event):
+        if event.key() == Qt.Key_Tab:
+            cursor = self.textCursor()
+            cursor.insertText('\t')
+        else:
+            super().keyPressEvent(event)
+
+
+#----------------------------------------------------------------------
 # InputPanel
 #----------------------------------------------------------------------
-class InputPanel (QPlainTextEdit):
+class InputPanel (QTextEdit):
 
-    def __init__ (self, parent:QWidget=None):
+    def __init__ (self, parent=None):
         super().__init__(parent)
+        self.setAcceptRichText(False)
         self.setTabStopWidth(self.fontMetrics().width('    '))
+
+    def keyPressEvent (self, event):
+        if event.key() == Qt.Key_Tab:
+            cursor = self.textCursor()
+            cursor.insertText('\t')
+        else:
+            super().keyPressEvent(event)
 
 
 #----------------------------------------------------------------------
@@ -373,7 +637,7 @@ class InputPanel (QPlainTextEdit):
 #----------------------------------------------------------------------
 class OutputPanel (QTextEdit):
 
-    def __init__ (self, parent:QWidget=None):
+    def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
 
@@ -400,7 +664,7 @@ class MainWindow (QMainWindow):
         self.icons = _create_toolbar_icons()
 
         # Create editor and IO panels
-        self.editor = QPlainTextEdit()
+        self.editor = CodeEditor()
         self.input_panel = InputPanel()
         self.output_panel = OutputPanel()
 
@@ -418,10 +682,22 @@ class MainWindow (QMainWindow):
         self.input_panel.setTabStopWidth(
             self.input_panel.fontMetrics().width('    '))
 
-        # Save placeholder docs for zero-tab state
-        self.empty_editor_doc = self.editor.document()
-        self.empty_input_doc = self.input_panel.document()
-        self.empty_output_doc = self.output_panel.document()
+        # Create standalone placeholder docs for zero-tab state
+        # (parent=self so they survive when widget switches documents)
+        self.empty_editor_doc = QTextDocument(self)
+        self.empty_input_doc = QTextDocument(self)
+        self.empty_output_doc = QTextDocument(self)
+        self.editor.setDocument(self.empty_editor_doc)
+        self.input_panel.setDocument(self.empty_input_doc)
+        self.output_panel.setDocument(self.empty_output_doc)
+
+        # Tab management
+        self.tab_manager = TabManager(self)
+        self._tab_switching = False
+        self._last_file_dir = ''
+
+        # Create actions first (needed by menubar and toolbar)
+        self.__create_actions()
 
         # Build UI in correct order
         self.__build_menubar()
@@ -430,8 +706,51 @@ class MainWindow (QMainWindow):
         self.__build_tabbar_and_layout()
         self.__build_statusbar()
 
+        # Connect signals
+        self.__connect_signals()
+
+        # Alt shortcuts for tab switching
+        self.__setup_tab_switch_shortcuts()
+
         # Start in zero-tab state
         self._enter_zero_tab_state()
+
+    def __create_actions (self):
+        self.act_new = QAction(self.icons['new'], 'New', self)
+        self.act_new.setShortcut(QKeySequence('Ctrl+N'))
+        self.act_new.setToolTip('New (Ctrl+N)')
+
+        self.act_save = QAction(self.icons['save'], 'Save', self)
+        self.act_save.setShortcut(QKeySequence('Ctrl+S'))
+        self.act_save.setToolTip('Save (Ctrl+S)')
+
+        self.act_open = QAction(self.icons['open'], 'Open', self)
+        self.act_open.setShortcut(QKeySequence('Ctrl+O'))
+        self.act_open.setToolTip('Open (Ctrl+O)')
+
+        self.act_save_as = QAction('Save As', self)
+        self.act_save_as.setShortcut(QKeySequence('Ctrl+Shift+S'))
+        self.act_save_as.setToolTip('Save As (Ctrl+Shift+S)')
+
+        self.act_close = QAction('Close', self)
+        self.act_close.setShortcut(QKeySequence('Ctrl+W'))
+        self.act_close.setToolTip('Close (Ctrl+W)')
+
+        self.act_run = QAction(self.icons['run'], 'Run', self)
+        self.act_run.setShortcut(QKeySequence('F5'))
+        self.act_run.setToolTip('Run (F5)')
+
+        self.act_test = QAction(self.icons['test'], 'Test', self)
+        self.act_test.setShortcut(QKeySequence('F9'))
+        self.act_test.setToolTip('Test (F9)')
+
+        self.act_stop = QAction(self.icons['stop'], 'Stop', self)
+        self.act_stop.setShortcut(QKeySequence('F7'))
+        self.act_stop.setToolTip('Stop (F7)')
+
+        self.act_settings = QAction(
+            self.icons['settings'], 'Settings', self)
+        self.act_settings.setToolTip('Settings')
 
     def __build_menubar (self):
         menubar = self.menuBar()
@@ -440,61 +759,45 @@ class MainWindow (QMainWindow):
         self.menu_run = menubar.addMenu('Run')
         self.menu_view = menubar.addMenu('View')
 
+        # Populate File menu
+        self.menu_file.addAction(self.act_new)
+        self.menu_file.addAction(self.act_open)
+        self.menu_file.addAction(self.act_save)
+        self.menu_file.addAction(self.act_save_as)
+        self.menu_file.addSeparator()
+        self.menu_file.addAction(self.act_close)
+        self.menu_file.addSeparator()
+        self.menu_file.addAction(self.act_settings)
+
     def __build_toolbar (self):
         toolbar = self.addToolBar('Main')
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
 
-        self.act_new = QAction(self.icons['new'], 'New', self)
-        self.act_new.setShortcut(QKeySequence('Ctrl+N'))
-        self.act_new.setToolTip('New (Ctrl+N)')
         toolbar.addAction(self.act_new)
-
-        self.act_save = QAction(self.icons['save'], 'Save', self)
-        self.act_save.setShortcut(QKeySequence('Ctrl+S'))
-        self.act_save.setToolTip('Save (Ctrl+S)')
         toolbar.addAction(self.act_save)
-
-        self.act_open = QAction(self.icons['open'], 'Open', self)
-        self.act_open.setShortcut(QKeySequence('Ctrl+O'))
-        self.act_open.setToolTip('Open (Ctrl+O)')
         toolbar.addAction(self.act_open)
-
         toolbar.addSeparator()
-
-        self.act_run = QAction(self.icons['run'], 'Run', self)
-        self.act_run.setShortcut(QKeySequence('F5'))
-        self.act_run.setToolTip('Run (F5)')
         toolbar.addAction(self.act_run)
-
-        self.act_test = QAction(self.icons['test'], 'Test', self)
-        self.act_test.setShortcut(QKeySequence('F9'))
-        self.act_test.setToolTip('Test (F9)')
         toolbar.addAction(self.act_test)
-
-        self.act_stop = QAction(self.icons['stop'], 'Stop', self)
-        self.act_stop.setShortcut(QKeySequence('F7'))
-        self.act_stop.setToolTip('Stop (F7)')
         toolbar.addAction(self.act_stop)
-
         toolbar.addSeparator()
-
-        self.act_settings = QAction(self.icons['settings'], 'Settings', self)
-        self.act_settings.setToolTip('Settings')
         toolbar.addAction(self.act_settings)
 
     def __build_mainarea (self):
         # Wrap IO panels with label headers
-        self.input_section = _make_io_section('INPUT', self.input_panel)
-        self.output_section = _make_io_section('OUTPUT', self.output_panel)
+        self.input_section = _make_io_section(
+            'INPUT', self.input_panel)
+        self.output_section = _make_io_section(
+            'OUTPUT', self.output_panel)
 
-        # Vertical splitter: InputSection (top) / OutputSection (bottom)
+        # Vertical splitter
         self.v_splitter = QSplitter(Qt.Vertical)
         self.v_splitter.addWidget(self.input_section)
         self.v_splitter.addWidget(self.output_section)
         self.v_splitter.setSizes([325, 325])
 
-        # Horizontal splitter: CodeEditor (left) / v_splitter (right)
+        # Horizontal splitter
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.addWidget(self.editor)
         self.main_splitter.addWidget(self.v_splitter)
@@ -505,7 +808,6 @@ class MainWindow (QMainWindow):
         self.tabbar.setTabsClosable(True)
         self.tabbar.setMovable(True)
 
-        # Central widget: tabbar on top, main_splitter below
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
         layout = QVBoxLayout(self.central_widget)
@@ -523,6 +825,186 @@ class MainWindow (QMainWindow):
         statusbar.addWidget(self.status_message, 1)
         statusbar.addPermanentWidget(self.status_info, 0)
 
+    def __connect_signals (self):
+        # Toolbar/menu actions
+        self.act_new.triggered.connect(self._action_new)
+        self.act_open.triggered.connect(self._action_open)
+        self.act_save.triggered.connect(self._action_save)
+        self.act_save_as.triggered.connect(self._action_save_as)
+        self.act_close.triggered.connect(self._action_close)
+
+        # Tabbar signals
+        self.tabbar.currentChanged.connect(
+            self._on_tabbar_current_changed)
+        self.tabbar.tabCloseRequested.connect(
+            self._on_tab_close_requested)
+
+        # Editor cursor position → update status bar
+        self.editor.cursorPositionChanged.connect(
+            self._on_cursor_position_changed)
+
+    def __setup_tab_switch_shortcuts (self):
+        # Alt+1~9 → switch to tab 0~8, Alt+0 → tab 9
+        for i in range(1, 10):
+            s = QShortcut(QKeySequence('Alt+{}'.format(i)), self)
+            s.activated.connect(
+                lambda idx=i - 1: self._switch_to_tab(idx))
+        s0 = QShortcut(QKeySequence('Alt+0'), self)
+        s0.activated.connect(lambda: self._switch_to_tab(9))
+
+    #----- Action handlers -----
+
+    def _action_new (self):
+        tab = TabData(
+            is_new=True, encoding='UTF-8',
+            content=Settings.template_text,
+            dirty_callback=self._on_tab_dirty_changed)
+        self.tab_manager.add_tab(tab)
+
+    def _action_open (self):
+        start_dir = self._last_file_dir or os.path.expanduser('~')
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Open File', start_dir,
+            'C++ Files (*.cpp *.c);;All Files (*)')
+        if not path:
+            return
+        content, encoding = _read_file(path)
+        tab = TabData(
+            file_path=path, is_new=False,
+            encoding=encoding, content=content,
+            dirty_callback=self._on_tab_dirty_changed)
+        self.tab_manager.add_tab(tab)
+        self._last_file_dir = os.path.dirname(path)
+
+    def _action_save (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        self._save_tab_data(tab)
+
+    def _action_save_as (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        start_dir = self._last_file_dir or os.path.expanduser('~')
+        if tab.file_path:
+            start_dir = os.path.dirname(tab.file_path)
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save As', start_dir,
+            'C++ Files (*.cpp *.c);;All Files (*)')
+        if not path:
+            return
+        content = tab.editor_doc.toPlainText()
+        try:
+            with open(path, 'w', encoding=tab.encoding) as f:
+                f.write(content)
+        except Exception as e:
+            QMessageBox.warning(self, 'Save Error', str(e))
+            return
+        tab.file_path = path
+        tab.is_new = False
+        tab.editor_doc.setModified(False)
+        self._last_file_dir = os.path.dirname(path)
+        self._update_all_tab_names()
+        self.status_message.setText(
+            'Saved: {}'.format(os.path.basename(path)))
+
+    def _action_close (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        self.tab_manager.close_tab(
+            self.tab_manager.current_index)
+
+    #----- Helpers -----
+
+    def _save_tab_data (self, tab:TabData) -> int:
+        """Save tab to disk. Returns 0 success, -1 cancel, -2 error."""
+        if tab.is_new:
+            start_dir = self._last_file_dir or os.path.expanduser('~')
+            path, _ = QFileDialog.getSaveFileName(
+                self, 'Save File', start_dir,
+                'C++ Files (*.cpp *.c);;All Files (*)')
+            if not path:
+                return -1
+            content = tab.editor_doc.toPlainText()
+            try:
+                with open(path, 'w', encoding=tab.encoding) as f:
+                    f.write(content)
+            except Exception as e:
+                QMessageBox.warning(self, 'Save Error', str(e))
+                return -2
+            tab.file_path = path
+            tab.is_new = False
+            self._last_file_dir = os.path.dirname(path)
+        else:
+            content = tab.editor_doc.toPlainText()
+            try:
+                with open(tab.file_path, 'w', encoding=tab.encoding) as f:
+                    f.write(content)
+            except Exception as e:
+                QMessageBox.warning(self, 'Save Error', str(e))
+                return -2
+
+        tab.editor_doc.setModified(False)
+        self._update_all_tab_names()
+        self.status_message.setText(
+            'Saved: {}'.format(os.path.basename(tab.file_path)))
+        return 0
+
+    def _confirm_close_tab (self, tab:TabData) -> str:
+        """Ask about unsaved changes. Returns save/discard/cancel."""
+        if tab.is_new:
+            name = 'untitled{}'.format(tab.untitled_number)
+        else:
+            name = os.path.basename(tab.file_path)
+        msg = QMessageBox(self)
+        msg.setWindowTitle('Save Changes?')
+        msg.setText("File '{}' has unsaved changes.".format(name))
+        msg.setStandardButtons(
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Save)
+        result = msg.exec_()
+        if result == QMessageBox.Save:
+            return 'save'
+        elif result == QMessageBox.Discard:
+            return 'discard'
+        return 'cancel'
+
+    def _switch_to_tab (self, index:int):
+        if index < len(self.tab_manager.tabs):
+            self.tab_manager.switch_tab(index)
+
+    #----- Signal handlers -----
+
+    def _on_tabbar_current_changed (self, index:int):
+        if self._tab_switching:
+            return
+        if index >= 0 and index < len(self.tab_manager.tabs):
+            self.tab_manager.switch_tab(index)
+
+    def _on_tab_close_requested (self, index:int):
+        self.tab_manager.close_tab(index)
+
+    def _on_tab_dirty_changed (self, tab:TabData):
+        for i, t in enumerate(self.tab_manager.tabs):
+            if t is tab:
+                self.tab_manager.update_tab_name(i)
+                break
+
+    def _on_cursor_position_changed (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            self.status_info.setText('')
+            return
+        self.tab_manager._update_status_info(tab)
+
+    def _update_all_tab_names (self):
+        for i in range(len(self.tab_manager.tabs)):
+            self.tab_manager.update_tab_name(i)
+
+    #----- Zero-tab state -----
+
     def _enter_zero_tab_state (self):
         self.editor.setDocument(self.empty_editor_doc)
         self.input_panel.setDocument(self.empty_input_doc)
@@ -536,6 +1018,24 @@ class MainWindow (QMainWindow):
         self.editor.setEnabled(True)
         self.input_section.setEnabled(True)
         self.output_section.setEnabled(True)
+
+    #----- Window close -----
+
+    def closeEvent (self, event):
+        for tab in list(self.tab_manager.tabs):
+            if tab.is_dirty:
+                idx = self.tab_manager.tabs.index(tab)
+                self.tab_manager.switch_tab(idx)
+                choice = self._confirm_close_tab(tab)
+                if choice == 'cancel':
+                    event.ignore()
+                    return
+                elif choice == 'save':
+                    result = self._save_tab_data(tab)
+                    if result < 0:
+                        event.ignore()
+                        return
+        event.accept()
 
 
 #----------------------------------------------------------------------
