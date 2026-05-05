@@ -2001,7 +2001,11 @@ class MainWindow (QMainWindow):
         self.editor.cut()
 
     def _action_copy (self):
-        self.editor.copy()
+        focus = QApplication.focusWidget()
+        if focus and isinstance(focus, QTextEdit):
+            focus.copy()
+        else:
+            self.editor.copy()
 
     def _action_paste (self):
         self.editor.paste()
