@@ -811,8 +811,7 @@ class CodeEditor (QTextEdit):
 
     _BRACKET_OPEN = {'(': ')', '{': '}', '[': ']', '"': '"', "'": "'"}
     _BRACKET_CLOSE = {')': '(', '}': '{', ']': '['}
-    _BRACKET_AUTO_CLOSE = {'(', '{', '['}  # quotes handled differently
-
+    
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
@@ -1936,8 +1935,6 @@ class MainWindow (QMainWindow):
     def closeEvent (self, event):
         for tab in list(self.tab_manager.tabs):
             if tab.is_dirty:
-                idx = self.tab_manager.find_tab_index(tab)
-                self._switch_to_tab(idx)
                 choice = self._confirm_close_tab(tab)
                 if choice == 'cancel':
                     event.ignore()
