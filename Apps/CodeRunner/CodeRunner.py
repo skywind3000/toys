@@ -559,11 +559,24 @@ class CppHighlighter (QSyntaxHighlighter):
         self.__highlight_multiline_comments(text)
 
     def __format_if_free (self, start:int, length:int, fmt):
-        """Apply format only to unformatted regions (first-match-wins)."""
-        existing = self.format(start)
-        fg = existing.foreground()
-        if not fg.style() or fg.color() == QColor():
-            self.setFormat(start, length, fmt)
+        """Apply format only to unformatted positions (first-match-wins).
+        Iterates through the range and formats contiguous free segments,
+        skipping positions already formatted by a higher-priority rule."""
+        seg_start = -1
+        end = start + length
+        for i in range(start, end):
+            existing = self.format(i)
+            fg = existing.foreground()
+            is_free = not fg.style() or fg.color() == QColor()
+            if is_free:
+                if seg_start < 0:
+                    seg_start = i
+            else:
+                if seg_start >= 0:
+                    self.setFormat(seg_start, i - seg_start, fmt)
+                    seg_start = -1
+        if seg_start >= 0:
+            self.setFormat(seg_start, end - seg_start, fmt)
 
     def __highlight_multiline_comments (self, text:str):
         start_state = self.previousBlockState()
@@ -1445,6 +1458,9 @@ class MainWindow (QMainWindow):
         # Help actions
         self.act_about.triggered.connect(self._action_about)
 
+        # Settings (placeholder until Phase 6)
+        self.act_settings.triggered.connect(self._action_settings)
+
         # Tabbar signals
         self.tabbar.currentChanged.connect(
             self._on_tabbar_current_changed)
@@ -1526,6 +1542,9 @@ class MainWindow (QMainWindow):
             # Rollback on failure
             tab.file_path = old_path
             tab.is_new = old_is_new
+            idx = self.tab_manager.find_tab_index(tab)
+            if idx >= 0:
+                self._update_tab_name(idx)
             self._update_window_title()
             return
         self._last_file_dir = os.path.dirname(path)
@@ -1615,6 +1634,10 @@ class MainWindow (QMainWindow):
             self, 'About CodeRunner',
             'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
                 time.strftime('%Y/%m/%d %H:%M:%S')))
+
+    def _action_settings (self):
+        # TODO: implement SettingsDialog (Phase 6)
+        self.status_message.setText('Settings: not yet implemented')
 
     #----- Tab management (UI operations) -----
 
@@ -1771,6 +1794,14 @@ class MainWindow (QMainWindow):
                 '{} ({}) - CodeRunner'.format(name, dir_path))
 
     #----- Helpers -----
+
+    def _save_if_dirty (self, tab:TabData) -> int:
+        """Save tab if it has unsaved changes. Returns 0 success/clean,
+        -1 user cancelled save dialog, -2 write error.
+        If tab is not dirty and not new, no save is needed → returns 0."""
+        if not tab.is_dirty and not tab.is_new:
+            return 0
+        return self._save_tab_data(tab)
 
     def _save_tab_data (self, tab:TabData) -> int:
         """Save tab to disk. Returns 0 success, -1 cancel, -2 error."""
