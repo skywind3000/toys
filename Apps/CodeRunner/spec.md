@@ -294,7 +294,7 @@ class Settings:
 额外行为：
 - 输入闭符号且光标右侧恰好是同一闭符号时：跳过（不重复插入），直接右移光标
 - 删除开符号时：如果右侧紧邻对应闭符号，一并删除
-- 括号补全功能可通过设置开关控制（默认开启）
+- 括号补全功能可通过设置开关控制（默认开启），MainWindow 初始化时从 `Settings.bracket_completion` 同步到 `CodeEditor.set_bracket_completion()`
 
 **自动缩进**：覆盖 `keyPressEvent`，Enter 键行为：
 1. 取当前行的前导空白（缩进）作为新行基础缩进
@@ -339,7 +339,7 @@ class Settings:
 | 数字 | `\b(0[xX][0-9a-fA-F]+[uUlL]*|0[bB][01]+[uUlL]*|[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*)\b`（含十六进制、二进制、八进制） | 深蓝色 |
 | 符号/运算符 | `(::|->|<<=|>>=|<<|>>|==|!=|<=|>=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\|=|\^=|\+\+|--|\.\.\.|[+\-*/%&|^~!=<>?:;,])` | 深青色 (低调不抢眼) |
 
-高亮器使用 `QRegularExpression` + `QSyntaxHighlighter`，按规则顺序依次匹配，同一文本区域只应用最先匹配的规则（关键字优先级高于数字等）。
+高亮器使用 `QRegularExpression` + `QSyntaxHighlighter`，按规则顺序依次匹配，同一文本区域只应用最先匹配的规则（first-match-wins）。**规则顺序决定优先级**：单行注释和字符串必须排在关键字之前，确保关键字出现在字符串或注释内部时不会被错误高亮为关键字色（如 `"int x"` 中 `int` 应为字符串色而非关键字色，`// return 0` 中 `return` 应为注释色）。实际优先级从高到低为：单行注释 → 字符串 → 字符 → 关键字 → 预处理器 → 数字 → 符号。多行注释在单行规则之后单独处理，直接使用 `setFormat` 覆盖已有格式。
 
 多行注释需要特殊处理：使用 `setCurrentBlockState` / `previousBlockState` 机制跟踪跨块注释状态。
 
@@ -350,7 +350,7 @@ class Settings:
 - 无行号显示
 - 字号/字体跟随 Settings.io_font_family / io_font_size
 - Tab 键行为同 CodeEditor（插入制表符）
-- 标签切换时通过 `setDocument(tab.input_doc)` 交换文档
+- 标签切换时通过 `setDocument(tab.input_doc)` 交换文档，`setDocument` 重写中调用 `doc.setDefaultFont(self.font())` 同步文档布局字体与 Widget 字体（同 CodeEditor 的处理方式）
 - 整个 InputSection（标签 + 编辑区）在零标签状态下随 InputPanel 一起灰显
 
 ### OutputPanel
@@ -359,7 +359,7 @@ class Settings:
 - QLabel 文字使用小号粗体，与 IO 面板字体一致
 - `setReadOnly(True)`
 - 字号/字体跟随 Settings.io_font_family / io_font_size
-- 标签切换时通过 `setDocument(tab.output_doc)` 交换文档
+- 标签切换时通过 `setDocument(tab.output_doc)` 交换文档，`setDocument` 重写中调用 `doc.setDefaultFont(self.font())` 同步文档布局字体与 Widget 字体
 - 关闭标签时对应 TabData 的 output_doc 随 TabData 一起销毁
 
 **颜色渲染**：使用 `QTextCursor` + `QTextCharFormat` 插入不同颜色的文本段：
@@ -505,7 +505,7 @@ def build_flags(source_encoding):
 
 **Open**：
 1. QFileDialog 选择文件（初始目录为 window_state.last_file_dir）
-2. EncodingManager 检测编码，读取文件内容
+2. `_read_file(path)` 检测编码并读取文件内容。文件不可读（不存在、权限不足等）时弹出 QMessageBox 警告并终止 Open 流程
 3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter
 4. 调用 `tab_manager.add_tab(tab)` + `tabbar.addTab(name)` + `_switch_to_tab(index)`
 5. 更新 last_file_dir 和 recent_files

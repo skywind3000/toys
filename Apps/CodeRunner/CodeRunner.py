@@ -21,7 +21,7 @@ from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect, QRegularExpression
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
     QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
-    QTextDocument, QTextCursor, QTextCharFormat, QFont
+    QTextDocument, QTextCursor, QTextCharFormat
 )
 
 
@@ -461,6 +461,32 @@ class CppHighlighter (QSyntaxHighlighter):
         self.__init_rules()
 
     def __init_rules (self):
+        # Rule order determines first-match-wins priority. Strings and
+        # comments must come before keywords so that text inside
+        # "int x" or // return 0 is not mis-highlighted as keyword.
+
+        # 1. Single-line comments (highest priority)
+        fmt_comment_single = QTextCharFormat()
+        fmt_comment_single.setForeground(QBrush(QColor(0, 128, 0)))
+        self._rules.append((
+            QRegularExpression(r'//[^\n]*'),
+            fmt_comment_single))
+
+        # 2. Strings
+        fmt_string = QTextCharFormat()
+        fmt_string.setForeground(QBrush(QColor(163, 21, 21)))
+        self._rules.append((
+            QRegularExpression(r'"[^"\\\n]*(?:\\.[^"\\\n]*)*"'),
+            fmt_string))
+
+        # 3. Character literals
+        fmt_char = QTextCharFormat()
+        fmt_char.setForeground(QBrush(QColor(163, 21, 21)))
+        self._rules.append((
+            QRegularExpression(r"'[^'\\\n]*(?:\\.[^'\\\n]*)*'"),
+            fmt_char))
+
+        # 4. Keywords
         fmt_keyword = QTextCharFormat()
         fmt_keyword.setForeground(QBrush(QColor(0, 0, 255)))
         self._rules.append((
@@ -468,6 +494,7 @@ class CppHighlighter (QSyntaxHighlighter):
                 r'\b(' + _CPP_KEYWORDS + r')\b'),
             fmt_keyword))
 
+        # 5. Preprocessor directives
         fmt_preproc = QTextCharFormat()
         fmt_preproc.setForeground(QBrush(QColor(0, 0, 255)))
         self._rules.append((
@@ -475,33 +502,9 @@ class CppHighlighter (QSyntaxHighlighter):
                 r'^#\s*(' + _CPP_PREPROCESSOR + r')\b'),
             fmt_preproc))
 
-        fmt_string = QTextCharFormat()
-        fmt_string.setForeground(QBrush(QColor(163, 21, 21)))
-        self._rules.append((
-            QRegularExpression(r'"[^"\\\n]*(?:\\.[^"\\\n]*)*"'),
-            fmt_string))
-
-        fmt_char = QTextCharFormat()
-        fmt_char.setForeground(QBrush(QColor(163, 21, 21)))
-        self._rules.append((
-            QRegularExpression(r"'[^'\\\n]*(?:\\.[^'\\\n]*)*'"),
-            fmt_char))
-
-        fmt_comment_single = QTextCharFormat()
-        fmt_comment_single.setForeground(QBrush(QColor(0, 128, 0)))
-        self._rules.append((
-            QRegularExpression(r'//[^\n]*'),
-            fmt_comment_single))
-
-        fmt_comment_multi = QTextCharFormat()
-        fmt_comment_multi.setForeground(QBrush(QColor(0, 128, 0)))
-        self._multi_start = QRegularExpression(r'/\*')
-        self._multi_end = QRegularExpression(r'\*/')
-        self._multi_fmt = fmt_comment_multi
-
+        # 6. Numbers
         fmt_number = QTextCharFormat()
         fmt_number.setForeground(QBrush(QColor(0, 0, 128)))
-        # Hex, binary, octal, and decimal numbers
         self._rules.append((
             QRegularExpression(
                 r'\b(0[xX][0-9a-fA-F]+[uUlL]*'
@@ -510,7 +513,7 @@ class CppHighlighter (QSyntaxHighlighter):
                 r')\b'),
             fmt_number))
 
-        # Symbols / operators
+        # 7. Symbols / operators
         fmt_symbol = QTextCharFormat()
         fmt_symbol.setForeground(QBrush(QColor(0, 128, 128)))
         self._rules.append((
@@ -522,6 +525,13 @@ class CppHighlighter (QSyntaxHighlighter):
                 r'|[+\-*/%&|^~!=<>?:;,]'
                 r')'),
             fmt_symbol))
+
+        # Multi-line comments (handled separately in highlightBlock)
+        fmt_comment_multi = QTextCharFormat()
+        fmt_comment_multi.setForeground(QBrush(QColor(0, 128, 0)))
+        self._multi_start = QRegularExpression(r'/\*')
+        self._multi_end = QRegularExpression(r'\*/')
+        self._multi_fmt = fmt_comment_multi
 
     def highlightBlock (self, text:str):
         # First: apply single-line rules (first-match-wins)
@@ -1026,6 +1036,10 @@ class InputPanel (QTextEdit):
         self.setTabStopWidth(
             self.fontMetrics().horizontalAdvance('x') * 4)
 
+    def setDocument (self, doc):
+        doc.setDefaultFont(self.font())
+        super().setDocument(doc)
+
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
             cursor = self.textCursor()
@@ -1042,6 +1056,10 @@ class OutputPanel (QTextEdit):
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
+
+    def setDocument (self, doc):
+        doc.setDefaultFont(self.font())
+        super().setDocument(doc)
 
 
 #----------------------------------------------------------------------
@@ -1076,6 +1094,8 @@ class MainWindow (QMainWindow):
         self.editor = CodeEditor()
         self.editor.indent_style = self.settings.indent_style
         self.editor.indent_size = self.settings.indent_size
+        self.editor.set_bracket_completion(
+            self.settings.bracket_completion)
         self.input_panel = InputPanel()
         self.output_panel = OutputPanel()
 
@@ -1297,7 +1317,13 @@ class MainWindow (QMainWindow):
             'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
         if not path:
             return
-        content, encoding = _read_file(path)
+        try:
+            content, encoding = _read_file(path)
+        except (IOError, OSError) as e:
+            QMessageBox.warning(
+                self, 'Open Error',
+                'Failed to open file: {}'.format(e))
+            return
         tab = TabData(
             file_path=path, is_new=False,
             encoding=encoding, content=content,

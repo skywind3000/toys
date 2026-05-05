@@ -70,7 +70,7 @@ class TestSettings (unittest.TestCase):
         self.assertEqual(lines[1], '#include <cstdio>')
         self.assertEqual(lines[2], 'using namespace std;')
         self.assertEqual(lines[3], 'int main() {')
-        self.assertEqual(lines[4], '    return 0;')
+        self.assertEqual(lines[4], '\treturn 0;')
         self.assertEqual(lines[5], '}')
 
 

@@ -292,6 +292,35 @@ class TestCppHighlighter (unittest.TestCase):
                 return
         self.fail('No symbol format found for ->')
 
+    def test_keyword_inside_string_not_highlighted (self):
+        doc = QTextDocument()
+        doc.setPlainText('"int x"')
+        hl = CppHighlighter(doc)
+        fmts = self._get_highlight_formats(doc, hl)
+        # The entire string including "int" should be string-colored
+        # (dark red 163,21,21), NOT keyword blue
+        for f in fmts:
+            if f.start == 0:
+                fg = f.format.foreground().color()
+                self.assertEqual(fg.red(), 163)
+                self.assertEqual(fg.green(), 21)
+                return
+        self.fail('No string format found for keyword inside string')
+
+    def test_keyword_inside_comment_not_highlighted (self):
+        doc = QTextDocument()
+        doc.setPlainText('// return 0')
+        hl = CppHighlighter(doc)
+        fmts = self._get_highlight_formats(doc, hl)
+        # The entire comment should be comment-colored (green 0,128,0),
+        # NOT keyword blue
+        for f in fmts:
+            if f.start == 0:
+                fg = f.format.foreground().color()
+                self.assertEqual(fg.green(), 128)
+                return
+        self.fail('No comment format found for keyword inside comment')
+
 
 #----------------------------------------------------------------------
 # Bracket completion
