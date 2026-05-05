@@ -1918,6 +1918,14 @@ class MainWindow (QMainWindow):
             'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
         if not path:
             return
+        # Normalize path to avoid mismatch from slashes
+        path = os.path.normpath(path)
+        # If file is already open, switch to that tab
+        for i, t in enumerate(self.tab_manager.tabs):
+            if not t.is_new and t.file_path and \
+                    os.path.normpath(t.file_path) == path:
+                self._switch_to_tab(i)
+                return
         try:
             content, encoding = _read_file(path)
         except (IOError, OSError) as e:

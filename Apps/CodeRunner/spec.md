@@ -600,10 +600,11 @@ def build_flags(source_encoding):
 
 **Open**：
 1. QFileDialog 选择文件（初始目录为 window_state.last_file_dir）
-2. `_read_file(path)` 检测编码并读取文件内容。文件不可读（不存在、权限不足等）时弹出 QMessageBox 警告并终止 Open 流程
-3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter（deferred=True）
-4. 调用 `tab_manager.add_tab(tab)` + `tabbar.addTab(name)` + `_switch_to_tab(index)`
-5. 更新 last_file_dir 和 recent_files
+2. 对路径做 `os.path.normpath` 统一格式，然后遍历已有标签检查 `os.path.normpath(tab.file_path) == path`。如果文件已打开，直接 `_switch_to_tab` 激活该标签，不重复打开
+3. `_read_file(path)` 检测编码并读取文件内容。文件不可读（不存在、权限不足等）时弹出 QMessageBox 警告并终止 Open 流程
+4. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter（deferred=True）
+5. 调用 `tab_manager.add_tab(tab)` + `tabbar.addTab(name)` + `_switch_to_tab(index)`
+6. 更新 last_file_dir 和 recent_files
 
 **Save**：
 - 新文件（is_new=True）：弹出 QFileDialog 让用户选择路径，保存后 is_new→False, file_path→路径, is_dirty→False
@@ -754,3 +755,14 @@ def main():
 - 字符串优先单引号
 - 成功返回 0，失败返回 -1/-2
 - Python 3.8 兼容（无 walrus operator、无 str.removeprefix 等）
+
+## 技术决策
+
+| 名称 | 时间 | 详细情况 |
+|------|------|----------|
+| Open 重复文件检测 | 2026/05/06 | 打开文件时先 `os.path.normpath` 统一路径格式，遍历已有 tab 比对 `tab.file_path`。已打开则 `_switch_to_tab` 激活，不重复创建 tab。防止用户两次打开同一文件产生两个标签页 |
+| 编译 stderr 用平台编码解码 | 2026/05/06 | `ProcessManager._on_compile_stderr_ready` 原用 UTF-8 解码编译器 stderr，中文 Windows 下 g++ 输出 GBK 会乱码。改用 `EncodingManager.decode_stderr`（平台编码），与运行时 stdout/stderr 解码方式一致 |
+| 状态栏显示编译/运行结果 | 2026/05/06 | Phase 5 原实现状态栏只显示 Ready/Compiling/Running 三种状态，编译/运行结束后回到 Ready 丢失结果信息。改为每个结果分支在 `_set_flow_state(_FLOW_IDLE)` 之后追加 `status_message.setText()` 显示具体结果：Build successful / Build failed with N error(s) / Runtime Error / Program exited with code 0 / Timeout / Process stopped 等 |
+| startDetached 返回值检查 | 2026/05/06 | `_launch_terminal` 原不检查 `QProcess.startDetached` 返回值。失败时无提示。改为检查返回值，False 时 OutputPanel 显示红色 "Failed to launch terminal" |
+| 负 exit code crash 描述 | 2026/05/06 | 程序自然崩溃（如 Windows access violation）QProcess 报 NormalExit + 负 exit code，原只显示 "Runtime Error (exit code -1073741819)"。改为 `exit_code != 0` 分支也调用 `_describe_exit_code`，已知 NTSTATUS 码附加可读描述如 "Runtime Error: Access violation" |
+| killed 区分 Stop vs 自然崩溃 | 2026/05/06 | ProcessManager 在 `exit_status != NormalExit` 时一律设 reason='killed'，无法区分用户 Stop 和程序自然崩溃。当前在 killed 分支用 `_describe_exit_code` 附加已知崩溃码的可读描述（红色），无描述时显示灰色 "Process stopped"。暂不追踪 Stop 意图，因为自然崩溃也走 CrashExit，附加 crash 描述比一律灰色更有用 |
