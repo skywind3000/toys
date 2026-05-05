@@ -1035,8 +1035,10 @@ class ProcessManager (QObject):
 
     def _on_compile_stderr_ready (self):
         raw = self.process.readAllStandardError()
-        text = bytes(raw).decode('utf-8', 'replace')
-        self._stderr_buffer += text
+        data = bytes(raw)
+        if data:
+            text = self._enc_mgr.decode_stderr(data)
+            self._stderr_buffer += text
 
     def _on_compile_finished (self, exit_code:int, _exit_status):
         if self._finished_emitted:
@@ -1046,7 +1048,8 @@ class ProcessManager (QObject):
         # Read any remaining stderr
         remaining = self.process.readAllStandardError()
         if remaining and bytes(remaining):
-            self._stderr_buffer += bytes(remaining).decode('utf-8', 'replace')
+            self._stderr_buffer += self._enc_mgr.decode_stderr(
+                bytes(remaining))
         stderr_text = self._stderr_buffer
         self._cleanup()
         self.compile_finished.emit(exit_code, stderr_text, 'normal')
@@ -2065,6 +2068,7 @@ class MainWindow (QMainWindow):
             self._clear_and_start_compile(tab)
         else:
             self._launch_terminal(tab)
+            self.status_message.setText('Running in terminal')
 
     def _action_test (self):
         if self._flow_state != _FLOW_IDLE:
@@ -2200,11 +2204,16 @@ class MainWindow (QMainWindow):
         bat_path = _ensure_cmd_file()
         os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
         os.environ['CR_PAUSE'] = 'pause'
-        QProcess.startDetached(
+        ok = QProcess.startDetached(
             'cmd',
             ['/c', 'start', '', '/D', work_dir, bat_path])
         del os.environ['CR_COMMAND']
         del os.environ['CR_PAUSE']
+        if not ok:
+            _output_clear(tab.output_doc)
+            _output_append(tab.output_doc,
+                           'Failed to launch terminal\n',
+                           QColor(Qt.red))
 
     def _count_compile_errors (self, stderr_text:str) -> int:
         """Count the number of compile error lines in stderr output."""
@@ -2239,6 +2248,8 @@ class MainWindow (QMainWindow):
                 'Please check Settings to set the correct compiler path.\n',
                 QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText(
+                'Failed to start compiler')
         elif reason == 'timeout':
             elapsed = time.time() - self.proc_mgr._start_time
             _output_clear(tab.output_doc)
@@ -2248,6 +2259,8 @@ class MainWindow (QMainWindow):
                     self.settings.compile_timeout, elapsed),
                 QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText(
+                'Compilation timeout')
         elif reason == 'killed':
             elapsed = time.time() - self.proc_mgr._start_time
             _output_append(
@@ -2255,10 +2268,14 @@ class MainWindow (QMainWindow):
                 'Compilation stopped in {:.3}s\n'.format(elapsed),
                 QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText('Compilation stopped')
         elif exit_code != 0:
             _output_clear(tab.output_doc)
             _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
+            n = self._count_compile_errors(stderr_text)
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText(
+                'Build failed with {} error(s)'.format(n))
         else:
             # Compile succeeded — check intent
             if self._flow_intent == 'build':
@@ -2269,12 +2286,14 @@ class MainWindow (QMainWindow):
                     'Build OK in {:.3}s\n'.format(elapsed),
                     QColor(128, 128, 128))
                 self._set_flow_state(_FLOW_IDLE)
+                self.status_message.setText('Build successful')
             elif self._flow_intent == 'test':
                 self._set_flow_state(_FLOW_RUNNING)
                 self._start_test_run(tab)
             elif self._flow_intent == 'run':
                 self._launch_terminal(tab)
                 self._set_flow_state(_FLOW_IDLE)
+                self.status_message.setText('Running in terminal')
 
     def _on_run_stdout_ready (self, text:str):
         tab = self.proc_mgr.target_tab
@@ -2302,6 +2321,7 @@ class MainWindow (QMainWindow):
                            'Error: {}\n'.format(stderr_text),
                            QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText('Failed to start program')
         elif reason == 'timeout':
             _output_append(
                 tab.output_doc,
@@ -2309,6 +2329,9 @@ class MainWindow (QMainWindow):
                     self.settings.run_timeout, elapsed),
                 QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText(
+                'Timeout after {} seconds'.format(
+                    self.settings.run_timeout))
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
@@ -2317,15 +2340,26 @@ class MainWindow (QMainWindow):
                     'Program crashed: {} (exit code {})\n'.format(
                         detail, exit_code),
                     QColor(Qt.red))
+                self.status_message.setText(
+                    'Program crashed: {}'.format(detail))
             else:
                 _output_append(tab.output_doc,
                                'Process stopped in {:.3}s\n'.format(elapsed),
                                QColor(128, 128, 128))
+                self.status_message.setText('Process stopped')
             self._set_flow_state(_FLOW_IDLE)
         elif exit_code != 0:
+            detail = _describe_exit_code(exit_code)
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
+            if detail:
+                line = 'Runtime Error: {} (exit code {})\n'.format(
+                    detail, exit_code)
             _output_append(tab.output_doc, line, QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
+            msg = 'Runtime Error (exit code {})'.format(exit_code)
+            if detail:
+                msg = 'Runtime Error: {}'.format(detail)
+            self.status_message.setText(msg)
         else:
             mem_str = ''
             if peak_memory > 0:
@@ -2335,6 +2369,9 @@ class MainWindow (QMainWindow):
                 exit_code, elapsed, mem_str)
             _output_append(tab.output_doc, line, QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
+            self.status_message.setText(
+                'Program exited with code 0 in {:.3}s{}'.format(
+                    elapsed, mem_str))
 
     #----- Tab management (UI operations) -----
 
