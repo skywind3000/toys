@@ -1526,6 +1526,7 @@ class MainWindow (QMainWindow):
             # Rollback on failure
             tab.file_path = old_path
             tab.is_new = old_is_new
+            self._update_window_title()
             return
         self._last_file_dir = os.path.dirname(path)
 
@@ -1673,6 +1674,7 @@ class MainWindow (QMainWindow):
 
         # Update status bar (with default cursor for now)
         self._update_status_info(new_tab)
+        self._update_window_title()
 
         # Deferred editor cursor/scroll restore
         self._deferred_restore_tab = index
@@ -1757,6 +1759,17 @@ class MainWindow (QMainWindow):
         for i in range(len(self.tab_manager.tabs)):
             self._update_tab_name(i)
 
+    def _update_window_title (self):
+        """Update main window title based on current tab state."""
+        tab = self.tab_manager.get_current()
+        if tab is None or tab.is_new:
+            self.setWindowTitle('CodeRunner')
+        else:
+            name = os.path.basename(tab.file_path)
+            dir_path = os.path.dirname(tab.file_path)
+            self.setWindowTitle(
+                '{} ({}) - CodeRunner'.format(name, dir_path))
+
     #----- Helpers -----
 
     def _save_tab_data (self, tab:TabData) -> int:
@@ -1792,6 +1805,7 @@ class MainWindow (QMainWindow):
         # modificationChanged signal already updates this tab's name
         self.status_message.setText(
             'Saved: {}'.format(os.path.basename(tab.file_path)))
+        self._update_window_title()
         return 0
 
     def _confirm_close_tab (self, tab:TabData) -> str:
@@ -1832,6 +1846,8 @@ class MainWindow (QMainWindow):
         index = self.tab_manager.find_tab_index(tab)
         if index >= 0:
             self._update_tab_name(index)
+        if index == self.tab_manager.current_index:
+            self._update_window_title()
 
     def _on_cursor_position_changed (self):
         tab = self.tab_manager.get_current()
@@ -1852,6 +1868,7 @@ class MainWindow (QMainWindow):
         self.output_section.setEnabled(False)
         self.status_info.setText('')
         self._deferred_restore_tab = -1
+        self.setWindowTitle('CodeRunner')
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
