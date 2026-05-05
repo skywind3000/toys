@@ -215,18 +215,18 @@
 - 环境变量 $VAR_NAME 展开逻辑
 
 **手动验收清单**：
-- [ ] 写一个简单 C++（如 `scanf a+b, printf a+b`），按 F9 → OutputPanel 显示正确输出
-- [ ] InputPanel 内容作为 stdin 正确传入程序
-- [ ] 编译错误时 OutputPanel 显示红色错误信息，状态栏显示 "Build failed"
-- [ ] Runtime Error（返回码非 0）显示红色
-- [ ] F5 弹出外部终端窗口，程序结束后提示"按任意键关闭"
-- [ ] F7 终止正在运行的进程
-- [ ] 运行超时后 OutputPanel 显示红色超时信息
-- [ ] 编译超时后 OutputPanel 显示红色超时信息
-- [ ] Busy 状态下按 Build/Test/Run 弹出英文提示，不启动新操作
-- [ ] stderr 输出用灰色字体显示
-- [ ] Tab A 运行 Test 期间切到 Tab B，切回 Tab A 后看到 Tab A 的运行结果
-- [ ] 新文件按 F9 → 弹出保存对话框 → 取消保存 → 不执行编译运行
+- [x] 写一个简单 C++（如 `scanf a+b, printf a+b`），按 F9 → OutputPanel 显示正确输出
+- [x] InputPanel 内容作为 stdin 正确传入程序
+- [x] 编译错误时 OutputPanel 显示红色错误信息，状态栏显示 "Build failed"
+- [x] Runtime Error（返回码非 0）显示红色
+- [x] F5 弹出外部终端窗口，程序结束后提示"按任意键关闭"
+- [x] F7 终止正在运行的进程
+- [x] 运行超时后 OutputPanel 显示红色超时信息
+- [x] 编译超时后 OutputPanel 显示红色超时信息
+- [x] Busy 状态下按 Build/Test/Run 弹出英文提示，不启动新操作
+- [x] stderr 输出用灰色字体显示
+- [x] Tab A 运行 Test 期间切到 Tab B，切回 Tab A 后看到 Tab A 的运行结果
+- [x] 新文件按 F9 → 弹出保存对话框 → 取消保存 → 不执行编译运行
 
 ---
 
