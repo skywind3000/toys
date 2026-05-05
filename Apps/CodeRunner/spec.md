@@ -26,7 +26,7 @@ StatusLine (QStatusBar)
 | 类 | 基类 | 职责 |
 |----|------|------|
 | MainWindow | QMainWindow | 主窗口，协调所有组件 |
-| CodeEditor | QTextEdit (setAcceptRichText=False) | 代码编辑器，行号显示/Tab制表符/Zoom/语法高亮/括号补全/自动缩进/改写模式。因 PyQt5 QPlainTextEdit.setDocument() 不工作，改用 QTextEdit |
+| CodeEditor | QTextEdit (setAcceptRichText=False) | 代码编辑器，行号显示/Tab制表符/Zoom/语法高亮/括号补全/自动缩进/改写模式。持有 `indent_style` 和 `indent_size` 属性（从 Settings 同步）。因 PyQt5 QPlainTextEdit.setDocument() 不工作，改用 QTextEdit |
 | LineNumberArea | QWidget | 行号区域，作为 CodeEditor 子Widget，paintEvent 委托给 CodeEditor._paint_line_numbers |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮规则 |
 | InputPanel | QTextEdit (setAcceptRichText=False) | 输入面板，纯文本，外层包装 QWidget + QLabel "INPUT"。同 CodeEditor 原因改用 QTextEdit |
@@ -72,7 +72,7 @@ class TabData:
 - `is_dirty` 标志：编辑器文本变化时置 True，保存后置 False；新建文件预填充模板后也视为 dirty
 - 标签名生成规则：`is_new` 且 `is_dirty` → `*untitledN*`；`is_new` 且非 dirty → `untitledN`；已保存文件 dirty → `*filename*`；已保存文件非 dirty → `filename`
 - 退出时持久化：已保存文件记录 file_path；新文件记录 editor_doc.toPlainText() + input_doc.toPlainText()
-- CppHighlighter 在 TabData 创建时实例化但不挂载到 editor_doc（延迟挂载避免大文件打开时 highlighter 逐块处理的开销），Phase 4 实现高亮规则后再通过 `setDocument()` 挂载，生命周期与 TabData 一致
+- CppHighlighter 在 TabData 创建时实例化并立即挂载到 editor_doc（`CppHighlighter(self.editor_doc)`），生命周期与 TabData 一致
 
 ### TabManager（纯数据管理器 — 无 UI 操作）
 
@@ -99,6 +99,8 @@ class TabManager:
 **标签切换（setDocument 模式）**：
 
 标签切换由 MainWindow._switch_to_tab 实现，通过交换 QTextDocument 切换标签，不销毁/重建文本内容。光标和滚动条位置需手动保存/恢复（它们属于 Widget 而非 Document）。使用 `setUpdatesEnabled(False)` 冻结重绘，避免多步操作产生中间帧闪烁。
+
+**文档字体同步**：QTextDocument 有独立的 `defaultFont`，与编辑器 Widget 的字体互不关联。CodeEditor.setDocument() 重写中会调用 `doc.setDefaultFont(self.font())` 将文档字体同步为编辑器字体。此同步至关重要——文档布局（包括 Tab 定位）使用 `defaultFont` 计算，若字体不一致，Tab 的像素值与文档字符宽度不匹配，导致 Tab 显示宽度错误（如 4 字符宽的 Tab 显示为 5 字符宽）。
 
 **性能优化：延迟光标恢复**。QTextEdit.setTextCursor() 会触发 QTextDocumentLayout 对全文档做布局计算，7500 行文件约需 1.2 秒。将编辑器光标/滚动位置的恢复延迟到下一个事件循环迭代（`QTimer.singleShot(0)`），使文档内容先瞬间显示（~3ms），光标随后恢复。IO 面板的光标恢复不延迟（文档小，无性能问题）。延迟恢复回调检查标签索引是否仍是当前标签，防止快速切换时的竞态。示例流程：
 
@@ -296,10 +298,12 @@ class Settings:
 
 **自动缩进**：覆盖 `keyPressEvent`，Enter 键行为：
 1. 取当前行的前导空白（缩进）作为新行基础缩进
-2. 如果当前行末尾是 `{`，新行增加一级缩进（+4 个空格或 1 个 Tab，取决于当前行缩进字符类型）
+2. 如果当前行末尾是 `{`，新行增加一级缩进：按 `Settings.indent_style` 决定加 `\t`（tab 风格）或 `' ' * indent_size`（space 风格），不猜测文档既有缩进风格
 3. 如果下一行（原光标右侧）以 `}` 开头且当前行是 `{`，则在 `}` 行减少一级缩进（光标停留在增加缩进的新行）
 
-**Tab 键**：插入 Tab 制表符（`\t`），不转换为空格。Tab 宽度设为 4（`setTabStopWidth` 或 `setTabStopDistance`）。
+**Tab 键**：插入 Tab 制表符（`\t`），不转换为空格。Tab 宽度设为 4 个字符宽度（基于 `fontMetrics().horizontalAdvance('x') * 4`）。
+
+**重要：字体变更与 Tab 宽度联动**。Tab 宽度（像素值）依赖当前字体的字符宽度。当 SettingsDialog 更换编辑器字体或字号时，必须触发 `editor.updateFontMetrics()` 重新计算 Tab 宽度，并同步 `document.setDefaultFont(editor.font())` 保持文档布局字体一致。否则 Tab 宽度像素值与新字体字符宽度不匹配，会导致 Tab 显示为错误字符数（如 4 字符宽变成 5 字符宽）。
 
 **改写模式（Overtype）**：
 - `overwrite_mode: bool` 属性，初始为 False（Insert 模式）
@@ -320,7 +324,7 @@ class Settings:
 | 分组 | 正则/规则 | 颜色 |
 |------|-----------|------|
 | 关键字 | `\b(int|float|...)\b` | 蓝色（非粗体，避免 bold 破坏等宽对齐） |
-| 预处理器 | `^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning)\b` | 蓝色（同关键字，非粗体） |
+| 预处理器 | `^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning)\b` | 蓝色（同关键字） |
 | 字符串 | `"..."`（双引号，不含换行） | 深红色 |
 | 字符 | `'.'`（单引号字符常量） | 深红色 |
 | 注释单行 | `//[^\n]*` | 绿色 (Visual C++ 风格) |

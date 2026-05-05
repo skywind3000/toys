@@ -727,9 +727,12 @@ class CodeEditor (QTextEdit):
         self._update_line_number_area_width()
 
     def _update_tab_width (self):
-        # Tab width = 4 characters, using fontMetrics for the
-        # actual pixel width. horizontalAdvance already accounts
-        # for DPI scaling under AA_EnableHighDpiScaling.
+        # Tab width = 4 characters. IMPORTANT: tab width (pixels) depends
+        # on the current font's char width. Whenever font/size changes
+        # (SettingsDialog, zoom), must call updateFontMetrics() to
+        # recalculate tab width and sync document.setDefaultFont().
+        # Otherwise tab pixel value won't match new font, causing wrong
+        # visual width (e.g. 4-char tab appearing as 5 chars).
         self.setTabStopWidth(
             self.fontMetrics().horizontalAdvance('x') * 4)
 
@@ -761,8 +764,11 @@ class CodeEditor (QTextEdit):
                     self._update_line_number_area_width)
             except (RuntimeError, TypeError):
                 pass
-        # Set document's default font to match the editor widget font
-        # so that tab stops and layout use the same metrics
+        # Sync document's defaultFont to editor widget font, so that
+        # tab stops and layout use the same font metrics. Without this,
+        # the document uses its own defaultFont (often system default)
+        # while setTabStopWidth is calculated from the editor font,
+        # causing mismatch (e.g. 4-char tab appearing as 5 chars).
         doc.setDefaultFont(self.font())
         super().setDocument(doc)
         doc.blockCountChanged.connect(
