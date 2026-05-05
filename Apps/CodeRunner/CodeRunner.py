@@ -302,11 +302,11 @@ def _generate_run_icon (dpi:float=1.0) -> QIcon:
     color = _COLOR_RUN
     p.setPen(Qt.NoPen)
     p.setBrush(QBrush(color))
-    margin = 3.0
-    tri_top = margin
-    tri_bottom = _ICON_BASE - margin
+    margin = 4.0
+    tri_top = 3.0
+    tri_bottom = _ICON_BASE - 3.0
     tri_left = margin
-    tri_right = _ICON_BASE - margin
+    tri_right = _ICON_BASE - 3.0
     mid_y = (tri_top + tri_bottom) / 2.0
     polygon = QPolygonF([
         QPointF(tri_left, tri_top),
@@ -1169,6 +1169,7 @@ class MainWindow (QMainWindow):
 
         # Create icons
         self.icons = _create_toolbar_icons()
+        self.setWindowIcon(self.icons['run'])
 
         # Create editor and IO panels
         self.editor = CodeEditor()
