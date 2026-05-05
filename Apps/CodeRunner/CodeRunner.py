@@ -10,6 +10,7 @@
 #======================================================================
 import sys
 import os
+import re
 import copy
 import math
 import time
@@ -19,12 +20,23 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox,
     QInputDialog
 )
-from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect, QRegularExpression
+from PyQt5.QtCore import (
+    Qt, QSize, QPointF, QTimer, QRect, QRegularExpression,
+    QProcess, QProcessEnvironment, pyqtSignal, QObject
+)
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
     QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
     QTextDocument, QTextCursor, QTextCharFormat
 )
+
+# Optional psutil for memory tracking
+try:
+    import psutil as _psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _psutil = None
+    _HAS_PSUTIL = False
 
 
 #----------------------------------------------------------------------
@@ -387,6 +399,84 @@ def _read_file (path:str) -> tuple:
     encoding = 'gbk' if sys.platform == 'win32' else 'utf-8'
     content = raw.decode(encoding, 'replace')
     return (content, encoding)
+
+
+#----------------------------------------------------------------------
+# EncodingManager
+#----------------------------------------------------------------------
+class EncodingManager (object):
+    """Encoding detection, compilation flags, and I/O conversion."""
+
+    @staticmethod
+    def platform_charset () -> str:
+        if sys.platform == 'win32':
+            return 'gbk'
+        return 'utf-8'
+
+    @staticmethod
+    def build_flags (source_encoding:str) -> list:
+        flags = []
+        pc = EncodingManager.platform_charset()
+        flags.append('-fexec-charset={}'.format(pc))
+        if source_encoding.lower().replace('-', '') == 'utf8':
+            flags.append('-finput-charset=UTF-8')
+        return flags
+
+    @staticmethod
+    def encode_stdin (text:str) -> bytes:
+        charset = EncodingManager.platform_charset()
+        return text.encode(charset, 'replace')
+
+    @staticmethod
+    def decode_stdout (raw:bytes) -> str:
+        charset = EncodingManager.platform_charset()
+        return raw.decode(charset, 'replace')
+
+    @staticmethod
+    def decode_stderr (raw:bytes) -> str:
+        charset = EncodingManager.platform_charset()
+        return raw.decode(charset, 'replace')
+
+
+#----------------------------------------------------------------------
+# Environment variable expansion
+#----------------------------------------------------------------------
+def _expand_env_vars (value:str) -> str:
+    """Expand $VAR_NAME references in environment variable values."""
+    def replacer (match):
+        var_name = match.group(1)
+        return os.environ.get(var_name, '')
+    return re.sub(r'\$([A-Za-z_][A-Za-z0-9_]*)', replacer, value)
+
+
+#----------------------------------------------------------------------
+# Run external terminal helper
+#----------------------------------------------------------------------
+def _ensure_cmd_file () -> str:
+    """Create %TEMP%\\coderunner.cmd if needed. Returns bat file path."""
+    bat_path = os.path.join(
+        os.environ.get('TEMP', os.environ.get('TMP', '')),
+        'coderunner.cmd')
+    content = (
+        '@echo off\n'
+        'call %CR_COMMAND%\n'
+        'set CR_EXITCODE=%ERRORLEVEL%\n'
+        'call %CR_PAUSE%\n'
+        'exit %CR_EXITCODE%\n'
+    )
+    need_write = True
+    if os.path.exists(bat_path):
+        try:
+            with open(bat_path, 'r') as f:
+                existing = f.read()
+            if existing == content:
+                need_write = False
+        except (IOError, OSError):
+            need_write = True
+    if need_write:
+        with open(bat_path, 'w') as f:
+            f.write(content)
+    return bat_path
 
 
 #----------------------------------------------------------------------
@@ -786,6 +876,205 @@ class TabManager:
 
 
 #----------------------------------------------------------------------
+# ProcessManager
+#----------------------------------------------------------------------
+class ProcessManager (QObject):
+    """Manages compile and test-run processes via QProcess."""
+
+    compile_finished = pyqtSignal(int, str)
+    run_stdout_ready = pyqtSignal(str)
+    run_stderr_ready = pyqtSignal(str)
+    run_finished = pyqtSignal(int, float, int)
+    compile_timeout_occurred = pyqtSignal()
+    run_timeout_occurred = pyqtSignal()
+
+    def __init__ (self, parent=None, settings=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.process = None
+        self.busy = False
+        self.mode = None  # 'compile' or 'test_run'
+        self.target_tab = None
+        self._start_time = 0.0
+        self._peak_memory = 0
+        self._memory_timer = None
+        self._timeout_timer = None
+        self._tracked_pid = 0
+        self._stdin_data = None
+        self._enc_mgr = EncodingManager()
+        self._stderr_buffer = ''
+
+    def start_compile (self, command:list, work_dir:str,
+                       env:QProcessEnvironment, timeout:int=20):
+        self.busy = True
+        self.mode = 'compile'
+        self._start_time = time.time()
+        self._stderr_buffer = ''
+        self._peak_memory = 0
+        self.process = QProcess(self)
+        self.process.setProcessEnvironment(env)
+        self.process.setWorkingDirectory(work_dir)
+        self.process.setProcessChannelMode(QProcess.SeparateChannels)
+        self.process.readyReadStandardError.connect(
+            self._on_compile_stderr_ready)
+        self.process.finished.connect(self._on_compile_finished)
+        self.process.start(command[0], command[1:])
+        self._timeout_timer = QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._on_compile_timeout)
+        self._timeout_timer.start(timeout * 1000)
+
+    def start_test_run (self, exe_path:str, work_dir:str,
+                        env:QProcessEnvironment, stdin_data:bytes,
+                        timeout:int=10):
+        self.busy = True
+        self.mode = 'test_run'
+        self._start_time = time.time()
+        self._peak_memory = 0
+        self._stdin_data = stdin_data
+        self.process = QProcess(self)
+        self.process.setProcessEnvironment(env)
+        self.process.setWorkingDirectory(work_dir)
+        self.process.setProcessChannelMode(QProcess.SeparateChannels)
+        self.process.readyReadStandardOutput.connect(
+            self._on_run_stdout_ready)
+        self.process.readyReadStandardError.connect(
+            self._on_run_stderr_ready)
+        self.process.started.connect(self._on_run_started)
+        self.process.finished.connect(self._on_run_finished)
+        self.process.start(exe_path)
+        self._timeout_timer = QTimer(self)
+        self._timeout_timer.setSingleShot(True)
+        self._timeout_timer.timeout.connect(self._on_run_timeout)
+        self._timeout_timer.start(timeout * 1000)
+
+    def kill_process (self):
+        """Kill current process and clean up."""
+        if self.process and self.process.state() != QProcess.NotRunning:
+            self.process.kill()
+            self.process.waitForFinished(1000)
+        self._cleanup()
+
+    def _cleanup (self):
+        """Clean up timers and process references."""
+        self._stop_memory_tracking()
+        self._stop_timeout_timer()
+        if self.process:
+            self.process.deleteLater()
+            self.process = None
+        self.busy = False
+        self.mode = None
+        self._stdin_data = None
+
+    def _stop_timeout_timer (self):
+        if self._timeout_timer:
+            self._timeout_timer.stop()
+            self._timeout_timer = None
+
+    #----- Compile handlers -----
+
+    def _on_compile_stderr_ready (self):
+        raw = self.process.readAllStandardError()
+        text = bytes(raw).decode('utf-8', 'replace')
+        self._stderr_buffer += text
+
+    def _on_compile_finished (self, exit_code:int, _exit_status):
+        self._stop_timeout_timer()
+        # Read any remaining stderr
+        remaining = self.process.readAllStandardError()
+        if remaining and bytes(remaining):
+            self._stderr_buffer += bytes(remaining).decode('utf-8', 'replace')
+        stderr_text = self._stderr_buffer
+        self._cleanup()
+        self.compile_finished.emit(exit_code, stderr_text)
+
+    def _on_compile_timeout (self):
+        self.process.kill()
+        self.process.waitForFinished(1000)
+        self._cleanup()
+        self.compile_timeout_occurred.emit()
+
+    #----- Run handlers -----
+
+    def _on_run_started (self):
+        self.process.write(self._stdin_data)
+        self.process.closeWriteChannel()
+        self.process.started.disconnect(self._on_run_started)
+        self._stdin_data = None
+        if _HAS_PSUTIL:
+            self._start_memory_tracking(self.process.processId())
+
+    def _on_run_stdout_ready (self):
+        raw = self.process.readAllStandardOutput()
+        data = bytes(raw)
+        if data:
+            text = self._enc_mgr.decode_stdout(data)
+            self.run_stdout_ready.emit(text)
+
+    def _on_run_stderr_ready (self):
+        raw = self.process.readAllStandardError()
+        data = bytes(raw)
+        if data:
+            text = self._enc_mgr.decode_stderr(data)
+            self.run_stderr_ready.emit(text)
+
+    def _on_run_finished (self, exit_code:int, _exit_status):
+        self._stop_timeout_timer()
+        # Read any remaining buffered data
+        remaining_stdout = self.process.readAllStandardOutput()
+        if remaining_stdout and bytes(remaining_stdout):
+            text = self._enc_mgr.decode_stdout(bytes(remaining_stdout))
+            self.run_stdout_ready.emit(text)
+        remaining_stderr = self.process.readAllStandardError()
+        if remaining_stderr and bytes(remaining_stderr):
+            text = self._enc_mgr.decode_stderr(bytes(remaining_stderr))
+            self.run_stderr_ready.emit(text)
+        elapsed = time.time() - self._start_time
+        peak = self._peak_memory
+        self._stop_memory_tracking()
+        self._cleanup()
+        self.run_finished.emit(exit_code, elapsed, peak)
+
+    def _on_run_timeout (self):
+        # Read any data before killing
+        remaining_stdout = self.process.readAllStandardOutput()
+        if remaining_stdout and bytes(remaining_stdout):
+            text = self._enc_mgr.decode_stdout(bytes(remaining_stdout))
+            self.run_stdout_ready.emit(text)
+        remaining_stderr = self.process.readAllStandardError()
+        if remaining_stderr and bytes(remaining_stderr):
+            text = self._enc_mgr.decode_stderr(bytes(remaining_stderr))
+            self.run_stderr_ready.emit(text)
+        self.process.kill()
+        self.process.waitForFinished(1000)
+        self._cleanup()
+        self.run_timeout_occurred.emit()
+
+    #----- Memory tracking -----
+
+    def _start_memory_tracking (self, pid:int):
+        self._peak_memory = 0
+        self._tracked_pid = pid
+        self._memory_timer = QTimer(self)
+        self._memory_timer.timeout.connect(self._poll_memory)
+        self._memory_timer.start(100)
+
+    def _poll_memory (self):
+        try:
+            proc = _psutil.Process(self._tracked_pid)
+            mem = proc.memory_info()
+            self._peak_memory = max(self._peak_memory, mem.rss)
+        except Exception:
+            pass
+
+    def _stop_memory_tracking (self):
+        if self._memory_timer:
+            self._memory_timer.stop()
+            self._memory_timer = None
+        self._tracked_pid = 0
+
+
+#----------------------------------------------------------------------
 # LineNumberArea
 #----------------------------------------------------------------------
 class LineNumberArea (QWidget):
@@ -1141,6 +1430,28 @@ class InputPanel (QTextEdit):
 
 
 #----------------------------------------------------------------------
+# Output rendering utilities
+#----------------------------------------------------------------------
+def _output_clear (doc:QTextDocument):
+    """Clear all content from an output document."""
+    cursor = QTextCursor(doc)
+    cursor.select(QTextCursor.Document)
+    cursor.removeSelectedText()
+
+
+def _output_append (doc:QTextDocument, text:str, color:QColor=None):
+    """Append text to an output document with optional foreground color.
+    color=None uses default foreground (stdout default)."""
+    cursor = QTextCursor(doc)
+    cursor.movePosition(QTextCursor.End)
+    fmt = QTextCharFormat()
+    if color is not None:
+        fmt.setForeground(QBrush(color))
+    cursor.setCharFormat(fmt)
+    cursor.insertText(text)
+
+
+#----------------------------------------------------------------------
 # OutputPanel
 #----------------------------------------------------------------------
 class OutputPanel (QTextEdit):
@@ -1220,6 +1531,12 @@ class MainWindow (QMainWindow):
         self._tab_switching = False
         self._last_file_dir = ''
         self._deferred_restore_tab = -1
+
+        # Process management and flow state
+        self.enc_mgr = EncodingManager()
+        self.proc_mgr = ProcessManager(parent=self, settings=self.settings)
+        self._flow_state = None   # 'test', 'run', 'build'
+        self._flow_tab = None     # TabData that initiated the flow
 
         # Create actions first (needed by menubar and toolbar)
         self.__create_actions()
@@ -1471,6 +1788,20 @@ class MainWindow (QMainWindow):
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
+        # ProcessManager signals
+        self.proc_mgr.compile_finished.connect(
+            self._on_compile_finished)
+        self.proc_mgr.run_stdout_ready.connect(
+            self._on_run_stdout_ready)
+        self.proc_mgr.run_stderr_ready.connect(
+            self._on_run_stderr_ready)
+        self.proc_mgr.run_finished.connect(
+            self._on_run_finished)
+        self.proc_mgr.compile_timeout_occurred.connect(
+            self._on_compile_timeout)
+        self.proc_mgr.run_timeout_occurred.connect(
+            self._on_run_timeout)
+
     def __setup_tab_switch_shortcuts (self):
         # Alt+1~9 → switch to tab 0~8, Alt+0 → tab 9
         for i in range(1, 10):
@@ -1613,20 +1944,62 @@ class MainWindow (QMainWindow):
             self.editor.centerCursor()
 
     def _action_build (self):
-        # TODO: implement Build with ProcessManager
-        self.status_message.setText('Build: not yet implemented')
+        if self.proc_mgr.busy:
+            QMessageBox.information(
+                self, 'Busy',
+                'A process is currently running. '
+                'Please wait or press Stop before starting a new operation.')
+            return
+        tab = self.tab_manager.get_current()
+        if not tab:
+            return
+        if self._save_if_dirty(tab) < 0:
+            return
+        self._flow_state = 'build'
+        self._flow_tab = tab
+        self._clear_and_start_compile(tab)
 
     def _action_run (self):
-        # TODO: implement Run with ProcessManager
-        self.status_message.setText('Run: not yet implemented')
+        if self.proc_mgr.busy:
+            QMessageBox.information(
+                self, 'Busy',
+                'A process is currently running. '
+                'Please wait or press Stop before starting a new operation.')
+            return
+        tab = self.tab_manager.get_current()
+        if not tab:
+            return
+        if self._save_if_dirty(tab) < 0:
+            return
+        if self._need_recompile(tab):
+            self._flow_state = 'run'
+            self._flow_tab = tab
+            self._clear_and_start_compile(tab)
+        else:
+            self._launch_terminal(tab)
 
     def _action_test (self):
-        # TODO: implement Test with ProcessManager
-        self.status_message.setText('Test: not yet implemented')
+        if self.proc_mgr.busy:
+            QMessageBox.information(
+                self, 'Busy',
+                'A process is currently running. '
+                'Please wait or press Stop before starting a new operation.')
+            return
+        tab = self.tab_manager.get_current()
+        if not tab:
+            return
+        if self._save_if_dirty(tab) < 0:
+            return
+        if self._need_recompile(tab):
+            self._flow_state = 'test'
+            self._flow_tab = tab
+            self._clear_and_start_compile(tab)
+        else:
+            self._start_test_run(tab)
 
     def _action_stop (self):
-        # TODO: implement Stop with ProcessManager
-        self.status_message.setText('Stop: not yet implemented')
+        if self.proc_mgr.busy:
+            self.proc_mgr.kill_process()
 
     def _action_about (self):
         QMessageBox.about(
@@ -1637,6 +2010,197 @@ class MainWindow (QMainWindow):
     def _action_settings (self):
         # TODO: implement SettingsDialog (Phase 6)
         self.status_message.setText('Settings: not yet implemented')
+
+    #----- Compile/run helper methods -----
+
+    def _need_recompile (self, tab:TabData) -> bool:
+        """Check if recompilation is needed."""
+        exe_path = self._get_exe_path(tab)
+        if not exe_path or not os.path.exists(exe_path):
+            return True
+        source_mtime = os.path.getmtime(tab.file_path)
+        exe_mtime = os.path.getmtime(exe_path)
+        if exe_mtime < source_mtime:
+            return True
+        if exe_mtime < tab.compiler_mtime:
+            return True
+        return False
+
+    def _get_exe_path (self, tab:TabData) -> str:
+        """Get exe path corresponding to the source file."""
+        if tab.is_new or not tab.file_path:
+            return ''
+        base = os.path.splitext(tab.file_path)[0]
+        return base + '.exe'
+
+    def _build_compile_command (self, tab:TabData) -> list:
+        """Construct the compile command list."""
+        exe_path = self._get_exe_path(tab)
+        flags = self.enc_mgr.build_flags(tab.encoding)
+        command = [self.settings.compiler_path]
+        command.extend(flags)
+        if self.settings.compiler_flags:
+            command.extend(self.settings.compiler_flags.split())
+        command.append(tab.file_path)
+        command.append('-o')
+        command.append(exe_path)
+        return command
+
+    def _make_process_env (self) -> QProcessEnvironment:
+        """Build QProcessEnvironment from system env + user env_vars."""
+        env = QProcessEnvironment()
+        for key in os.environ:
+            env.insert(key, os.environ[key])
+        for key, value in self.settings.env_vars.items():
+            expanded = _expand_env_vars(value)
+            env.insert(key, expanded)
+        return env
+
+    def _clear_and_start_compile (self, tab:TabData):
+        """Clear output and start compilation."""
+        _output_clear(tab.output_doc)
+        _output_append(tab.output_doc, 'Compiling...\n',
+                       QColor(128, 128, 128))
+        command = self._build_compile_command(tab)
+        work_dir = os.path.dirname(tab.file_path)
+        env = self._make_process_env()
+        self.proc_mgr.target_tab = tab
+        self.proc_mgr.start_compile(
+            command, work_dir, env, self.settings.compile_timeout)
+        self.status_message.setText('Compiling...')
+
+    def _start_test_run (self, tab:TabData):
+        """Start test run with stdin from InputPanel."""
+        exe_path = self._get_exe_path(tab)
+        work_dir = os.path.dirname(exe_path)
+        stdin_text = tab.input_doc.toPlainText()
+        stdin_data = self.enc_mgr.encode_stdin(stdin_text)
+        env = self._make_process_env()
+        _output_clear(tab.output_doc)
+        self.proc_mgr.target_tab = tab
+        self.proc_mgr.start_test_run(
+            exe_path, work_dir, env, stdin_data,
+            self.settings.run_timeout)
+        self.status_message.setText('Running...')
+
+    def _launch_terminal (self, tab:TabData):
+        """Launch exe in external terminal window."""
+        exe_path = self._get_exe_path(tab)
+        work_dir = os.path.dirname(exe_path)
+        bat_path = _ensure_cmd_file()
+        os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
+        os.environ['CR_PAUSE'] = 'pause'
+        result = QProcess.startDetached(
+            'cmd',
+            ['/c', 'start', '', '/D', work_dir, bat_path])
+        del os.environ['CR_COMMAND']
+        del os.environ['CR_PAUSE']
+        if result:
+            self.status_message.setText('Program launched in terminal')
+        else:
+            self.status_message.setText('Failed to launch terminal')
+
+    def _count_compile_errors (self, stderr_text:str) -> int:
+        """Count the number of compile error lines in stderr output."""
+        count = 0
+        for line in stderr_text.splitlines():
+            if ': error:' in line:
+                count += 1
+        return max(1, count) if stderr_text.strip() else 0
+
+    #----- ProcessManager signal handlers -----
+
+    def _on_compile_finished (self, exit_code:int, stderr_text:str):
+        tab = self._flow_tab
+        if not tab:
+            return
+        if exit_code != 0:
+            _output_clear(tab.output_doc)
+            _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
+            err_count = self._count_compile_errors(stderr_text)
+            self.status_message.setText(
+                'Build failed with {} error(s)'.format(err_count))
+            self._flow_state = None
+            self._flow_tab = None
+            return
+        # Compile succeeded
+        if self._flow_state == 'build':
+            elapsed = time.time() - self.proc_mgr._start_time
+            _output_clear(tab.output_doc)
+            _output_append(tab.output_doc,
+                           'Build OK in {:.3}s\n'.format(elapsed),
+                           QColor(128, 128, 128))
+            self.status_message.setText('Build successful')
+            self._flow_state = None
+            self._flow_tab = None
+        elif self._flow_state == 'test':
+            self._start_test_run(tab)
+        elif self._flow_state == 'run':
+            self._launch_terminal(tab)
+            self._flow_state = None
+            self._flow_tab = None
+
+    def _on_run_stdout_ready (self, text:str):
+        tab = self.proc_mgr.target_tab
+        if tab:
+            _output_append(tab.output_doc, text)
+
+    def _on_run_stderr_ready (self, text:str):
+        tab = self.proc_mgr.target_tab
+        if tab:
+            _output_append(tab.output_doc, text, QColor(128, 128, 128))
+
+    def _on_run_finished (self, exit_code:int, elapsed:float,
+                          peak_memory:int):
+        tab = self._flow_tab
+        if not tab:
+            return
+        # Build exit status line
+        if exit_code != 0:
+            line = 'Runtime Error (exit code {})\n'.format(exit_code)
+            _output_append(tab.output_doc, line, QColor(Qt.red))
+            self.status_message.setText(
+                'Program exited with code {}'.format(exit_code))
+        else:
+            mem_str = ''
+            if peak_memory > 0:
+                mem_mb = peak_memory / (1024 * 1024)
+                mem_str = ', {:.1f}MB'.format(mem_mb)
+            line = 'exit with code {} in {:.3}s{}\n'.format(
+                exit_code, elapsed, mem_str)
+            _output_append(tab.output_doc, line, QColor(128, 128, 128))
+            self.status_message.setText(
+                'Program exited with code {}'.format(exit_code))
+        self._flow_state = None
+        self._flow_tab = None
+
+    def _on_compile_timeout (self):
+        tab = self._flow_tab
+        if not tab:
+            return
+        _output_clear(tab.output_doc)
+        _output_append(tab.output_doc,
+                       'Compilation timeout after {} seconds\n'.format(
+                           self.settings.compile_timeout),
+                       QColor(Qt.red))
+        self.status_message.setText(
+            'Compilation timeout after {} seconds'.format(
+                self.settings.compile_timeout))
+        self._flow_state = None
+        self._flow_tab = None
+
+    def _on_run_timeout (self):
+        tab = self._flow_tab
+        if not tab:
+            return
+        _output_append(tab.output_doc,
+                       'Timeout after {} seconds\n'.format(
+                           self.settings.run_timeout),
+                       QColor(Qt.red))
+        self.status_message.setText(
+            'Timeout after {} seconds'.format(self.settings.run_timeout))
+        self._flow_state = None
+        self._flow_tab = None
 
     #----- Tab management (UI operations) -----
 
