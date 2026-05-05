@@ -398,7 +398,6 @@ class ProcessManager(QObject):
     busy: bool                # True = 正在编译或运行（由状态机驱动，非独立变化）
     mode: str                 # 'compile' / 'test_run' / None
     target_tab: TabData       # 发起本次操作的标签页引用，输出路由目标
-    _killed_by_us: bool       # True = 进程被超时或 Stop 主动杀死
 
     signals:
         compile_finished(exit_code, stderr_text)
@@ -409,6 +408,12 @@ class ProcessManager(QObject):
         run_timeout_occurred()
         launch_failed(err_msg)
 ```
+
+**waitForStarted 信号屏蔽**：
+
+QProcess.waitForStarted() 在等待期间会处理事件循环，导致 `finished` 信号可能在 waitForStarted 返回之前就发出。当编译器不在 PATH 中时，进程立即失败，`finished` 信号先于 `launch_failed` 到达 MainWindow，导致 `_on_compile_finished` 将状态设为 IDLE 并输出 "Process stopped"，而非 `_on_launch_failed` 显示正确的 "Failed to start compiler" 消息。
+
+修复方式：在调用 `waitForStarted(5000)` 之前，暂时断开 `process.finished` 信号；waitForStarted 返回后再重新连接。这样 finished 信号在启动检查期间不会泄漏到 MainWindow。
 
 **Test 流程**（状态机视角）：
 1. 用户点击 Test → 检查 `_flow_state == IDLE` 和 `proc_mgr.busy == False`，否则弹 Busy 提示

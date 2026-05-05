@@ -927,6 +927,8 @@ class ProcessManager (QObject):
         self.process.setProcessChannelMode(QProcess.SeparateChannels)
         self.process.readyReadStandardError.connect(
             self._on_compile_stderr_ready)
+        # Temporarily block finished signal during waitForStarted
+        # to prevent it firing during event processing inside waitForStarted
         self.process.finished.connect(self._on_compile_finished)
         # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
@@ -934,7 +936,13 @@ class ProcessManager (QObject):
         self._timeout_timer.timeout.connect(self._on_compile_timeout)
         self._timeout_timer.start(timeout * 1000)
         self.process.start(command[0], command[1:])
-        if not self.process.waitForStarted(5000):
+        try:
+            self.process.finished.disconnect(self._on_compile_finished)
+        except TypeError:
+            pass
+        started = self.process.waitForStarted(5000)
+        self.process.finished.connect(self._on_compile_finished)
+        if not started:
             self._stop_timeout_timer()
             err_msg = self.process.errorString()
             self._cleanup()
@@ -958,6 +966,7 @@ class ProcessManager (QObject):
         self.process.readyReadStandardError.connect(
             self._on_run_stderr_ready)
         self.process.started.connect(self._on_run_started)
+        # Temporarily block finished signal during waitForStarted
         self.process.finished.connect(self._on_run_finished)
         # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
@@ -965,7 +974,13 @@ class ProcessManager (QObject):
         self._timeout_timer.timeout.connect(self._on_run_timeout)
         self._timeout_timer.start(timeout * 1000)
         self.process.start(exe_path)
-        if not self.process.waitForStarted(5000):
+        try:
+            self.process.finished.disconnect(self._on_run_finished)
+        except TypeError:
+            pass
+        started = self.process.waitForStarted(5000)
+        self.process.finished.connect(self._on_run_finished)
+        if not started:
             self._stop_timeout_timer()
             err_msg = self.process.errorString()
             self._cleanup()
@@ -979,10 +994,27 @@ class ProcessManager (QObject):
             self.process.kill()
 
     def _cleanup (self):
-        """Clean up timers and process references."""
+        """Clean up timers and process references. Disconnect signals
+        to prevent finished/readyRead signals leaking after cleanup."""
         self._stop_memory_tracking()
         self._stop_timeout_timer()
         if self.process:
+            try:
+                self.process.finished.disconnect()
+            except TypeError:
+                pass
+            try:
+                self.process.readyReadStandardError.disconnect()
+            except TypeError:
+                pass
+            try:
+                self.process.readyReadStandardOutput.disconnect()
+            except TypeError:
+                pass
+            try:
+                self.process.started.disconnect()
+            except TypeError:
+                pass
             self.process.deleteLater()
             self.process = None
         self.busy = False
@@ -1016,6 +1048,7 @@ class ProcessManager (QObject):
             return
         self._stop_timeout_timer()
         self.process.kill()
+        self.compile_timeout_occurred.emit()
 
     #----- Run handlers -----
 
@@ -1043,7 +1076,7 @@ class ProcessManager (QObject):
 
     def _on_run_finished (self, exit_code:int, exit_status):
         self._stop_timeout_timer()
-        killed = (exit_status != QProcess.NormalExit)
+        killed = exit_status != QProcess.NormalExit
         # Read any remaining buffered data
         remaining_stdout = self.process.readAllStandardOutput()
         if remaining_stdout and bytes(remaining_stdout):
@@ -1073,6 +1106,7 @@ class ProcessManager (QObject):
             self.run_stderr_ready.emit(text)
         self._stop_timeout_timer()
         self.process.kill()
+        self.run_timeout_occurred.emit()
 
     #----- Memory tracking -----
 
@@ -2188,16 +2222,19 @@ class MainWindow (QMainWindow):
                     self._stop_timer.stop()
                     self._stop_timer = None
                 if self._stop_reason == 'timeout':
+                    elapsed = time.time() - self.proc_mgr._start_time
                     _output_clear(tab.output_doc)
                     _output_append(
                         tab.output_doc,
-                        'Compilation timeout after {} seconds\n'.format(
-                            self.settings.compile_timeout),
+                        'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
+                            self.settings.compile_timeout, elapsed),
                         QColor(Qt.red))
                 elif self._stop_reason == 'stop':
+                    elapsed = time.time() - self.proc_mgr._start_time
                     _output_append(
                         tab.output_doc,
-                        'Process stopped\n', QColor(128, 128, 128))
+                        'Compilation stopped in {:.3}s\n'.format(elapsed),
+                        QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
             return
         if self._flow_state != _FLOW_COMPILING:
@@ -2246,15 +2283,18 @@ class MainWindow (QMainWindow):
                     self._stop_timer.stop()
                     self._stop_timer = None
                 if self._stop_reason == 'timeout':
+                    elapsed = time.time() - self.proc_mgr._start_time
                     _output_append(
                         tab.output_doc,
-                        'Timeout after {} seconds\n'.format(
-                            self.settings.run_timeout),
+                        'Timeout after {} seconds (ran {:.3}s)\n'.format(
+                            self.settings.run_timeout, elapsed),
                         QColor(Qt.red))
                 elif self._stop_reason == 'stop':
+                    elapsed = time.time() - self.proc_mgr._start_time
                     _output_append(
                         tab.output_doc,
-                        'Process stopped\n', QColor(128, 128, 128))
+                        'Process stopped in {:.3}s\n'.format(elapsed),
+                        QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
             return
         if self._flow_state != _FLOW_RUNNING:
@@ -2301,9 +2341,24 @@ class MainWindow (QMainWindow):
         if not tab:
             return
         _output_clear(tab.output_doc)
-        _output_append(tab.output_doc,
-                       'Failed to start process: {}\n'.format(err_msg),
-                       QColor(Qt.red))
+        if self._flow_state == _FLOW_COMPILING:
+            compiler = self.settings.compiler_path
+            _output_append(
+                tab.output_doc,
+                'Failed to start compiler \'{}\'\n'.format(compiler),
+                QColor(Qt.red))
+            _output_append(
+                tab.output_doc,
+                'Error: {}\n'.format(err_msg),
+                QColor(Qt.red))
+            _output_append(
+                tab.output_doc,
+                'Please check Settings to set the correct compiler path.\n',
+                QColor(128, 128, 128))
+        else:
+            _output_append(tab.output_doc,
+                           'Failed to start program: {}\n'.format(err_msg),
+                           QColor(Qt.red))
         self._set_flow_state(_FLOW_IDLE)
 
     #----- Tab management (UI operations) -----
