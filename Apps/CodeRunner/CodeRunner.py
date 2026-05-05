@@ -401,13 +401,15 @@ _SETTINGS_DEFAULTS = {
     'io_font_family': '',
     'io_font_size': 11,
     'bracket_completion': True,
+    'indent_style': 'tab',
+    'indent_size': 4,
     'word_wrap': False,
     'template_text': (
         '#include <iostream>\n'
         '#include <cstdio>\n'
         'using namespace std;\n'
         'int main() {\n'
-        '    return 0;\n'
+        '\treturn 0;\n'
         '}\n'
     ),
 }
@@ -461,14 +463,13 @@ class CppHighlighter (QSyntaxHighlighter):
     def __init_rules (self):
         fmt_keyword = QTextCharFormat()
         fmt_keyword.setForeground(QBrush(QColor(0, 0, 255)))
-        fmt_keyword.setFontWeight(QFont.Bold)
         self._rules.append((
             QRegularExpression(
                 r'\b(' + _CPP_KEYWORDS + r')\b'),
             fmt_keyword))
 
         fmt_preproc = QTextCharFormat()
-        fmt_preproc.setForeground(QBrush(QColor(0, 128, 0)))
+        fmt_preproc.setForeground(QBrush(QColor(0, 0, 255)))
         self._rules.append((
             QRegularExpression(
                 r'^#\s*(' + _CPP_PREPROCESSOR + r')\b'),
@@ -487,23 +488,40 @@ class CppHighlighter (QSyntaxHighlighter):
             fmt_char))
 
         fmt_comment_single = QTextCharFormat()
-        fmt_comment_single.setForeground(QBrush(QColor(128, 128, 128)))
+        fmt_comment_single.setForeground(QBrush(QColor(0, 128, 0)))
         self._rules.append((
             QRegularExpression(r'//[^\n]*'),
             fmt_comment_single))
 
         fmt_comment_multi = QTextCharFormat()
-        fmt_comment_multi.setForeground(QBrush(QColor(128, 128, 128)))
+        fmt_comment_multi.setForeground(QBrush(QColor(0, 128, 0)))
         self._multi_start = QRegularExpression(r'/\*')
         self._multi_end = QRegularExpression(r'\*/')
         self._multi_fmt = fmt_comment_multi
 
         fmt_number = QTextCharFormat()
         fmt_number.setForeground(QBrush(QColor(0, 0, 128)))
+        # Hex, binary, octal, and decimal numbers
         self._rules.append((
             QRegularExpression(
-                r'\b[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*\b'),
+                r'\b(0[xX][0-9a-fA-F]+[uUlL]*'
+                r'|0[bB][01]+[uUlL]*'
+                r'|[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*'
+                r')\b'),
             fmt_number))
+
+        # Symbols / operators
+        fmt_symbol = QTextCharFormat()
+        fmt_symbol.setForeground(QBrush(QColor(0, 128, 128)))
+        self._rules.append((
+            QRegularExpression(
+                r'(::|->|\.\*|->\*|<<=|>>=|<<|>>'
+                r'|==|!=|<=|>=|&&|\|\|'
+                r'|\+=|-=|\*=|/=|%=|&=|\|=|\^='
+                r'|\+\+|--|\.\.\.'
+                r'|[+\-*/%&|^~!=<>?:;,]'
+                r')'),
+            fmt_symbol))
 
     def highlightBlock (self, text:str):
         # First: apply single-line rules (first-match-wins)
@@ -696,6 +714,8 @@ class CodeEditor (QTextEdit):
         super().__init__(parent)
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.NoWrap)
+        self.indent_style = 'tab'
+        self.indent_size = 4
         self._update_tab_width()
         self.line_number_area = LineNumberArea(self)
         self.overwrite_mode = False
@@ -707,7 +727,11 @@ class CodeEditor (QTextEdit):
         self._update_line_number_area_width()
 
     def _update_tab_width (self):
-        self.setTabStopWidth(self.fontMetrics().horizontalAdvance('    '))
+        # Tab width = 4 characters, using fontMetrics for the
+        # actual pixel width. horizontalAdvance already accounts
+        # for DPI scaling under AA_EnableHighDpiScaling.
+        self.setTabStopWidth(
+            self.fontMetrics().horizontalAdvance('x') * 4)
 
     def _line_number_width (self) -> int:
         digits = 1
@@ -737,6 +761,9 @@ class CodeEditor (QTextEdit):
                     self._update_line_number_area_width)
             except (RuntimeError, TypeError):
                 pass
+        # Set document's default font to match the editor widget font
+        # so that tab stops and layout use the same metrics
+        doc.setDefaultFont(self.font())
         super().setDocument(doc)
         doc.blockCountChanged.connect(
             self._update_line_number_area_width)
@@ -747,9 +774,14 @@ class CodeEditor (QTextEdit):
         self._update_line_number_area_width()
 
     def updateFontMetrics (self):
-        """Refresh tab width and line number area after any font change."""
+        """Refresh tab width, line number area, and document font."""
         self._update_tab_width()
         self._update_line_number_area_width()
+        # Keep document's default font in sync with widget font
+        # so layout and tab stops use the correct metrics
+        doc = self.document()
+        if doc:
+            doc.setDefaultFont(self.font())
 
     def setFontSize (self, point_size:int):
         """Set font point size and refresh metrics."""
@@ -914,20 +946,16 @@ class CodeEditor (QTextEdit):
 
         extra_indent = ''
         if char_before == '{':
-            if '\t' in indent:
+            if self.indent_style == 'tab':
                 extra_indent = '\t'
             else:
-                extra_indent = '    '
+                extra_indent = ' ' * self.indent_size
 
         new_indent = indent + extra_indent
-        # When cursor is between { and }, insert two newlines
-        # so } ends up on its own line with base indent
         if char_before == '{' and char_after == '}':
             cursor.beginEditBlock()
             cursor.insertText('\n' + new_indent + '\n' + indent)
             cursor.endEditBlock()
-            # Move cursor to the indented middle line
-            # (position after first newline + new_indent)
             new_pos = pos + 1 + len(new_indent)
             cursor.setPosition(new_pos)
             self.setTextCursor(cursor)
@@ -963,7 +991,8 @@ class InputPanel (QTextEdit):
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
-        self.setTabStopWidth(self.fontMetrics().horizontalAdvance('    '))
+        self.setTabStopWidth(
+            self.fontMetrics().horizontalAdvance('x') * 4)
 
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
@@ -1013,6 +1042,8 @@ class MainWindow (QMainWindow):
 
         # Create editor and IO panels
         self.editor = CodeEditor()
+        self.editor.indent_style = self.settings.indent_style
+        self.editor.indent_size = self.settings.indent_size
         self.input_panel = InputPanel()
         self.output_panel = OutputPanel()
 
@@ -1029,7 +1060,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setFont(io_font)
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
-            self.input_panel.fontMetrics().horizontalAdvance('    '))
+            self.input_panel.fontMetrics().horizontalAdvance('x') * 4)
 
         # Create standalone placeholder docs for zero-tab state
         self.empty_editor_doc = QTextDocument(self)

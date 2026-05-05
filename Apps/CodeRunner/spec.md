@@ -185,6 +185,8 @@ _SETTINGS_DEFAULTS = {
     'io_font_family': '',      # set by _init_font_defaults()
     'io_font_size': 11,
     'bracket_completion': True,
+    'indent_style': 'tab',     # 'tab' or 'space'
+    'indent_size': 4,          # spaces per indent level (for 'space' style)
     'word_wrap': False,
     'template_text': '...',
 }
@@ -227,6 +229,8 @@ class Settings:
     "io_font_family": "Consolas",
     "io_font_size": 11,
     "bracket_completion": true,
+    "indent_style": "tab",
+    "indent_size": 4,
     "template_text": "#include <iostream>\n..."
 }
 ```
@@ -315,13 +319,14 @@ class Settings:
 
 | 分组 | 正则/规则 | 颜色 |
 |------|-----------|------|
-| 关键字 | `\b(int|float|double|char|void|bool|long|short|unsigned|signed|const|static|extern|inline|virtual|override|final|class|struct|enum|union|namespace|using|template|typename|public|private|protected|if|else|while|for|do|switch|case|default|break|continue|return|try|catch|throw|new|delete|this|nullptr|true|false|sizeof|typedef|auto|register|volatile|friend|operator|explicit|mutable|constexpr|decltype|static_assert|noexcept|thread_local|alignas|alignof)\b` | 蓝色粗体 |
-| 预处理器 | `^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning)\b` | 绿色 |
+| 关键字 | `\b(int|float|...)\b` | 蓝色（非粗体，避免 bold 破坏等宽对齐） |
+| 预处理器 | `^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning)\b` | 蓝色（同关键字，非粗体） |
 | 字符串 | `"..."`（双引号，不含换行） | 深红色 |
 | 字符 | `'.'`（单引号字符常量） | 深红色 |
-| 注释单行 | `//[^\n]*` | 灰色 |
-| 注释多行 | `/\*...\*/`（multiline 模式） | 灰色 |
-| 数字 | `\b[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*\b` | 深蓝色 |
+| 注释单行 | `//[^\n]*` | 绿色 (Visual C++ 风格) |
+| 注释多行 | `/\*...\*/`（multiline 模式） | 绿色 (Visual C++ 风格) |
+| 数字 | `\b(0[xX][0-9a-fA-F]+[uUlL]*|0[bB][01]+[uUlL]*|[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*)\b`（含十六进制、二进制、八进制） | 深蓝色 |
+| 符号/运算符 | `(::|->|<<=|>>=|<<|>>|==|!=|<=|>=|&&|\|\||\+=|-=|\*=|/=|%=|&=|\|=|\^=|\+\+|--|\.\.\.|[+\-*/%&|^~!=<>?:;,])` | 深青色 (低调不抢眼) |
 
 高亮器使用 `QRegularExpression` + `QSyntaxHighlighter`，按规则顺序依次匹配，同一文本区域只应用最先匹配的规则（关键字优先级高于数字等）。
 
