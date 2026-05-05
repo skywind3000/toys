@@ -35,7 +35,8 @@ from CodeRunner import (
     CodeEditor, InputPanel, MainWindow,
     _init_font_defaults, _detect_encoding, _read_file,
     EncodingManager, _expand_env_vars, _ensure_cmd_file,
-    _output_clear, _output_append, ProcessManager
+    _output_clear, _output_append, ProcessManager,
+    _FLOW_IDLE, _FLOW_COMPILING, _FLOW_RUNNING, _FLOW_STOPPING
 )
 
 
@@ -343,6 +344,26 @@ class TestMainWindowCompile (unittest.TestCase):
         self.settings = Settings()
         _init_font_defaults(self.settings)
         self.window = MainWindow(self.settings)
+
+    def test_initial_flow_state (self):
+        self.assertEqual(self.window._flow_state, _FLOW_IDLE)
+        self.assertIsNone(self.window._flow_intent)
+        self.assertIsNone(self.window._flow_tab)
+        self.assertEqual(self.window.status_message.text(), 'Ready')
+
+    def test_set_flow_state (self):
+        self.window._set_flow_state(_FLOW_COMPILING)
+        self.assertEqual(self.window._flow_state, _FLOW_COMPILING)
+        self.assertEqual(self.window.status_message.text(), 'Compiling...')
+        self.window._set_flow_state(_FLOW_RUNNING)
+        self.assertEqual(self.window._flow_state, _FLOW_RUNNING)
+        self.assertEqual(self.window.status_message.text(), 'Running...')
+        self.window._set_flow_state(_FLOW_STOPPING)
+        self.assertEqual(self.window._flow_state, _FLOW_STOPPING)
+        self.assertEqual(self.window.status_message.text(), 'Stopping...')
+        self.window._set_flow_state(_FLOW_IDLE)
+        self.assertEqual(self.window._flow_state, _FLOW_IDLE)
+        self.assertEqual(self.window.status_message.text(), 'Ready')
 
     def test_need_recompile_new_file (self):
         tab = TabData(is_new=True, encoding='UTF-8', content='test')
