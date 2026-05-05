@@ -587,7 +587,7 @@ class CodeEditor (QTextEdit):
         self._update_line_number_area_width()
 
     def _update_tab_width (self):
-        self.setTabStopWidth(self.fontMetrics().width('    '))
+        self.setTabStopWidth(self.fontMetrics().horizontalAdvance('    '))
 
     def _line_number_width (self) -> int:
         digits = 1
@@ -595,7 +595,7 @@ class CodeEditor (QTextEdit):
         while count >= 10:
             count //= 10
             digits += 1
-        space = 3 + self.fontMetrics().width('9') * digits
+        space = 3 + self.fontMetrics().horizontalAdvance('9') * digits
         return space
 
     def _update_line_number_area_width (self):
@@ -626,9 +626,17 @@ class CodeEditor (QTextEdit):
         super().resizeEvent(event)
         self._update_line_number_area_width()
 
-    def _on_font_changed (self):
+    def updateFontMetrics (self):
+        """Refresh tab width and line number area after any font change."""
         self._update_tab_width()
         self._update_line_number_area_width()
+
+    def setFontSize (self, point_size:int):
+        """Set font point size and refresh metrics."""
+        font = self.font()
+        font.setPointSize(point_size)
+        self.setFont(font)
+        self.updateFontMetrics()
 
     def _estimate_first_visible_block (self) -> int:
         """Estimate first visible block number from scroll position
@@ -685,7 +693,7 @@ class InputPanel (QTextEdit):
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
-        self.setTabStopWidth(self.fontMetrics().width('    '))
+        self.setTabStopWidth(self.fontMetrics().horizontalAdvance('    '))
 
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
@@ -743,7 +751,7 @@ class MainWindow (QMainWindow):
         editor_font.setFamily(self.settings.editor_font_family)
         editor_font.setPointSize(self.settings.editor_font_size)
         self.editor.setFont(editor_font)
-        self.editor._on_font_changed()
+        self.editor.updateFontMetrics()
 
         io_font = self.input_panel.font()
         io_font.setFamily(self.settings.io_font_family)
@@ -751,7 +759,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setFont(io_font)
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
-            self.input_panel.fontMetrics().width('    '))
+            self.input_panel.fontMetrics().horizontalAdvance('    '))
 
         # Create standalone placeholder docs for zero-tab state
         self.empty_editor_doc = QTextDocument(self)
@@ -1020,10 +1028,7 @@ class MainWindow (QMainWindow):
 
     def _apply_zoom (self, tab):
         zoom_size = max(6, self.settings.editor_font_size + tab.zoom_font_size)
-        font = self.editor.font()
-        font.setPointSize(zoom_size)
-        self.editor.setFont(font)
-        self.editor._on_font_changed()
+        self.editor.setFontSize(zoom_size)
 
     #----- Tab management (UI operations) -----
 
@@ -1053,28 +1058,24 @@ class MainWindow (QMainWindow):
         self.editor.setUpdatesEnabled(False)
         self.input_panel.setUpdatesEnabled(False)
         self.output_panel.setUpdatesEnabled(False)
+        try:
+            # Swap documents
+            self.editor.setDocument(new_tab.editor_doc)
+            self.input_panel.setDocument(new_tab.input_doc)
+            self.output_panel.setDocument(new_tab.output_doc)
 
-        # Swap documents
-        self.editor.setDocument(new_tab.editor_doc)
-        self.input_panel.setDocument(new_tab.input_doc)
-        self.output_panel.setDocument(new_tab.output_doc)
+            # Restore IO cursors (fast, small documents)
+            self.input_panel.setTextCursor(new_tab.input_cursor)
+            self.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
 
-        # Restore IO cursors (fast, small documents)
-        self.input_panel.setTextCursor(new_tab.input_cursor)
-        self.input_panel.verticalScrollBar().setValue(new_tab.input_scroll)
-
-        # Restore zoom font size
-        base_size = self.settings.editor_font_size
-        zoom_size = max(6, base_size + new_tab.zoom_font_size)
-        font = self.editor.font()
-        font.setPointSize(zoom_size)
-        self.editor.setFont(font)
-        self.editor._on_font_changed()
-
-        # Unfreeze — document content displayed immediately
-        self.editor.setUpdatesEnabled(True)
-        self.input_panel.setUpdatesEnabled(True)
-        self.output_panel.setUpdatesEnabled(True)
+            # Restore zoom font size
+            zoom_size = max(6, self.settings.editor_font_size + new_tab.zoom_font_size)
+            self.editor.setFontSize(zoom_size)
+        finally:
+            # Unfreeze — document content displayed immediately
+            self.editor.setUpdatesEnabled(True)
+            self.input_panel.setUpdatesEnabled(True)
+            self.output_panel.setUpdatesEnabled(True)
 
         # Update tabbar current index
         self._tab_switching = True
@@ -1191,7 +1192,7 @@ class MainWindow (QMainWindow):
                 return -2
 
         tab.editor_doc.setModified(False)
-        self._update_all_tab_names()
+        # modificationChanged signal already updates this tab's name
         self.status_message.setText(
             'Saved: {}'.format(os.path.basename(tab.file_path)))
         return 0
