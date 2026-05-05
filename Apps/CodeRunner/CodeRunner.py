@@ -46,6 +46,23 @@ _FLOW_IDLE = 'idle'
 _FLOW_COMPILING = 'compiling'
 _FLOW_RUNNING = 'running'
 
+# Windows NTSTATUS codes for common crash scenarios
+_DLL_NOT_FOUND = 0xC0000135   # STATUS_DLL_NOT_FOUND (-1073741515)
+_ACCESS_VIOLATION = 0xC0000005  # STATUS_ACCESS_VIOLATION (-1073741819)
+
+
+def _describe_exit_code (exit_code:int) -> str:
+    """Return human-readable description for Windows crash exit codes."""
+    if sys.platform != 'win32':
+        return ''
+    if exit_code < 0:
+        code = exit_code & 0xFFFFFFFF
+        if code == _DLL_NOT_FOUND:
+            return 'DLL not found'
+        if code == _ACCESS_VIOLATION:
+            return 'Access violation'
+    return ''
+
 
 #----------------------------------------------------------------------
 # DPI factor
@@ -892,7 +909,7 @@ class ProcessManager (QObject):
     compile_finished = pyqtSignal(int, str, str)  # exit_code, stderr, reason
     run_stdout_ready = pyqtSignal(str)
     run_stderr_ready = pyqtSignal(str)
-    run_finished = pyqtSignal(int, float, int, str)  # exit_code, elapsed, peak, reason
+    run_finished = pyqtSignal(int, float, int, str, str)  # exit_code, elapsed, peak, reason, stderr_text
     # reason: 'normal' / 'timeout' / 'killed' / 'failed_to_start'
 
     def __init__ (self, parent=None, settings=None):
@@ -968,9 +985,11 @@ class ProcessManager (QObject):
         self.process.start(exe_path)
         if not self.process.waitForStarted(5000):
             self._stop_timeout_timer()
+            err_msg = self.process.errorString()
             self._cleanup()
             self._finished_emitted = True
-            self.run_finished.emit(-1, 0, 0, 'failed_to_start')
+            self.run_finished.emit(-1, 0, 0, 'failed_to_start',
+                                   err_msg)
             return
 
     def kill_process (self):
@@ -1086,7 +1105,7 @@ class ProcessManager (QObject):
         peak = self._peak_memory
         self._stop_memory_tracking()
         self._cleanup()
-        self.run_finished.emit(exit_code, elapsed, peak, reason)
+        self.run_finished.emit(exit_code, elapsed, peak, reason, '')
 
     def _on_run_timeout (self):
         if self._finished_emitted:
@@ -1107,7 +1126,7 @@ class ProcessManager (QObject):
         elapsed = time.time() - self._start_time
         peak = self._peak_memory
         self.process.kill()
-        self.run_finished.emit(-1, elapsed, peak, 'timeout')
+        self.run_finished.emit(-1, elapsed, peak, 'timeout', '')
 
     #----- Memory tracking -----
 
@@ -1522,6 +1541,14 @@ class OutputPanel (QTextEdit):
     def setDocument (self, doc):
         doc.setDefaultFont(self.font())
         super().setDocument(doc)
+
+    def keyPressEvent (self, event):
+        if event.matches(QKeySequence.Copy) or \
+                (event.key() == Qt.Key_Insert and
+                 event.modifiers() == Qt.ControlModifier):
+            self.copy()
+            return
+        super().keyPressEvent(event)
 
 
 #----------------------------------------------------------------------
@@ -2256,7 +2283,7 @@ class MainWindow (QMainWindow):
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
 
     def _on_run_finished (self, exit_code:int, elapsed:float,
-                          peak_memory:int, reason:str):
+                          peak_memory:int, reason:str, stderr_text:str):
         if self._flow_state != _FLOW_RUNNING:
             return
         tab = self._flow_tab
@@ -2265,8 +2292,10 @@ class MainWindow (QMainWindow):
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
             _output_append(tab.output_doc,
-                           'Failed to start program: {}\n'.format(
-                               'Process failed to start'),
+                           'Failed to start program\n',
+                           QColor(Qt.red))
+            _output_append(tab.output_doc,
+                           'Error: {}\n'.format(stderr_text),
                            QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
         elif reason == 'timeout':
@@ -2277,9 +2306,17 @@ class MainWindow (QMainWindow):
                 QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
         elif reason == 'killed':
-            _output_append(tab.output_doc,
-                           'Process stopped in {:.3}s\n'.format(elapsed),
-                           QColor(128, 128, 128))
+            detail = _describe_exit_code(exit_code)
+            if detail:
+                _output_append(
+                    tab.output_doc,
+                    'Program crashed: {} (exit code {})\n'.format(
+                        detail, exit_code),
+                    QColor(Qt.red))
+            else:
+                _output_append(tab.output_doc,
+                               'Process stopped in {:.3}s\n'.format(elapsed),
+                               QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
         elif exit_code != 0:
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
