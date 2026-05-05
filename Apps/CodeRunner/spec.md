@@ -191,6 +191,7 @@ _SETTINGS_DEFAULTS = {
     'indent_style': 'tab',     # 'tab' or 'space'
     'indent_size': 4,          # spaces per indent level (for 'space' style)
     'word_wrap': False,
+    'compiler_mtime': 0,       # timestamp when compiler settings last changed
     'template_text': '...',
 }
 
@@ -198,6 +199,9 @@ class Settings:
     def __init__(self, defaults=None)   # 从 _SETTINGS_DEFAULTS 或自定义字典拷贝到实例属性
     def copy(self) -> Settings           # 独立深拷贝，用于 SettingsDialog Cancel 回滚
     def apply_from(self, other)          # 从 other 合并全部属性到 self（用于 SettingsDialog OK 提交）
+    def to_dict(self) -> dict            # 序列化为 dict（用于 JSON）
+    def load(self, path=None) -> int     # 从 JSON 加载，返回 0 成功 / -1 文件不存在或格式错误
+    def save(self, path=None) -> int     # 保存到 JSON，返回 0 成功 / -1 写入失败
 ```
 
 **实例化设计要点**：
@@ -234,6 +238,8 @@ class Settings:
     "bracket_completion": true,
     "indent_style": "tab",
     "indent_size": 4,
+    "word_wrap": false,
+    "compiler_mtime": 0,
     "template_text": "#include <iostream>\n..."
 }
 ```
@@ -649,7 +655,7 @@ def build_flags(source_encoding):
     - PATH 环境变量中的 g++
   - 检测到后填入 QLineEdit
 - 编译参数：QLineEdit（如 `-std=c++14 -O2`）
-- 环境变量：QTableWidget（2 列：Key / Value），每行右侧有删除按钮，底部有"Add Row"按钮
+- 环境变量：QTableWidget（2 列：Key / Value），底部有"Add Row"按钮（清空空行可通过直接编辑清空 key 实现）
   - Value 中 `$VAR_NAME` 在 tooltip 中提示"将展开为实际环境变量值"
 - 运行超时：QSpinBox（范围 1-300，默认 10）
 - 编译超时：QSpinBox（范围 1-300，默认 20）
@@ -740,12 +746,13 @@ def main():
     app.setStyle('Fusion')
     settings = Settings()
     _init_font_defaults(settings)
+    settings.load()  # Load from ~/.config/coderunner/settings.json
     window = MainWindow(settings)
     window.show()
     sys.exit(app.exec_())
 ```
 
-窗口默认大小 1000x650，首次启动居中显示。`app.setStyle('Fusion')` 统一跨平台外观。`Settings()` 创建实例，`_init_font_defaults(settings)` 按 platform 优先列表检测 monospace 字体设为 Settings 实例默认值，`MainWindow(settings)` 接收 Settings 实例。
+窗口默认大小 1000x650，首次启动居中显示。`app.setStyle('Fusion')` 统一跨平台外观。`Settings()` 创建实例，`_init_font_defaults(settings)` 按 platform 优先列表检测 monospace 字体设为 Settings 实例默认值，`settings.load()` 从 JSON 文件加载用户配置（不存在时保留默认值），`MainWindow(settings)` 接收 Settings 实例，构造中调用 `_load_window_state()` 恢复窗口状态和标签页。
 
 ## 编码风格注意
 
@@ -766,3 +773,8 @@ def main():
 | startDetached 返回值检查 | 2026/05/06 | `_launch_terminal` 原不检查 `QProcess.startDetached` 返回值。失败时无提示。改为检查返回值，False 时 OutputPanel 显示红色 "Failed to launch terminal" |
 | 负 exit code crash 描述 | 2026/05/06 | 程序自然崩溃（如 Windows access violation）QProcess 报 NormalExit + 负 exit code，原只显示 "Runtime Error (exit code -1073741819)"。改为 `exit_code != 0` 分支也调用 `_describe_exit_code`，已知 NTSTATUS 码附加可读描述如 "Runtime Error: Access violation" |
 | killed 区分 Stop vs 自然崩溃 | 2026/05/06 | ProcessManager 在 `exit_status != NormalExit` 时一律设 reason='killed'，无法区分用户 Stop 和程序自然崩溃。当前在 killed 分支用 `_describe_exit_code` 附加已知崩溃码的可读描述（红色），无描述时显示灰色 "Process stopped"。暂不追踪 Stop 意图，因为自然崩溃也走 CrashExit，附加 crash 描述比一律灰色更有用 |
+| Settings compiler_mtime 传播 | 2026/05/06 | SettingsDialog 修改 compiler_path/flags/env_vars 后在 `settings.copy` 上设 `compiler_mtime = time.time()`，`apply_from` 合并回原 settings。`_apply_settings()` 将所有 TabData 的 `compiler_mtime` 更新为 `settings.compiler_mtime`（若旧值更小），确保 `_need_recompile` 检测到设置变化触发重编译。Settings 增加 `compiler_mtime` 默认值为 0 |
+| Settings JSON 读写 | 2026/05/06 | Settings 类增加 `to_dict()`/`load()`/`save()` 方法，JSON 存于 `~/.config/coderunner/settings.json`。`load()` 只加载 `_SETTINGS_DEFAULTS` 中存在的键（忽略未知键），首次运行不存在时返回 -1 保留默认值 |
+| Window state 持久化 | 2026/05/06 | `~/.cache/coderunner/window.json` 存储窗口几何、分割条位置、标签列表（已保存文件存 file_path+input_text，新文件存 editor_text+input_text+untitled_number）、活跃标签、last_file_dir、recent_files。退出时 `_save_window_state()` 写入，启动时 `_load_window_state()` 恢复。恢复新文件标签时 `is_dirty=True`+`editor_doc.setModified(True)`，恢复已保存文件时跳过已删除文件 |
+| Recent Files 子菜单 | 2026/05/06 | File 菜单增加 Recent Files 子菜单（QMenu），最多 10 条按时间倒序。点击已删除文件弹 QMessageBox "File not found" 并从列表移除。`_action_open` 和 drag-drop 打开文件时自动调用 `_add_recent_file()` |
+| Drag-drop 打开文件 | 2026/05/06 | MainWindow 设置 `setAcceptDrops(True)`，`dragEnterEvent` 检查 MIME URLs 的后缀为 .cpp/.c/.cc/.cxx/.h/.hpp，`dropEvent` 执行 Open 流程（已有标签则切换，否则新建标签）。已在 `_load_window_state` 恢复的标签不会重复打开 |

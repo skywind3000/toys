@@ -14,11 +14,15 @@ import re
 import copy
 import math
 import time
+import json
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
     QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox,
-    QInputDialog
+    QInputDialog, QDialog, QTabWidget, QLineEdit,
+    QSpinBox, QCheckBox, QFontComboBox, QTableWidget,
+    QTableWidgetItem, QPushButton, QHBoxLayout,
+    QHeaderView, QPlainTextEdit as QPlainTextEditWidget
 )
 from PyQt5.QtCore import (
     Qt, QSize, QPointF, QTimer, QRect, QRegularExpression,
@@ -103,6 +107,24 @@ def _init_font_defaults (settings) -> None:
     font = _detect_monospace_font()
     settings.editor_font_family = font
     settings.io_font_family = font
+
+
+def _ensure_dir (path:str) -> None:
+    """Create directory if it does not exist."""
+    if path and not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+
+def _settings_path () -> str:
+    """Return path to settings.json."""
+    base = os.path.expanduser('~/.config/coderunner')
+    return os.path.join(base, 'settings.json')
+
+
+def _window_state_path () -> str:
+    """Return path to window.json."""
+    base = os.path.expanduser('~/.cache/coderunner')
+    return os.path.join(base, 'window.json')
 
 
 def _make_io_section (settings, label_text:str, text_edit:QWidget,
@@ -521,6 +543,7 @@ _SETTINGS_DEFAULTS = {
     'indent_style': 'tab',
     'indent_size': 4,
     'word_wrap': False,
+    'compiler_mtime': 0,
     'template_text': (
         '#include <iostream>\n'
         '#include <cstdio>\n'
@@ -550,6 +573,40 @@ class Settings:
         """Merge all attributes from other into this instance."""
         for key, value in other.__dict__.items():
             setattr(self, key, value)
+
+    def to_dict (self) -> dict:
+        """Serialize Settings to a dict suitable for JSON."""
+        return copy.deepcopy(self.__dict__)
+
+    def load (self, path:str=None) -> int:
+        """Load Settings from JSON file. Returns 0 success, -1 not found."""
+        if path is None:
+            path = _settings_path()
+        if not os.path.exists(path):
+            return -1
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (IOError, OSError, json.JSONDecodeError):
+            return -1
+        # Only load keys that exist in defaults (ignore unknown keys)
+        for key in _SETTINGS_DEFAULTS:
+            if key in data:
+                setattr(self, key, data[key])
+        return 0
+
+    def save (self, path:str=None) -> int:
+        """Save Settings to JSON file. Returns 0 success, -1 error."""
+        if path is None:
+            path = _settings_path()
+        _ensure_dir(os.path.dirname(path))
+        data = self.to_dict()
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except (IOError, OSError):
+            return -1
+        return 0
 
 
 #----------------------------------------------------------------------
@@ -1555,6 +1612,280 @@ class OutputPanel (QTextEdit):
 
 
 #----------------------------------------------------------------------
+# Auto-detect compiler
+#----------------------------------------------------------------------
+_COMPILER_SEARCH_PATHS = [
+    'C:\\MinGW\\bin\\g++.exe',
+    'C:\\TDM-GCC-64\\bin\\g++.exe',
+    'C:\\Program Files\\Dev-Cpp\\MinGW64\\bin\\g++.exe',
+    'C:\\Program Files (x86)\\Dev-Cpp\\MinGW64\\bin\\g++.exe',
+    'C:\\msys64\\mingw64\\bin\\g++.exe',
+]
+
+
+def _auto_detect_compiler () -> str:
+    """Search common MinGW paths and PATH for g++. Returns path or ''."""
+    if sys.platform == 'win32':
+        for path in _COMPILER_SEARCH_PATHS:
+            if os.path.exists(path):
+                return path
+    # Check PATH
+    for dir_name in os.environ.get('PATH', '').split(os.pathsep):
+        candidate = os.path.join(dir_name, 'g++')
+        if sys.platform == 'win32':
+            candidate += '.exe'
+        if os.path.exists(candidate):
+            return candidate
+    return ''
+
+
+#----------------------------------------------------------------------
+# SettingsDialog
+#----------------------------------------------------------------------
+class SettingsDialog (QDialog):
+
+    def __init__ (self, settings:Settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Settings')
+        self.setMinimumWidth(500)
+        self._original = settings
+        self._copy = settings.copy()
+        self.__build_ui()
+        self.__load_from_copy()
+
+    def __build_ui (self):
+        layout = QVBoxLayout(self)
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+
+        # Compiler page
+        self.__build_compiler_page()
+        # Editor page
+        self.__build_editor_page()
+        # Template page
+        self.__build_template_page()
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.btn_ok = QPushButton('OK')
+        self.btn_cancel = QPushButton('Cancel')
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_ok)
+        btn_layout.addWidget(self.btn_cancel)
+        layout.addLayout(btn_layout)
+
+        self.btn_ok.clicked.connect(self.__on_ok)
+        self.btn_cancel.clicked.connect(self.reject)
+
+    def __build_compiler_page (self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        # Compiler path
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Compiler Path:'))
+        self.edit_compiler_path = QLineEdit()
+        row.addWidget(self.edit_compiler_path)
+        self.btn_auto_detect = QPushButton('Auto Detect')
+        self.btn_auto_detect.clicked.connect(self.__on_auto_detect)
+        row.addWidget(self.btn_auto_detect)
+        layout.addLayout(row)
+
+        # Compiler flags
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Compiler Flags:'))
+        self.edit_compiler_flags = QLineEdit()
+        row.addWidget(self.edit_compiler_flags)
+        layout.addLayout(row)
+
+        # Environment variables table
+        layout.addWidget(QLabel('Environment Variables:'))
+        self.env_table = QTableWidget(0, 2)
+        self.env_table.setHorizontalHeaderLabels(['Key', 'Value'])
+        header = self.env_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        self.env_table.setMinimumHeight(120)
+        layout.addWidget(self.env_table)
+
+        # Add row button for env vars
+        row = QHBoxLayout()
+        self.btn_add_env = QPushButton('Add Row')
+        self.btn_add_env.clicked.connect(self.__on_add_env_row)
+        row.addWidget(self.btn_add_env)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # Run timeout
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Run Timeout (seconds):'))
+        self.spin_run_timeout = QSpinBox()
+        self.spin_run_timeout.setRange(1, 300)
+        row.addWidget(self.spin_run_timeout)
+        layout.addLayout(row)
+
+        # Compile timeout
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Compile Timeout (seconds):'))
+        self.spin_compile_timeout = QSpinBox()
+        self.spin_compile_timeout.setRange(1, 300)
+        row.addWidget(self.spin_compile_timeout)
+        layout.addLayout(row)
+
+        layout.addStretch()
+        self.tab_widget.addTab(page, 'Compiler')
+
+    def __build_editor_page (self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        # Editor font
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Editor Font:'))
+        self.combo_editor_font = QFontComboBox()
+        self.combo_editor_font.setFontFilters(
+            QFontComboBox.MonospacedFonts)
+        row.addWidget(self.combo_editor_font)
+        layout.addLayout(row)
+
+        # Editor font size
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Editor Font Size:'))
+        self.spin_editor_size = QSpinBox()
+        self.spin_editor_size.setRange(6, 72)
+        row.addWidget(self.spin_editor_size)
+        layout.addLayout(row)
+
+        # IO font
+        row = QHBoxLayout()
+        row.addWidget(QLabel('IO Panel Font:'))
+        self.combo_io_font = QFontComboBox()
+        self.combo_io_font.setFontFilters(
+            QFontComboBox.MonospacedFonts)
+        row.addWidget(self.combo_io_font)
+        layout.addLayout(row)
+
+        # IO font size
+        row = QHBoxLayout()
+        row.addWidget(QLabel('IO Panel Font Size:'))
+        self.spin_io_size = QSpinBox()
+        self.spin_io_size.setRange(6, 72)
+        row.addWidget(self.spin_io_size)
+        layout.addLayout(row)
+
+        # Bracket completion
+        self.chk_bracket = QCheckBox('Bracket Completion')
+        layout.addWidget(self.chk_bracket)
+
+        layout.addStretch()
+        self.tab_widget.addTab(page, 'Editor')
+
+    def __build_template_page (self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        layout.addWidget(QLabel('New File Template:'))
+        self.edit_template = QPlainTextEditWidget()
+        layout.addWidget(self.edit_template)
+
+        row = QHBoxLayout()
+        self.btn_reset_template = QPushButton('Reset to Default')
+        self.btn_reset_template.clicked.connect(self.__on_reset_template)
+        row.addWidget(self.btn_reset_template)
+        row.addStretch()
+        layout.addLayout(row)
+
+        self.tab_widget.addTab(page, 'Template')
+
+    def __load_from_copy (self):
+        """Load all widgets from the working copy of settings."""
+        c = self._copy
+        self.edit_compiler_path.setText(c.compiler_path)
+        self.edit_compiler_flags.setText(c.compiler_flags)
+        self.spin_run_timeout.setValue(c.run_timeout)
+        self.spin_compile_timeout.setValue(c.compile_timeout)
+        self.combo_editor_font.setCurrentFont(
+            QFontDatabase().font(c.editor_font_family, '', 10))
+        self.spin_editor_size.setValue(c.editor_font_size)
+        self.combo_io_font.setCurrentFont(
+            QFontDatabase().font(c.io_font_family, '', 10))
+        self.spin_io_size.setValue(c.io_font_size)
+        self.chk_bracket.setChecked(c.bracket_completion)
+        self.edit_template.setPlainText(c.template_text)
+
+        # Populate env vars table
+        self.env_table.setRowCount(0)
+        for key, value in c.env_vars.items():
+            self.__add_env_row(key, value)
+
+    def __add_env_row (self, key:str='', value:str=''):
+        row = self.env_table.rowCount()
+        self.env_table.insertRow(row)
+        item_key = QTableWidgetItem(key)
+        item_val = QTableWidgetItem(value)
+        item_val.setToolTip('Use $VAR_NAME to reference system env vars')
+        self.env_table.setItem(row, 0, item_key)
+        self.env_table.setItem(row, 1, item_val)
+
+    def __on_add_env_row (self):
+        self.__add_env_row()
+
+    def __on_auto_detect (self):
+        path = _auto_detect_compiler()
+        if path:
+            self.edit_compiler_path.setText(path)
+        else:
+            QMessageBox.information(
+                self, 'Auto Detect',
+                'No g++ compiler found in common paths or PATH.')
+
+    def __on_reset_template (self):
+        self.edit_template.setPlainText(_SETTINGS_DEFAULTS['template_text'])
+
+    def __collect_env_vars (self) -> dict:
+        """Collect env vars from table into dict."""
+        result = {}
+        for row in range(self.env_table.rowCount()):
+            item_key = self.env_table.item(row, 0)
+            item_val = self.env_table.item(row, 1)
+            if item_key and item_val:
+                key = item_key.text().strip()
+                val = item_val.text()
+                if key:
+                    result[key] = val
+        return result
+
+    def __on_ok (self):
+        """Apply settings changes and save to JSON."""
+        c = self._copy
+        c.compiler_path = self.edit_compiler_path.text().strip()
+        c.compiler_flags = self.edit_compiler_flags.text().strip()
+        c.env_vars = self.__collect_env_vars()
+        c.run_timeout = self.spin_run_timeout.value()
+        c.compile_timeout = self.spin_compile_timeout.value()
+        c.editor_font_family = self.combo_editor_font.currentFont().family()
+        c.editor_font_size = self.spin_editor_size.value()
+        c.io_font_family = self.combo_io_font.currentFont().family()
+        c.io_font_size = self.spin_io_size.value()
+        c.bracket_completion = self.chk_bracket.isChecked()
+        c.template_text = self.edit_template.toPlainText()
+
+        # Check if compiler-related settings changed → update mtime
+        old = self._original
+        compiler_changed = (
+            old.compiler_path != c.compiler_path or
+            old.compiler_flags != c.compiler_flags or
+            old.env_vars != c.env_vars)
+        if compiler_changed:
+            c.compiler_mtime = time.time()
+
+        # Apply to original settings and save
+        old.apply_from(c)
+        old.save()
+        self.accept()
+
+
+#----------------------------------------------------------------------
 # MainWindow
 #----------------------------------------------------------------------
 class MainWindow (QMainWindow):
@@ -1620,6 +1951,7 @@ class MainWindow (QMainWindow):
         self._tab_switching = False
         self._last_file_dir = ''
         self._deferred_restore_tab = -1
+        self._recent_files = []
 
         # Process management and flow state
         self.enc_mgr = EncodingManager()
@@ -1647,8 +1979,12 @@ class MainWindow (QMainWindow):
         # Alt shortcuts for tab switching
         self.__setup_tab_switch_shortcuts()
 
-        # Start in zero-tab state
+        # Enable drag-drop for .cpp/.c files
+        self.setAcceptDrops(True)
+
+        # Start in zero-tab state, then restore window state
         self._enter_zero_tab_state()
+        self._load_window_state()
 
     def __create_actions (self):
         self.act_new = QAction(self.icons['new'], 'New', self)
@@ -1753,6 +2089,9 @@ class MainWindow (QMainWindow):
         self.menu_file.addAction(self.act_save_as)
         self.menu_file.addSeparator()
         self.menu_file.addAction(self.act_close)
+        self.menu_file.addSeparator()
+        # Recent Files submenu
+        self.menu_recent = self.menu_file.addMenu('Recent Files')
         self.menu_file.addSeparator()
         self.menu_file.addAction(self.act_settings)
 
@@ -1941,6 +2280,7 @@ class MainWindow (QMainWindow):
         self.tabbar.addTab(tab.tab_name())
         self._switch_to_tab(index)
         self._last_file_dir = os.path.dirname(path)
+        self._add_recent_file(path)
 
     def _action_save (self):
         tab = self.tab_manager.get_current()
@@ -2122,8 +2462,57 @@ class MainWindow (QMainWindow):
             self.status_message.setText('Running...')
 
     def _action_settings (self):
-        # TODO: implement SettingsDialog (Phase 6)
-        self.status_message.setText('Settings: not yet implemented')
+        dlg = SettingsDialog(self.settings, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._apply_settings()
+
+    def _apply_settings (self):
+        """Apply current settings to all widgets (fonts, bracket completion)."""
+        s = self.settings
+        # If compiler-related settings changed, invalidate all tab mtime
+        if hasattr(s, 'compiler_mtime') and s.compiler_mtime > 0:
+            for t in self.tab_manager.tabs:
+                if t.compiler_mtime < s.compiler_mtime:
+                    t.compiler_mtime = s.compiler_mtime
+        # Editor font
+        editor_font = self.editor.font()
+        editor_font.setFamily(s.editor_font_family)
+        editor_font.setPointSize(s.editor_font_size)
+        self.editor.setFont(editor_font)
+        self.editor.updateFontMetrics()
+        # Bracket completion
+        self.editor.set_bracket_completion(s.bracket_completion)
+        # Sync document default font for current tab
+        tab = self.tab_manager.get_current()
+        if tab:
+            tab.editor_doc.setDefaultFont(self.editor.font())
+            tab.editor_doc.setDocumentLayout(
+                tab.editor_doc.documentLayout())
+        # IO fonts
+        io_font = self.input_panel.font()
+        io_font.setFamily(s.io_font_family)
+        io_font.setPointSize(s.io_font_size)
+        self.input_panel.setFont(io_font)
+        self.output_panel.setFont(io_font)
+        self.input_panel.setTabStopWidth(
+            self.input_panel.fontMetrics().horizontalAdvance('x') * 4)
+        if tab:
+            tab.input_doc.setDefaultFont(self.input_panel.font())
+            tab.output_doc.setDefaultFont(self.output_panel.font())
+        # Update IO section labels
+        for section, panel in [(self.input_section, self.input_panel),
+                               (self.output_section, self.output_panel)]:
+            label = section._section_label
+            lbl_font = label.font()
+            lbl_font.setFamily(s.io_font_family)
+            lbl_font.setPointSize(s.io_font_size)
+            label.setFont(lbl_font)
+        # Update all zoom sizes (reset zoom offset)
+        for t in self.tab_manager.tabs:
+            t.zoom_font_size = 0
+        if tab:
+            zoom_size = max(6, s.editor_font_size)
+            self.editor.setFontSize(zoom_size)
 
     #----- Compile/run helper methods -----
 
@@ -2678,6 +3067,9 @@ class MainWindow (QMainWindow):
     #----- Window close -----
 
     def closeEvent (self, event):
+        # Save window state before closing
+        self._save_window_state()
+
         for tab in list(self.tab_manager.tabs):
             if tab.is_dirty:
                 choice = self._confirm_close_tab(tab)
@@ -2702,6 +3094,226 @@ class MainWindow (QMainWindow):
                 pass
         event.accept()
 
+    #----- Window state persistence -----
+
+    def _save_window_state (self):
+        """Save window geometry, splitter sizes, tabs, recent files to JSON."""
+        path = _window_state_path()
+        _ensure_dir(os.path.dirname(path))
+        # Save current tab's widget state
+        tab = self.tab_manager.get_current()
+        if tab:
+            tab.cursor = self.editor.textCursor()
+            tab.scroll_pos = self.editor.verticalScrollBar().value()
+            tab.input_cursor = self.input_panel.textCursor()
+            tab.input_scroll = self.input_panel.verticalScrollBar().value()
+        geo = self.geometry()
+        state = {
+            'geometry': {
+                'x': geo.x(), 'y': geo.y(),
+                'w': geo.width(), 'h': geo.height()},
+            'h_splitter': self.main_splitter.sizes(),
+            'v_splitter': self.v_splitter.sizes(),
+            'last_file_dir': self._last_file_dir,
+            'tabs': [],
+            'active_tab': self.tab_manager.current_index,
+            'recent_files': self._recent_files[:10],
+        }
+        for t in self.tab_manager.tabs:
+            entry = {}
+            if t.is_new:
+                entry['is_new'] = True
+                entry['editor_text'] = t.editor_doc.toPlainText()
+                entry['input_text'] = t.input_doc.toPlainText()
+                entry['untitled_number'] = t.untitled_number
+            else:
+                entry['file_path'] = t.file_path
+                entry['input_text'] = t.input_doc.toPlainText()
+            state['tabs'].append(entry)
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(state, f, indent=4, ensure_ascii=False)
+        except (IOError, OSError):
+            pass
+
+    def _load_window_state (self):
+        """Restore window geometry, splitter sizes, tabs, recent files."""
+        path = _window_state_path()
+        if not os.path.exists(path):
+            return -1
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+        except (IOError, OSError, json.JSONDecodeError):
+            return -1
+        # Restore geometry
+        geo = state.get('geometry', {})
+        if geo:
+            self.setGeometry(geo.get('x', 100), geo.get('y', 100),
+                             geo.get('w', 1000), geo.get('h', 650))
+        # Restore splitter sizes
+        h_sizes = state.get('h_splitter', [500, 500])
+        v_sizes = state.get('v_splitter', [325, 325])
+        if len(h_sizes) == 2:
+            self.main_splitter.setSizes(h_sizes)
+        if len(v_sizes) == 2:
+            self.v_splitter.setSizes(v_sizes)
+        # Restore last_file_dir
+        self._last_file_dir = state.get('last_file_dir', '')
+        # Restore recent files
+        self._recent_files = state.get('recent_files', [])
+        self._update_recent_menu()
+        # Restore tabs
+        tabs_data = state.get('tabs', [])
+        for entry in tabs_data:
+            if entry.get('is_new'):
+                tab = TabData(
+                    is_new=True, encoding='UTF-8',
+                    content=entry.get('editor_text', ''),
+                    dirty_callback=self._on_tab_dirty_changed)
+                tab.untitled_number = entry.get('untitled_number', 1)
+                # Restore InputPanel content
+                tab.input_doc.setPlainText(
+                    entry.get('input_text', ''))
+                tab.is_dirty = True
+                tab.editor_doc.setModified(True)
+                # Ensure untitled counter is at least this number
+                if tab.untitled_number >= self.tab_manager.untitled_counter:
+                    self.tab_manager.untitled_counter = tab.untitled_number
+            else:
+                file_path = entry.get('file_path', '')
+                if not file_path:
+                    continue
+                # Skip deleted files during session restore
+                if not os.path.exists(file_path):
+                    continue
+                try:
+                    content, encoding = _read_file(file_path)
+                except (IOError, OSError):
+                    continue
+                tab = TabData(
+                    file_path=file_path, is_new=False,
+                    encoding=encoding, content=content,
+                    dirty_callback=self._on_tab_dirty_changed)
+                tab.input_doc.setPlainText(
+                    entry.get('input_text', ''))
+                self._add_recent_file(file_path)
+            self.tab_manager.add_tab(tab)
+            self.tabbar.addTab(tab.tab_name())
+        # Restore active tab
+        active = state.get('active_tab', -1)
+        if active >= 0 and active < len(self.tab_manager.tabs):
+            self._switch_to_tab(active)
+        elif len(self.tab_manager.tabs) > 0:
+            self._switch_to_tab(0)
+        else:
+            self._enter_zero_tab_state()
+        return 0
+
+    #----- Recent files -----
+
+    def _add_recent_file (self, path:str):
+        """Add file to recent list, dedup, limit to 10."""
+        path = os.path.normpath(path)
+        if path in self._recent_files:
+            self._recent_files.remove(path)
+        self._recent_files.insert(0, path)
+        if len(self._recent_files) > 10:
+            self._recent_files = self._recent_files[:10]
+        self._update_recent_menu()
+
+    def _update_recent_menu (self):
+        """Rebuild Recent Files submenu from self._recent_files."""
+        self.menu_recent.clear()
+        for path in self._recent_files:
+            action = QAction(path, self)
+            action.setData(path)
+            action.triggered.connect(self._on_recent_file)
+            self.menu_recent.addAction(action)
+        if not self._recent_files:
+            self.menu_recent.addAction('(Empty)')
+
+    def _on_recent_file (self):
+        """Open a file from Recent Files menu."""
+        action = self.sender()
+        if action is None:
+            return
+        path = action.data()
+        if not path:
+            return
+        if not os.path.exists(path):
+            QMessageBox.warning(
+                self, 'File Not Found',
+                'File not found: {}'.format(path))
+            # Remove from recent list
+            if path in self._recent_files:
+                self._recent_files.remove(path)
+                self._update_recent_menu()
+            return
+        # If file is already open, switch to that tab
+        for i, t in enumerate(self.tab_manager.tabs):
+            if not t.is_new and t.file_path and \
+                    os.path.normpath(t.file_path) == os.path.normpath(path):
+                self._switch_to_tab(i)
+                return
+        try:
+            content, encoding = _read_file(path)
+        except (IOError, OSError) as e:
+            QMessageBox.warning(
+                self, 'Open Error',
+                'Failed to open file: {}'.format(e))
+            return
+        tab = TabData(
+            file_path=path, is_new=False,
+            encoding=encoding, content=content,
+            dirty_callback=self._on_tab_dirty_changed)
+        index = self.tab_manager.add_tab(tab)
+        self.tabbar.addTab(tab.tab_name())
+        self._switch_to_tab(index)
+        self._add_recent_file(path)
+
+    #----- Drag-drop -----
+
+    def dragEnterEvent (self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                if path and (path.endswith('.cpp') or
+                             path.endswith('.c') or
+                             path.endswith('.cc') or
+                             path.endswith('.cxx') or
+                             path.endswith('.h') or
+                             path.endswith('.hpp')):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent (self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                if path:
+                    path = os.path.normpath(path)
+                    # If file is already open, switch to tab
+                    for i, t in enumerate(self.tab_manager.tabs):
+                        if not t.is_new and t.file_path and \
+                                os.path.normpath(t.file_path) == path:
+                            self._switch_to_tab(i)
+                            continue
+                    try:
+                        content, encoding = _read_file(path)
+                    except (IOError, OSError):
+                        continue
+                    tab = TabData(
+                        file_path=path, is_new=False,
+                        encoding=encoding, content=content,
+                        dirty_callback=self._on_tab_dirty_changed)
+                    index = self.tab_manager.add_tab(tab)
+                    self.tabbar.addTab(tab.tab_name())
+                    self._switch_to_tab(index)
+                    self._add_recent_file(path)
+        event.acceptProposedAction()
+
 
 #----------------------------------------------------------------------
 # Main entry
@@ -2712,6 +3324,7 @@ def main ():
     app.setStyle('Fusion')
     settings = Settings()
     _init_font_defaults(settings)
+    settings.load()  # Load from ~/.config/coderunner/settings.json
     window = MainWindow(settings)
     window.show()
     sys.exit(app.exec_())
