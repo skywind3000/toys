@@ -887,6 +887,7 @@ class ProcessManager (QObject):
     run_finished = pyqtSignal(int, float, int)
     compile_timeout_occurred = pyqtSignal()
     run_timeout_occurred = pyqtSignal()
+    launch_failed = pyqtSignal(str)  # error message when process can't start
 
     def __init__ (self, parent=None, settings=None):
         super().__init__(parent)
@@ -919,6 +920,11 @@ class ProcessManager (QObject):
             self._on_compile_stderr_ready)
         self.process.finished.connect(self._on_compile_finished)
         self.process.start(command[0], command[1:])
+        if not self.process.waitForStarted(5000):
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.launch_failed.emit(err_msg)
+            return
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_compile_timeout)
@@ -943,6 +949,11 @@ class ProcessManager (QObject):
         self.process.started.connect(self._on_run_started)
         self.process.finished.connect(self._on_run_finished)
         self.process.start(exe_path)
+        if not self.process.waitForStarted(5000):
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.launch_failed.emit(err_msg)
+            return
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_run_timeout)
@@ -1801,6 +1812,8 @@ class MainWindow (QMainWindow):
             self._on_compile_timeout)
         self.proc_mgr.run_timeout_occurred.connect(
             self._on_run_timeout)
+        self.proc_mgr.launch_failed.connect(
+            self._on_launch_failed)
 
     def __setup_tab_switch_shortcuts (self):
         # Alt+1~9 → switch to tab 0~8, Alt+0 → tab 9
@@ -2041,7 +2054,11 @@ class MainWindow (QMainWindow):
         command.extend(flags)
         if self.settings.compiler_flags:
             command.extend(self.settings.compiler_flags.split())
-        command.append(tab.file_path)
+        source_path = tab.file_path
+        if sys.platform == 'win32':
+            source_path = source_path.replace('/', '\\')
+            exe_path = exe_path.replace('/', '\\')
+        command.append(source_path)
         command.append('-o')
         command.append(exe_path)
         return command
@@ -2063,6 +2080,8 @@ class MainWindow (QMainWindow):
                        QColor(128, 128, 128))
         command = self._build_compile_command(tab)
         work_dir = os.path.dirname(tab.file_path)
+        if sys.platform == 'win32':
+            work_dir = work_dir.replace('/', '\\')
         env = self._make_process_env()
         self.proc_mgr.target_tab = tab
         self.proc_mgr.start_compile(
@@ -2072,6 +2091,8 @@ class MainWindow (QMainWindow):
     def _start_test_run (self, tab:TabData):
         """Start test run with stdin from InputPanel."""
         exe_path = self._get_exe_path(tab)
+        if sys.platform == 'win32':
+            exe_path = exe_path.replace('/', '\\')
         work_dir = os.path.dirname(exe_path)
         stdin_text = tab.input_doc.toPlainText()
         stdin_data = self.enc_mgr.encode_stdin(stdin_text)
@@ -2086,6 +2107,8 @@ class MainWindow (QMainWindow):
     def _launch_terminal (self, tab:TabData):
         """Launch exe in external terminal window."""
         exe_path = self._get_exe_path(tab)
+        if sys.platform == 'win32':
+            exe_path = exe_path.replace('/', '\\')
         work_dir = os.path.dirname(exe_path)
         bat_path = _ensure_cmd_file()
         os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
@@ -2199,6 +2222,19 @@ class MainWindow (QMainWindow):
                        QColor(Qt.red))
         self.status_message.setText(
             'Timeout after {} seconds'.format(self.settings.run_timeout))
+        self._flow_state = None
+        self._flow_tab = None
+
+    def _on_launch_failed (self, err_msg:str):
+        tab = self._flow_tab
+        if not tab:
+            return
+        _output_clear(tab.output_doc)
+        _output_append(tab.output_doc,
+                       'Failed to start process: {}\n'.format(err_msg),
+                       QColor(Qt.red))
+        self.status_message.setText(
+            'Failed to start: {}'.format(err_msg))
         self._flow_state = None
         self._flow_tab = None
 
