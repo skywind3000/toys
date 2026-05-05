@@ -453,11 +453,17 @@ _CPP_PREPROCESSOR = (
     'include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning'
 )
 
+
 class CppHighlighter (QSyntaxHighlighter):
 
-    def __init__ (self, parent:QTextDocument=None):
+    def __init__ (self, parent:QTextDocument=None, deferred:bool=False):
         super().__init__(parent)
         self._rules = []
+        self._deferred = deferred
+        self._batch_block_number = 0
+        self._batch_timer = None
+        self._batch_editor = None
+        self._batch_size = 100
         self.__init_rules()
 
     def __init_rules (self):
@@ -534,6 +540,9 @@ class CppHighlighter (QSyntaxHighlighter):
         self._multi_fmt = fmt_comment_multi
 
     def highlightBlock (self, text:str):
+        if self._deferred:
+            self.__track_multiline_state(text)
+            return
         # First: apply single-line rules (first-match-wins)
         for regex, fmt in self._rules:
             it = regex.globalMatch(text)
@@ -586,6 +595,74 @@ class CppHighlighter (QSyntaxHighlighter):
                            self._multi_fmt)
             self.setCurrentBlockState(1)
 
+    def __track_multiline_state (self, text:str):
+        """Deferred mode: only track multiline comment state, no formatting."""
+        start_state = self.previousBlockState()
+        start_idx = 0
+        if start_state != 1:
+            match = self._multi_start.match(text)
+            if match.hasMatch():
+                start_idx = match.capturedStart()
+            else:
+                self.setCurrentBlockState(0)
+                return
+        end_match = self._multi_end.match(text, start_idx)
+        if end_match.hasMatch():
+            self.setCurrentBlockState(0)
+            next_start = self._multi_start.match(text, end_match.capturedEnd())
+            if next_start.hasMatch():
+                next_end = self._multi_end.match(
+                    text, next_start.capturedStart())
+                if not next_end.hasMatch():
+                    self.setCurrentBlockState(1)
+        else:
+            self.setCurrentBlockState(1)
+
+    def start_batch_highlight (self, editor_widget, batch_size:int=100):
+        """Start progressive highlighting in batches to keep UI responsive.
+        Processes blocks from the beginning, rehighlighting batch_size blocks
+        per timer tick. Deferred mode is disabled once highlighting starts."""
+        if self._batch_timer is not None:
+            self._batch_timer.stop()
+            self._batch_timer = None
+        self._deferred = False
+        self._batch_block_number = 0
+        self._batch_editor = editor_widget
+        self._batch_size = batch_size
+        self.__process_highlight_batch()
+
+    def __process_highlight_batch (self):
+        """Process one batch of blocks, then schedule next batch via timer."""
+        doc = self.document()
+        block = doc.findBlockByNumber(self._batch_block_number)
+        editor = self._batch_editor
+        if not editor or not block.isValid():
+            self._batch_timer = None
+            self._batch_editor = None
+            return
+        count = 0
+        editor.setUpdatesEnabled(False)
+        while block.isValid() and count < self._batch_size:
+            self.rehighlightBlock(block)
+            block = block.next()
+            count += 1
+        editor.setUpdatesEnabled(True)
+        if block.isValid():
+            self._batch_block_number += count
+            self._batch_timer = QTimer.singleShot(
+                0, self.__process_highlight_batch)
+        else:
+            self._batch_timer = None
+            self._batch_editor = None
+
+    def cancel_batch_highlight (self):
+        """Cancel any in-progress batch highlighting."""
+        if self._batch_timer is not None:
+            self._batch_timer.stop()
+            self._batch_timer = None
+        self._batch_editor = None
+        self._deferred = True
+
 
 #----------------------------------------------------------------------
 # TabData
@@ -613,6 +690,7 @@ class TabData:
         self.encoding = encoding
         self.zoom_font_size = 0
         self.compiler_mtime = 0
+        self._highlight_pending = True
 
         # Set initial content without triggering modificationChanged
         self.editor_doc.blockSignals(True)
@@ -622,8 +700,8 @@ class TabData:
             self.editor_doc.setModified(False)
         self.editor_doc.blockSignals(False)
 
-        # Highlighter created and attached to editor_doc
-        self.highlighter = CppHighlighter(self.editor_doc)
+        # Highlighter created in deferred mode (no format spans initially)
+        self.highlighter = CppHighlighter(self.editor_doc, deferred=True)
 
         # Connect dirty tracking via modificationChanged
         self.editor_doc.modificationChanged.connect(
@@ -1405,6 +1483,10 @@ class MainWindow (QMainWindow):
             old_tab.scroll_pos = self.editor.verticalScrollBar().value()
             old_tab.input_cursor = self.input_panel.textCursor()
             old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
+            # Cancel batch highlighting on old tab to avoid editor flicker
+            if old_tab.highlighter._batch_timer is not None:
+                old_tab.highlighter.cancel_batch_highlight()
+                old_tab._highlight_pending = True
 
         tm.current_index = index
         new_tab = tm.tabs[index]
@@ -1448,6 +1530,10 @@ class MainWindow (QMainWindow):
         self._deferred_restore_tab = index
         QTimer.singleShot(0, self._restore_deferred_cursor)
 
+        # Start progressive highlighting for deferred tabs
+        if new_tab._highlight_pending:
+            QTimer.singleShot(0, lambda: self._start_batch_highlight(new_tab))
+
     def _handle_close_tab (self, index:int) -> bool:
         """Close tab: confirm/save if dirty, disconnect, remove, adjust UI."""
         tm = self.tab_manager
@@ -1463,6 +1549,9 @@ class MainWindow (QMainWindow):
                 result = self._save_tab_data(tab)
                 if result < 0:
                     return False
+
+        # Cancel batch highlighting before removing
+        tab.highlighter.cancel_batch_highlight()
 
         # Disconnect signal before removing
         try:
@@ -1635,6 +1724,17 @@ class MainWindow (QMainWindow):
         self._deferred_restore_tab = -1
         self._update_status_info(tab)
 
+    def _start_batch_highlight (self, tab:TabData):
+        """Start progressive syntax highlighting for a newly opened tab."""
+        if not tab._highlight_pending:
+            return
+        # Verify the tab still exists and is the currently displayed tab
+        idx = self.tab_manager.find_tab_index(tab)
+        if idx < 0 or idx != self.tab_manager.current_index:
+            return
+        tab.highlighter.start_batch_highlight(self.editor)
+        tab._highlight_pending = False
+
     #----- Window close -----
 
     def closeEvent (self, event):
@@ -1651,6 +1751,10 @@ class MainWindow (QMainWindow):
                     if result < 0:
                         event.ignore()
                         return
+        # Cancel all batch highlighting timers before Qt destruction
+        for tab in self.tab_manager.tabs:
+            tab.highlighter.cancel_batch_highlight()
+
         # Disconnect all signals before Qt destruction
         for tab in self.tab_manager.tabs:
             try:

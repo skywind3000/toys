@@ -61,6 +61,7 @@ class TabData:
     encoding: str               # 文件编码：'UTF-8' 或系统编码名
     zoom_font_size: int         # 当前 zoom 字号（会话级，不持久化）
     compiler_mtime: float       # 上次编译时的编译参数修改时间戳，用于判断是否需要重编译
+    _highlight_pending: bool    # True = 分批高亮尚未开始或未完成
 ```
 
 **QTextDocument 模型说明**：每个标签页持有三个独立的 QTextDocument 实例（editor_doc、input_doc、output_doc）。Widget 层共享单一 QPlainTextEdit/QTextEdit，切换标签时通过 `widget.setDocument(tab.xxx_doc)` 交换文档。此设计的关键优势：
@@ -72,7 +73,7 @@ class TabData:
 - `is_dirty` 标志：编辑器文本变化时置 True，保存后置 False；新建文件预填充模板后也视为 dirty
 - 标签名生成规则：`is_new` 且 `is_dirty` → `*untitledN*`；`is_new` 且非 dirty → `untitledN`；已保存文件 dirty → `*filename*`；已保存文件非 dirty → `filename`
 - 退出时持久化：已保存文件记录 file_path；新文件记录 editor_doc.toPlainText() + input_doc.toPlainText()
-- CppHighlighter 在 TabData 创建时实例化并立即挂载到 editor_doc（`CppHighlighter(self.editor_doc)`），生命周期与 TabData 一致
+- CppHighlighter 在 TabData 创建时以 `deferred=True` 模式实例化并挂载到 editor_doc（`CppHighlighter(self.editor_doc, deferred=True)`），生命周期与 TabData 一致。deferred 模式下 highlightBlock 仅追踪多行注释状态，不产生 format spans，避免大文件打开时的 QTextDocumentLayout 瓶颈。分批高亮由 `MainWindow._start_batch_highlight` 在文档显示后触发
 
 ### TabManager（纯数据管理器 — 无 UI 操作）
 
@@ -165,7 +166,7 @@ self.empty_output_doc = self.output_panel.document()
 
 | 方法 | 职责 |
 |------|------|
-| `_switch_to_tab(index)` | 保存旧标签 Widget 状态 → 交换 document → 恢复新标签光标/滚动/字号 → 更新 tabbar → 延迟恢复编辑器光标 |
+| `_switch_to_tab(index)` | 保存旧标签 Widget 状态 → 交换 document → 恢复新标签光标/滚动/字号 → 更新 tabbar → 延迟恢复编辑器光标 → 若 `_highlight_pending` 则触发分批高亮 |
 | `_handle_close_tab(index)` | 确认/保存 dirty → 断信号 → 移除 tabbar → remove_tab → 调整 zero-tab 或 switch |
 | `_update_status_info(tab)` | 更新状态栏右侧（光标位置/编码/模式） |
 | `_update_tab_name(index)` | 更新 tabbar 标签文本 |
@@ -343,6 +344,15 @@ class Settings:
 
 多行注释需要特殊处理：使用 `setCurrentBlockState` / `previousBlockState` 机制跟踪跨块注释状态。
 
+**延迟+分批渐进式高亮**：打开大文件时，QTextDocumentLayout 处理 format spans 是瓶颈（7539 行 C 文件约 11 秒）。优化策略：
+
+- `CppHighlighter` 创建时传入 `deferred=True`，`highlightBlock` 仅做多行注释状态追踪（`__track_multiline_state`），不调用 `setFormat`，不产生 format spans
+- 文档先以无高亮状态显示（layout 快 ~0.5s），用户体验为文档瞬间可见
+- `MainWindow._switch_to_tab` 通过 `QTimer.singleShot(0)` 触发 `_start_batch_highlight`，此时 Qt 的 queued rehighlight 已在 deferred 模式下完成（快速），切换到全量模式开始分批高亮
+- `start_batch_highlight(editor, batch_size=100)` 从 block 0 开始，每批 rehighlightBlock 100 个 block，批间用 `QTimer.singleShot(0)` 间隔保持 UI 响应
+- 切换标签时取消旧标签的 batch highlighting（防止旧标签的 `setUpdatesEnabled(False)` 影响当前编辑器），设置 `_highlight_pending = True` 以便下次切换回来时重新启动
+- TabData 增加 `_highlight_pending` 属性，标识高亮是否尚未完成
+
 ### InputPanel
 
 继承 QTextEdit（setAcceptRichText=False），外层用 `_make_io_section(settings, 'INPUT', panel, dpi)` 包装（QWidget + QVBoxLayout），顶部放 QLabel 显示固定文字 "INPUT"：
@@ -500,13 +510,13 @@ def build_flags(source_encoding):
 ### 文件操作
 
 **New**：
-1. 创建 TabData（is_new=True, is_dirty=True, encoding='UTF-8'），editor_doc 初始内容为 self.settings.template_text，挂载 CppHighlighter
-2. 调用 `tab_manager.add_tab(tab)` 分配 untitled_number，`tabbar.addTab(name)` 更新 UI，`_switch_to_tab(index)` 切换
+1. 创建 TabData（is_new=True, is_dirty=True, encoding='UTF-8'），editor_doc 初始内容为 self.settings.template_text，挂载 CppHighlighter（deferred=True）
+2. 调用 `tab_manager.add_tab(tab)` 分配 untitled_number，`tabbar.addTab(name)` 更新 UI，`_switch_to_tab(index)` 切换。`_switch_to_tab` 检测 `_highlight_pending` 并通过 `QTimer.singleShot(0)` 触发 `_start_batch_highlight`
 
 **Open**：
 1. QFileDialog 选择文件（初始目录为 window_state.last_file_dir）
 2. `_read_file(path)` 检测编码并读取文件内容。文件不可读（不存在、权限不足等）时弹出 QMessageBox 警告并终止 Open 流程
-3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter
+3. 创建 TabData（is_new=False, is_dirty=False, file_path=路径, encoding=检测结果），editor_doc 初始内容为文件文本，挂载 CppHighlighter（deferred=True）
 4. 调用 `tab_manager.add_tab(tab)` + `tabbar.addTab(name)` + `_switch_to_tab(index)`
 5. 更新 last_file_dir 和 recent_files
 

@@ -632,6 +632,7 @@ class TestHighlighterAttachment (unittest.TestCase):
 
     def test_highlighter_reformats_on_content (self):
         tab = TabData(is_new=True, content='int x = 42;')
+        tab.highlighter._deferred = False
         tab.highlighter.rehighlight()
         block = tab.editor_doc.firstBlock()
         fmts = block.layout().additionalFormats()
