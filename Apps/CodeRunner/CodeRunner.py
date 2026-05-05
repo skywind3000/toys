@@ -856,25 +856,10 @@ class CodeEditor (QTextEdit):
             self._handle_enter_key()
             return
 
-        # Backspace — bracket deletion
+        # Backspace — smart space deletion and bracket deletion
         if key == Qt.Key_Backspace:
-            if self._bracket_completion_enabled:
-                cursor = self.textCursor()
-                if not cursor.hasSelection():
-                    pos = cursor.position()
-                    doc = self.document()
-                    if pos > 0 and pos < doc.characterCount():
-                        char_before = doc.characterAt(pos - 1)
-                        char_after = doc.characterAt(pos)
-                        if char_before in self._BRACKET_OPEN:
-                            expected_close = self._BRACKET_OPEN[char_before]
-                            if char_after == expected_close:
-                                cursor.beginEditBlock()
-                                cursor.deleteChar()
-                                cursor.deletePreviousChar()
-                                cursor.endEditBlock()
-                                self.setTextCursor(cursor)
-                                return
+            if self._handle_backspace():
+                return
             super().keyPressEvent(event)
             return
 
@@ -934,6 +919,43 @@ class CodeEditor (QTextEdit):
                 cursor.movePosition(QTextCursor.Right)
                 self.setTextCursor(cursor)
                 return True
+        return False
+
+    def _handle_backspace (self) -> bool:
+        """Handle backspace: batch-delete spaces at indent boundaries,
+        or delete paired brackets."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return False
+        col = cursor.columnNumber()
+        if col > 0 and col % self.indent_size == 0:
+            line_text = cursor.block().text()
+            prefix = line_text[:col]
+            if prefix and all(ch == ' ' for ch in prefix):
+                # All spaces to the left, at indent boundary —
+                # delete indent_size spaces at once
+                cursor.beginEditBlock()
+                for _i in range(self.indent_size):
+                    cursor.deletePreviousChar()
+                cursor.endEditBlock()
+                self.setTextCursor(cursor)
+                return True
+        # Bracket pair deletion
+        if self._bracket_completion_enabled:
+            pos = cursor.position()
+            doc = self.document()
+            if pos > 0 and pos < doc.characterCount():
+                char_before = doc.characterAt(pos - 1)
+                char_after = doc.characterAt(pos)
+                if char_before in self._BRACKET_OPEN:
+                    expected_close = self._BRACKET_OPEN[char_before]
+                    if char_after == expected_close:
+                        cursor.beginEditBlock()
+                        cursor.deleteChar()
+                        cursor.deletePreviousChar()
+                        cursor.endEditBlock()
+                        self.setTextCursor(cursor)
+                        return True
         return False
 
     def _handle_enter_key (self):
