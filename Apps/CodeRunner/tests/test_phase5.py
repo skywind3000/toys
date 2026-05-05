@@ -36,7 +36,7 @@ from CodeRunner import (
     _init_font_defaults, _detect_encoding, _read_file,
     EncodingManager, _expand_env_vars, _ensure_cmd_file,
     _output_clear, _output_append, ProcessManager,
-    _FLOW_IDLE, _FLOW_COMPILING, _FLOW_RUNNING, _FLOW_STOPPING
+    _FLOW_IDLE, _FLOW_COMPILING, _FLOW_RUNNING
 )
 
 
@@ -358,9 +358,6 @@ class TestMainWindowCompile (unittest.TestCase):
         self.window._set_flow_state(_FLOW_RUNNING)
         self.assertEqual(self.window._flow_state, _FLOW_RUNNING)
         self.assertEqual(self.window.status_message.text(), 'Running...')
-        self.window._set_flow_state(_FLOW_STOPPING)
-        self.assertEqual(self.window._flow_state, _FLOW_STOPPING)
-        self.assertEqual(self.window.status_message.text(), 'Stopping...')
         self.window._set_flow_state(_FLOW_IDLE)
         self.assertEqual(self.window._flow_state, _FLOW_IDLE)
         self.assertEqual(self.window.status_message.text(), 'Ready')

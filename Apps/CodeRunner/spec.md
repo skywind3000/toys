@@ -400,20 +400,22 @@ class ProcessManager(QObject):
     target_tab: TabData       # 发起本次操作的标签页引用，输出路由目标
 
     signals:
-        compile_finished(exit_code, stderr_text)
-        run_finished(exit_code, elapsed, peak_memory, killed)
+        compile_finished(exit_code, stderr_text, reason)
+        run_finished(exit_code, elapsed, peak_memory, reason)
         run_stdout_ready(text)
         run_stderr_ready(text)
-        compile_timeout_occurred()
-        run_timeout_occurred()
-        launch_failed(err_msg)
 ```
 
-**waitForStarted 信号屏蔽**：
+**reason 参数**：所有结束场景统一通过 finished 信号的 `reason` 参数传达退出原因，不再使用多个独立信号（launch_failed / timeout_occurred 等），彻底消除信号竞争问题。
 
-QProcess.waitForStarted() 在等待期间会处理事件循环，导致 `finished` 信号可能在 waitForStarted 返回之前就发出。当编译器不在 PATH 中时，进程立即失败，`finished` 信号先于 `launch_failed` 到达 MainWindow，导致 `_on_compile_finished` 将状态设为 IDLE 并输出 "Process stopped"，而非 `_on_launch_failed` 显示正确的 "Failed to start compiler" 消息。
+| reason | 含义 | 触发场景 |
+|--------|------|----------|
+| `normal` | 进程正常退出 | 编译/运行正常结束 |
+| `killed` | 进程被 kill() 终止 | 用户按 Stop → `kill_process()` 调用 `QProcess.kill()`，QProcess 报告 `CrashExit` |
+| `timeout` | 运行超时 | QTimer 超时触发，ProcessManager 先 kill 再 emit finished(reason='timeout') |
+| `failed_to_start` | 进程无法启动 | `waitForStarted(5000)` 返回 False |
 
-修复方式：在调用 `waitForStarted(5000)` 之前，暂时断开 `process.finished` 信号；waitForStarted 返回后再重新连接。这样 finished 信号在启动检查期间不会泄漏到 MainWindow。
+**防止二次 emit**：当 timeout handler emit finished(reason='timeout') 后，QProcess 仍然会触发 `finished` 信号（进程被 kill 后 QProcess 的 `finished` 信号必然到达）。使用 `_finished_emitted` 标志位防止 `_on_compile_finished` / `_on_run_finished` 二次 emit。
 
 **Test 流程**（状态机视角）：
 1. 用户点击 Test → 检查 `_flow_state == IDLE` 和 `proc_mgr.busy == False`，否则弹 Busy 提示
@@ -421,29 +423,29 @@ QProcess.waitForStarted() 在等待期间会处理事件循环，导致 `finishe
 3. EncodingManager 生成编译命令（见编码章节）
 4. 判断是否需要重编译：exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime → 需要重编译。编译产物（exe）放在源文件同目录下，文件名与源文件同名（如 `test.cpp` → `test.exe`），与 Dev-C++ 单文件模式行为一致
 5. 如需重编译：**IDLE → COMPILING(intent=test)**，ProcessManager 启动 QProcess 执行编译命令
-   - 编译成功：**COMPILING → RUNNING**，启动 Test 运行（步骤 6）
-   - 编译失败：**COMPILING → IDLE**，OutputPanel 显示红色错误信息
-   - 启动编译器失败：**COMPILING → IDLE**，OutputPanel 显示红色 "Failed to start" 信息
-   - 编译超时：**COMPILING → STOPPING**（详见 STOPPING 收尾章节）
-   - Stop：**COMPILING → STOPPING**（详见 STOPPING 收尾章节）
+   - 编译成功(reason=normal, exit_code=0)：**COMPILING → RUNNING**，启动 Test 运行（步骤 6）
+   - 编译失败(reason=normal, exit_code≠0)：**COMPILING → IDLE**，OutputPanel 显示红色错误信息
+   - 启动编译器失败(reason=failed_to_start)：**COMPILING → IDLE**，OutputPanel 显示红色 "Failed to start compiler 'xxx'" + Error 详情 + "Please check Settings"
+   - 编译超时(reason=timeout)：**COMPILING → IDLE**，清空输出 + 红色 "Compilation timeout after X seconds"
+   - Stop(reason=killed)：**COMPILING → IDLE**，追加灰色 "Compilation stopped in Xs"
 6. 如不需重编译：**IDLE → RUNNING**，直接启动 Test 运行
 7. Test 运行中（**RUNNING** 状态）：
    - 设置工作目录为 exe 所在目录
    - 设置环境变量（Settings.env_vars 展开 $VAR_NAME 后合并到 QProcessEnvironment）
    - 将 InputPanel 内容转换为平台编码后写入 stdin
    - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）。此"追加"是指在单次运行的输出中逐步追加新到达的数据；跨运行间则整体替换（每次 Test/Build 开始时先清空 OutputPanel 再写入新内容）
-   - 正常退出(exit 0)：**RUNNING → IDLE**，追加灰色退出状态行（含耗时和峰值内存）
-   - 运行错误(exit≠0)：**RUNNING → IDLE**，追加红色 "Runtime Error (exit code N)"
-   - 启动程序失败：**RUNNING → IDLE**，OutputPanel 显示红色 "Failed to start" 信息
-   - 运行超时：**RUNNING → STOPPING**（详见 STOPPING 收尾章节）
-   - Stop：**RUNNING → STOPPING**（详见 STOPPING 收尾章节）
+   - 正常退出(reason=normal, exit 0)：**RUNNING → IDLE**，追加灰色退出状态行（含耗时和峰值内存）
+   - 运行错误(reason=normal, exit≠0)：**RUNNING → IDLE**，追加红色 "Runtime Error (exit code N)"
+   - 启动程序失败(reason=failed_to_start)：**RUNNING → IDLE**，OutputPanel 显示红色 "Failed to start program"
+   - 运行超时(reason=timeout)：**RUNNING → IDLE**，追加红色 "Timeout after X seconds (ran Ys)"
+   - Stop(reason=killed)：**RUNNING → IDLE**，追加灰色 "Process stopped in Xs"
    - 内存占用：如果 `psutil` 可用，进程启动后启动一个 QTimer（间隔约 100ms）定期轮询 `psutil.Process(pid).memory_info()`，记录 `rss` 峰值到局部变量 `peak_memory`。每次轮询用 try/except 捕获 `NoSuchProcess`（进程已结束时忽略）。进程结束时停止 QTimer，将 `peak_memory` 追加到退出状态行（如 "exit with code 0 in 0.015s, 1.2MB"）。此方案不依赖进程结束时仍然存活，是最可靠的采集方式
 
 **输出路由（跨标签切换场景）**：
 - 启动 Test/Build 时，ProcessManager 记录 `target_tab` 为发起操作的 TabData 引用
 - stdout/stderr 数据到达时，始终写入 `target_tab.output_doc`（通过 QTextCursor 操作 document），而非"当前可见标签"
 - 由于 QTextDocument 与 Widget 解耦，即使当前显示的是其它标签的 document，写入 target_tab.output_doc 也不会影响当前显示；用户切换回该标签时 `setDocument` 即可看到完整输出
-- 进程结束信号、超时信号同理——状态行和错误信息写入 `target_tab.output_doc`
+- 进程结束信号同理——所有结束场景（正常退出、超时、Stop、启动失败）统一通过 finished 信号的 reason 参数传达，写入 `target_tab.output_doc`
 - 状态栏左侧仅反映状态机状态（见状态表），不受标签切换影响
 
 **Run 流程**（状态机视角）：
@@ -488,23 +490,23 @@ exit %CR_EXITCODE%
 1. 用户点击 Build → 检查 `_flow_state == IDLE` 和 `proc_mgr.busy == False`，否则弹 Busy 提示
 2. MainWindow 调用 `save_if_dirty()`，失败则终止 Build 流程
 3. **IDLE → COMPILING(intent=build)**，强制重新编译（不判断是否需要）
-   - 编译成功：**COMPILING → IDLE**，OutputPanel 显示灰色 "Build OK in X.XXXs"
-   - 编译失败：**COMPILING → IDLE**，OutputPanel 显示红色错误信息
-   - 启动编译器失败：**COMPILING → IDLE**，OutputPanel 显示红色 "Failed to start"
-   - 编译超时/Stop：**COMPILING → STOPPING**（详见 STOPPING 收尾章节）
+   - 编译成功(reason=normal, exit_code=0)：**COMPILING → IDLE**，OutputPanel 显示灰色 "Build OK in X.XXXs"
+   - 编译失败(reason=normal, exit_code≠0)：**COMPILING → IDLE**，OutputPanel 显示红色错误信息
+   - 启动编译器失败(reason=failed_to_start)：**COMPILING → IDLE**，OutputPanel 显示红色 "Failed to start compiler" + Settings 提示
+   - 编译超时(reason=timeout)：**COMPILING → IDLE**，清空输出 + 红色 "Compilation timeout"
+   - Stop(reason=killed)：**COMPILING → IDLE**，灰色 "Compilation stopped"
 
 **编译运行状态机**：
 
 MainWindow 使用显式状态机控制编译运行流程，状态存储在 `self._flow_state`（枚举值），意图存储在 `self._flow_intent`（`'build'/'test'/'run'`），关联标签存储在 `self._flow_tab`。ProcessManager 的 `busy/mode` 由状态机统一管理，不再独立变化。
 
-四个状态：
+三个状态：
 
 | 状态 | 含义 | status bar 显示 | 按钮响应 |
 |------|------|-----------------|----------|
 | IDLE | 闲着，无进程运行 | Ready | Build/Test/Run 正常触发，Stop 无效 |
-| COMPILING | 编译中，QProcess 运行 g++ | Compiling... | Build/Test/Run 弹 Busy 提示，Stop → STOPPING |
-| RUNNING | Test 运行中，QProcess 运行 exe | Running... | Build/Test/Run 弹 Busy 提示，Stop → STOPPING |
-| STOPPING | 主动杀进程后等待 finished 信号 | Stopping... | 所有按钮无效 |
+| COMPILING | 编译中，QProcess 运行 g++ | Compiling... | Build/Test/Run 弹 Busy 提示，Stop → kill process → reason='killed' |
+| RUNNING | Test 运行中，QProcess 运行 exe | Running... | Build/Test/Run 弹 Busy 提示，Stop → kill process → reason='killed' |
 
 意图（`_flow_intent`）只在 COMPILING 状态下有意义，编译成功后决定下一步去向：
 
@@ -526,38 +528,31 @@ IDLE ─────────────────────────
   │  +Stop                    → 无效
 
 COMPILING ───────────────────────────────────────────────
-  │  +编译成功+intent=build   → IDLE（"Build OK in Xs"）
-  │  +编译成功+intent=test    → RUNNING
-  │  +编译成功+intent=run     → IDLE（弹外部终端）
-  │  +编译失败                → IDLE（红色错误信息）
-  │  +启动编译器失败           → IDLE（红色 "Failed to start"）
-  │  +编译超时                → STOPPING
-  │  +Stop                    → STOPPING
+  │  +finished(normal,0)+build → IDLE（"Build OK in Xs"）
+  │  +finished(normal,0)+test → RUNNING
+  │  +finished(normal,0)+run  → IDLE（弹外部终端）
+  │  +finished(normal,≠0)     → IDLE（红色错误信息）
+  │  +finished(failed_to_start)→ IDLE（"Failed to start compiler" + Settings 提示）
+  │  +finished(timeout)       → IDLE（"Compilation timeout"）
+  │  +finished(killed)        → IDLE（"Compilation stopped"）
   │  +Build/Test/Run          → 弹 Busy 提示
 
 RUNNING ─────────────────────────────────────────────────
-  │  +正常退出(exit 0)        → IDLE（灰色状态行 + 峰值内存）
-  │  +运行错误(exit≠0)        → IDLE（红色 "Runtime Error"）
-  │  +启动程序失败             → IDLE（红色 "Failed to start"）
-  │  +运行超时                → STOPPING
-  │  +Stop                    → STOPPING
+  │  +finished(normal,0)      → IDLE（灰色状态行 + 峰值内存）
+  │  +finished(normal,≠0)     → IDLE（红色 "Runtime Error"）
+  │  +finished(failed_to_start)→ IDLE（"Failed to start program"）
+  │  +finished(timeout)       → IDLE（"Timeout after Xs (ran Ys)"）
+  │  +finished(killed)        → IDLE（"Process stopped in Xs"）
   │  +Build/Test/Run          → 弹 Busy 提示
-
-STOPPING ────────────────────────────────────────────────
-  │  +finished信号到达        → IDLE（显示最终结果）
-  │  +所有按钮                → 无效
-  │  +3秒兜底定时器           → IDLE（强制 cleanup）
 ```
 
 **F5/Run 外部终端**：编译成功后调用 `QProcess.startDetached` 启动外部终端窗口，进程脱离管理，直接 **COMPILING → IDLE**。如果不需要重编译，连 COMPILING 都不进，**IDLE → IDLE**。
 
-**STOPPING 的收尾**：
-- 进入 STOPPING 时启动 3 秒兜底 QTimer；finished 信号到达后停止兜底定时器
-- finished 信号到达时：读取剩余 stdout/stderr → `_cleanup()` → 根据触发原因决定输出内容：
-  - 超时触发：追加红色 "Timeout after X seconds"
-  - Stop 触发：追加灰色 "Process stopped"
-  - 编译超时触发：清空输出 + 红色 "Compilation timeout"
-- 兜底定时器触发（finished 信号 3 秒内未到达）：强制 `_cleanup()` → IDLE
+**Stop 按钮机制**：
+- 用户按 Stop → `proc_mgr.kill_process()` 调用 `QProcess.kill()`
+- QProcess 报告 `exit_status=CrashExit` → ProcessManager emit `finished(reason='killed')`
+- MainWindow 收到 `reason='killed'` → 显示 "Process stopped" / "Compilation stopped" → IDLE
+- 不需要 STOPPING 状态或 _stop_reason 变量，因为 reason 参数直接传达了退出原因
 
 **按钮行为补充**：
 - Toolbar 上的 Build/Test/Run/Stop 按钮**保持可点击状态，不禁用灰显**——busy 时通过弹出提示而非视觉禁用阻止操作
