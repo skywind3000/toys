@@ -1144,9 +1144,10 @@ class MainWindow (QMainWindow):
         cursor = self.editor.textCursor()
         line = cursor.blockNumber() + 1
         col = cursor.columnNumber() + 1
+        total = self.editor.document().blockCount()
         mode = 'INS'
-        text = 'Ln {}, Col {} | {} | {}'.format(
-            line, col, tab.encoding, mode)
+        text = 'Ln {}/{}, Col {} | {} | {}'.format(
+            line, total, col, tab.encoding, mode)
         self.status_info.setText(text)
 
     def _update_tab_name (self, index:int):
