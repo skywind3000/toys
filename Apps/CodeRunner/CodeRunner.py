@@ -2353,6 +2353,8 @@ class MainWindow (QMainWindow):
         else:
             name = os.path.basename(tab.file_path)
             dir_path = os.path.dirname(tab.file_path)
+            if sys.platform == 'win32':
+                dir_path = dir_path.replace('/', '\\')
             self.setWindowTitle(
                 '{} ({}) - CodeRunner'.format(name, dir_path))
 
