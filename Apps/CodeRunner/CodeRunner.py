@@ -12,10 +12,12 @@ import sys
 import os
 import copy
 import math
+import time
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
     QTextEdit, QLabel, QWidget, QAction,
-    QVBoxLayout, QShortcut, QFileDialog, QMessageBox
+    QVBoxLayout, QShortcut, QFileDialog, QMessageBox,
+    QInputDialog
 )
 from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect, QRegularExpression
 from PyQt5.QtGui import (
@@ -1272,14 +1274,54 @@ class MainWindow (QMainWindow):
             QKeySequence('Ctrl+-')])
         self.act_zoom_out.setToolTip('Zoom Out (Ctrl+-)')
 
+        # Edit actions
+        self.act_undo = QAction('Undo', self)
+        self.act_undo.setShortcut(QKeySequence('Ctrl+Z'))
+        self.act_undo.setToolTip('Undo (Ctrl+Z)')
+
+        self.act_redo = QAction('Redo', self)
+        self.act_redo.setShortcut(QKeySequence('Ctrl+Y'))
+        self.act_redo.setToolTip('Redo (Ctrl+Y)')
+
+        self.act_cut = QAction('Cut', self)
+        self.act_cut.setShortcut(QKeySequence('Ctrl+X'))
+        self.act_cut.setToolTip('Cut (Ctrl+X)')
+
+        self.act_copy = QAction('Copy', self)
+        self.act_copy.setShortcut(QKeySequence('Ctrl+C'))
+        self.act_copy.setToolTip('Copy (Ctrl+C)')
+
+        self.act_paste = QAction('Paste', self)
+        self.act_paste.setShortcut(QKeySequence('Ctrl+V'))
+        self.act_paste.setToolTip('Paste (Ctrl+V)')
+
+        self.act_find = QAction('Find', self)
+        self.act_find.setShortcut(QKeySequence('Ctrl+F'))
+        self.act_find.setToolTip('Find (Ctrl+F)')
+
+        self.act_replace = QAction('Replace', self)
+        self.act_replace.setShortcut(QKeySequence('Ctrl+H'))
+        self.act_replace.setToolTip('Replace (Ctrl+H)')
+
+        self.act_goto_line = QAction('Goto Line', self)
+        self.act_goto_line.setShortcut(QKeySequence('Ctrl+G'))
+        self.act_goto_line.setToolTip('Goto Line (Ctrl+G)')
+
+        # Build action
+        self.act_build = QAction('Build', self)
+        self.act_build.setShortcut(QKeySequence('Ctrl+B'))
+        self.act_build.setToolTip('Build (Ctrl+B)')
+
+        # About action
+        self.act_about = QAction('About', self)
+
     def __build_menubar (self):
         menubar = self.menuBar()
         self.menu_file = menubar.addMenu('File')
         self.menu_edit = menubar.addMenu('Edit')
         self.menu_run = menubar.addMenu('Run')
         self.menu_view = menubar.addMenu('View')
-        self.menu_view.addAction(self.act_zoom_in)
-        self.menu_view.addAction(self.act_zoom_out)
+        self.menu_help = menubar.addMenu('Help')
 
         # Populate File menu
         self.menu_file.addAction(self.act_new)
@@ -1290,6 +1332,32 @@ class MainWindow (QMainWindow):
         self.menu_file.addAction(self.act_close)
         self.menu_file.addSeparator()
         self.menu_file.addAction(self.act_settings)
+
+        # Populate Edit menu
+        self.menu_edit.addAction(self.act_undo)
+        self.menu_edit.addAction(self.act_redo)
+        self.menu_edit.addSeparator()
+        self.menu_edit.addAction(self.act_cut)
+        self.menu_edit.addAction(self.act_copy)
+        self.menu_edit.addAction(self.act_paste)
+        self.menu_edit.addSeparator()
+        self.menu_edit.addAction(self.act_find)
+        self.menu_edit.addAction(self.act_replace)
+        self.menu_edit.addAction(self.act_goto_line)
+
+        # Populate Run menu
+        self.menu_run.addAction(self.act_build)
+        self.menu_run.addSeparator()
+        self.menu_run.addAction(self.act_test)
+        self.menu_run.addAction(self.act_run)
+        self.menu_run.addAction(self.act_stop)
+
+        # Populate View menu
+        self.menu_view.addAction(self.act_zoom_in)
+        self.menu_view.addAction(self.act_zoom_out)
+
+        # Populate Help menu
+        self.menu_help.addAction(self.act_about)
 
     def __build_toolbar (self):
         toolbar = self.addToolBar('Main')
@@ -1356,6 +1424,25 @@ class MainWindow (QMainWindow):
         self.act_close.triggered.connect(self._action_close)
         self.act_zoom_in.triggered.connect(self._action_zoom_in)
         self.act_zoom_out.triggered.connect(self._action_zoom_out)
+
+        # Edit actions
+        self.act_undo.triggered.connect(self._action_undo)
+        self.act_redo.triggered.connect(self._action_redo)
+        self.act_cut.triggered.connect(self._action_cut)
+        self.act_copy.triggered.connect(self._action_copy)
+        self.act_paste.triggered.connect(self._action_paste)
+        self.act_find.triggered.connect(self._action_find)
+        self.act_replace.triggered.connect(self._action_replace)
+        self.act_goto_line.triggered.connect(self._action_goto_line)
+
+        # Run actions
+        self.act_build.triggered.connect(self._action_build)
+        self.act_run.triggered.connect(self._action_run)
+        self.act_test.triggered.connect(self._action_test)
+        self.act_stop.triggered.connect(self._action_stop)
+
+        # Help actions
+        self.act_about.triggered.connect(self._action_about)
 
         # Tabbar signals
         self.tabbar.currentChanged.connect(
@@ -1466,6 +1553,66 @@ class MainWindow (QMainWindow):
     def _apply_zoom (self, tab):
         zoom_size = max(6, self.settings.editor_font_size + tab.zoom_font_size)
         self.editor.setFontSize(zoom_size)
+
+    def _action_undo (self):
+        self.editor.undo()
+
+    def _action_redo (self):
+        self.editor.redo()
+
+    def _action_cut (self):
+        self.editor.cut()
+
+    def _action_copy (self):
+        self.editor.copy()
+
+    def _action_paste (self):
+        self.editor.paste()
+
+    def _action_find (self):
+        # TODO: implement FindDialog
+        pass
+
+    def _action_replace (self):
+        # TODO: implement ReplaceDialog
+        pass
+
+    def _action_goto_line (self):
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        max_line = self.editor.document().blockCount()
+        line, ok = QInputDialog.getInt(
+            self, 'Goto Line', 'Line number (1-{}):'.format(max_line),
+            1, 1, max_line)
+        if ok and line > 0:
+            block = self.editor.document().findBlockByNumber(line - 1)
+            cursor = self.editor.textCursor()
+            cursor.setPosition(block.position())
+            self.editor.setTextCursor(cursor)
+            self.editor.centerCursor()
+
+    def _action_build (self):
+        # TODO: implement Build with ProcessManager
+        self.status_message.setText('Build: not yet implemented')
+
+    def _action_run (self):
+        # TODO: implement Run with ProcessManager
+        self.status_message.setText('Run: not yet implemented')
+
+    def _action_test (self):
+        # TODO: implement Test with ProcessManager
+        self.status_message.setText('Test: not yet implemented')
+
+    def _action_stop (self):
+        # TODO: implement Stop with ProcessManager
+        self.status_message.setText('Stop: not yet implemented')
+
+    def _action_about (self):
+        QMessageBox.about(
+            self, 'About CodeRunner',
+            'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
+                time.strftime('%Y/%m/%d %H:%M:%S')))
 
     #----- Tab management (UI operations) -----
 
