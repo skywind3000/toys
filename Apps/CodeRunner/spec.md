@@ -393,15 +393,19 @@ class Settings:
 ```python
 class ProcessManager(QObject):
     process: QProcess         # 当前活跃的 QProcess（编译或运行）
-    busy: bool                # True = 正在编译或运行
-    mode: str                 # 'compile' / 'run' / None
+    busy: bool                # True = 正在编译或运行（由状态机驱动）
+    mode: str                 # 'compile' / 'test_run' / None
     target_tab: TabData       # 发起本次操作的标签页引用，输出路由目标
+    _killed_by_us: bool       # True = 进程被超时或 Stop 主动杀死
 
     signals:
         compile_finished(exit_code, stderr_text)
-        run_finished(exit_code, stdout_text, stderr_text, elapsed_ms)
-        run_timeout()
-        compile_timeout()
+        run_finished(exit_code, elapsed, peak_memory, killed)
+        run_stdout_ready(text)
+        run_stderr_ready(text)
+        compile_timeout_occurred()
+        run_timeout_occurred()
+        launch_failed(err_msg)
 ```
 
 **Test 流程**：
@@ -468,11 +472,76 @@ exit %CR_EXITCODE%
 2. 强制重新编译（不判断是否需要）
 3. 结果显示到 OutputPanel：成功灰色 "Build OK in X.XXXs"，失败红色错误信息
 
-**Busy 状态控制**：
-- busy 为 True 时：Build/Test/Run 不启动新进程，弹出 QMessageBox 提示 "A process is currently running. Please wait or press Stop before starting a new operation."
-- Toolbar 上的 Build/Test/Run/Stop 按钮**保持可点击状态，不禁用灰显**——用户始终能看到并点击这些按钮，busy 时通过弹出提示而非视觉禁用来阻止操作
-- Stop 按钮调用 `process.kill()`，终止当前编译或运行进程
-- Run（外部终端）不占用 busy 状态
+**编译运行状态机**：
+
+MainWindow 使用显式状态机控制编译运行流程，状态存储在 `self._flow_state`（枚举值），意图存储在 `self._flow_intent`（`'build'/'test'/'run'`），关联标签存储在 `self._flow_tab`。ProcessManager 的 `busy/mode` 由状态机统一管理，不再独立变化。
+
+四个状态：
+
+| 状态 | 含义 | status bar 显示 | 按钮响应 |
+|------|------|-----------------|----------|
+| IDLE | 闲着，无进程运行 | Ready / 上次结果 | Build/Test/Run 正常触发，Stop 无效 |
+| COMPILING | 编译中，QProcess 运行 g++ | Compiling... | Build/Test/Run 弹 Busy 提示，Stop → STOPPING |
+| RUNNING | Test 运行中，QProcess 运行 exe | Running... | Build/Test/Run 弹 Busy 提示，Stop → STOPPING |
+| STOPPING | 主动杀进程后等待 finished 信号 | Stopping... | 所有按钮无效 |
+
+意图（`_flow_intent`）只在 COMPILING 状态下有意义，编译成功后决定下一步去向：
+
+| intent | 编译成功后 |
+|--------|-----------|
+| build | → IDLE（显示 "Build OK"） |
+| test | → RUNNING（启动 Test 运行） |
+| run | → IDLE（弹外部终端，startDetached 后不管理） |
+
+状态转移表：
+
+```
+IDLE ────────────────────────────────────────────────────
+  │  +Build                   → COMPILING(intent=build)
+  │  +Test(需重编译)           → COMPILING(intent=test)
+  │  +Test(不需重编译)         → RUNNING
+  │  +Run(需重编译)            → COMPILING(intent=run)
+  │  +Run(不需重编译)          → IDLE（弹外部终端）
+  │  +Stop                    → 无效
+
+COMPILING ───────────────────────────────────────────────
+  │  +编译成功+intent=build   → IDLE（"Build OK in Xs"）
+  │  +编译成功+intent=test    → RUNNING
+  │  +编译成功+intent=run     → IDLE（弹外部终端）
+  │  +编译失败                → IDLE（红色错误信息）
+  │  +启动编译器失败           → IDLE（红色 "Failed to start"）
+  │  +编译超时                → STOPPING
+  │  +Stop                    → STOPPING
+  │  +Build/Test/Run          → 弹 Busy 提示
+
+RUNNING ─────────────────────────────────────────────────
+  │  +正常退出(exit 0)        → IDLE（灰色状态行 + 峰值内存）
+  │  +运行错误(exit≠0)        → IDLE（红色 "Runtime Error"）
+  │  +启动程序失败             → IDLE（红色 "Failed to start"）
+  │  +运行超时                → STOPPING
+  │  +Stop                    → STOPPING
+  │  +Build/Test/Run          → 弹 Busy 提示
+
+STOPPING ────────────────────────────────────────────────
+  │  +finished信号到达        → IDLE（显示最终结果）
+  │  +所有按钮                → 无效
+  │  +3秒兜底定时器           → IDLE（强制 cleanup）
+```
+
+**F5/Run 外部终端**：编译成功后调用 `QProcess.startDetached` 启动外部终端窗口，进程脱离管理，直接 **COMPILING → IDLE**。如果不需要重编译，连 COMPILING 都不进，**IDLE → IDLE**。
+
+**STOPPING 的收尾**：
+- 进入 STOPPING 时启动 3 秒兜底 QTimer；finished 信号到达后停止兜底定时器
+- finished 信号到达时：读取剩余 stdout/stderr → `_cleanup()` → 根据触发原因决定输出内容：
+  - 超时触发：追加红色 "Timeout after X seconds"
+  - Stop 触发：追加灰色 "Process stopped"
+  - 编译超时触发：清空输出 + 红色 "Compilation timeout"
+- 兜底定时器触发（finished 信号 3 秒内未到达）：强制 `_cleanup()` → IDLE
+
+**按钮行为补充**：
+- Toolbar 上的 Build/Test/Run/Stop 按钮**保持可点击状态，不禁用灰显**——busy 时通过弹出提示而非视觉禁用阻止操作
+- IDLE 状态下 Stop 按钮点击无反应（不弹提示，静默忽略）
+- Run（外部终端）不占用进程管理状态
 
 **QProcess 配置**：
 - 合并 stderr 到独立通道：`setProcessChannelMode(QProcess.SeparateChannels)`

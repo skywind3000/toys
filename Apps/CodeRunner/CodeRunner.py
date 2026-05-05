@@ -486,7 +486,7 @@ _SETTINGS_DEFAULTS = {
     'compiler_path': 'g++',
     'compiler_flags': '-std=c++14',
     'env_vars': {},
-    'run_timeout': 30,
+    'run_timeout': 10,
     'compile_timeout': 20,
     'editor_font_family': '',
     'editor_font_size': 11,
