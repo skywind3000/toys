@@ -1003,7 +1003,11 @@ class CodeEditor (QTextEdit):
         return ''.join(result)
 
     def _notify_overwrite_changed (self):
-        """Update status bar INS/OVR display."""
+        """Update status bar INS/OVR display and cursor shape."""
+        if self.overwrite_mode:
+            self.setCursorWidth(self.fontMetrics().horizontalAdvance('x'))
+        else:
+            self.setCursorWidth(1)
         win = self.window()
         if hasattr(win, '_update_status_info'):
             tab = win.tab_manager.get_current()

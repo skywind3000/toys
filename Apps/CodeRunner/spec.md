@@ -301,6 +301,13 @@ class Settings:
 2. 如果当前行末尾是 `{`，新行增加一级缩进：按 `Settings.indent_style` 决定加 `\t`（tab 风格）或 `' ' * indent_size`（space 风格），不猜测文档既有缩进风格
 3. 如果下一行（原光标右侧）以 `}` 开头且当前行是 `{`，则在 `}` 行减少一级缩进（光标停留在增加缩进的新行）
 
+**Smart Backspace**：Backspace 键在以下条件同时满足时，一次删除 `indent_size` 个空格（而非逐个删除）：
+1. 光标无选区
+2. 光标列号 `col > 0` 且 `col % indent_size == 0`（0-based，即位于缩进整数倍边界）
+3. 光标左侧到行首的全部字符都是空格（不含 tab 或其他字符）
+
+不限定 `indent_style`——即使 indent_style 为 tab，只要光标左侧碰巧全是空格且位于边界，也会批量删除。不满足条件时走常规 Backspace 行为（含括号对删除）。
+
 **Tab 键**：插入 Tab 制表符（`\t`），不转换为空格。Tab 宽度设为 4 个字符宽度（基于 `fontMetrics().horizontalAdvance('x') * 4`）。
 
 **重要：字体变更与 Tab 宽度联动**。Tab 宽度（像素值）依赖当前字体的字符宽度。当 SettingsDialog 更换编辑器字体或字号时，必须触发 `editor.updateFontMetrics()` 重新计算 Tab 宽度，并同步 `document.setDefaultFont(editor.font())` 保持文档布局字体一致。否则 Tab 宽度像素值与新字体字符宽度不匹配，会导致 Tab 显示为错误字符数（如 4 字符宽变成 5 字符宽）。
