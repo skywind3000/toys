@@ -112,7 +112,7 @@
 - 行号显示：左侧 LineNumberArea（QWidget），paintEvent 绘制行号，blockCountChanged / updateRequest 信号驱动重绘
 - 行号区域宽度按最大行号位数动态调整，宽度值乘 DPI factor
 - Tab 制表符宽度：tabStopWidth / tabStopDistance 设为 4 字符宽度
-- 状态栏右侧 QLabel：`Ln {行}, Col {列} | {编码} | INS/OVR`
+- 状态栏右侧 QLabel：`Ln {当前行}/{总行}, Col {列} | {编码} | INS/OVR`
   - 行号列号从 1 开始，cursorPositionChanged 信号更新
   - 编码从 TabData.encoding 读取
   - INS/OVR 初始为 INS（Overtype 在阶段 4 实现）
@@ -128,12 +128,12 @@
 - DPI factor 计算逻辑
 
 **手动验收清单**：
-- [ ] 行号可见，输入多行后行号正确递增
-- [ ] 行号宽度随行数增加自动扩展
-- [ ] 光标移动时状态栏 Ln/Col 实时更新
-- [ ] 状态栏编码显示正确（新文件 UTF-8，GBK 文件 GBK）
-- [ ] Ctrl++ 放大编辑器字号，Ctrl+- 缩小
-- [ ] Zoom 后切换标签再切回，字号恢复到该标签的 zoom 值
+- [x] 行号可见，输入多行后行号正确递增
+- [x] 行号宽度随行数增加自动扩展
+- [x] 光标移动时状态栏 Ln/Col 实时更新
+- [x] 状态栏编码显示正确（新文件 UTF-8，GBK 文件 GBK）
+- [x] Ctrl++ 放大编辑器字号，Ctrl+- 缩小
+- [x] Zoom 后切换标签再切回，字号恢复到该标签的 zoom 值
 
 ---
 

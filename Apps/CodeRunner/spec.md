@@ -16,7 +16,7 @@ StatusLine (QStatusBar)
 
 - TabBar 与 MainArea 协同：切换标签时通过 `setDocument()` 交换每个 Widget 的 QTextDocument
 - MainArea 使用**单一可见 Widget 组**（而非每标签一套 Widget），每个标签页持有独立的 QTextDocument 三件套（editor_doc / input_doc / output_doc），切换标签时交换 document，Splitter 位置全局共享
-- 状态栏左侧为 QLabel 显示消息，右侧为 QLabel 显示光标位置/编码/模式
+- 状态栏左侧为 QLabel 显示消息，右侧为 QLabel 显示光标位置（Ln 当前行/总行, Col 列号）/编码/模式
 - 应用主题使用 Fusion（`app.setStyle('Fusion')`），Toolbar 七个按钮使用自绘彩色图标
 
 ### 类列表
