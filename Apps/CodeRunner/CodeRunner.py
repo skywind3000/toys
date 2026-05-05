@@ -17,11 +17,11 @@ from PyQt5.QtWidgets import (
     QTextEdit, QLabel, QWidget, QAction,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox
 )
-from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect
+from PyQt5.QtCore import Qt, QSize, QPointF, QTimer, QRect, QRegularExpression
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
     QColor, QPen, QBrush, QPolygonF, QSyntaxHighlighter,
-    QTextDocument, QTextCursor
+    QTextDocument, QTextCursor, QTextCharFormat, QFont
 )
 
 
@@ -434,15 +434,129 @@ class Settings:
 
 
 #----------------------------------------------------------------------
-# CppHighlighter (placeholder for Phase 4)
+# CppHighlighter
 #----------------------------------------------------------------------
+_CPP_KEYWORDS = (
+    'int|float|double|char|void|bool|long|short|unsigned|signed|'
+    'const|static|extern|inline|virtual|override|final|class|struct|'
+    'enum|union|namespace|using|template|typename|public|private|'
+    'protected|if|else|while|for|do|switch|case|default|break|'
+    'continue|return|try|catch|throw|new|delete|this|nullptr|true|'
+    'false|sizeof|typedef|auto|register|volatile|friend|operator|'
+    'explicit|mutable|constexpr|decltype|static_assert|noexcept|'
+    'thread_local|alignas|alignof'
+)
+
+_CPP_PREPROCESSOR = (
+    'include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning'
+)
+
 class CppHighlighter (QSyntaxHighlighter):
 
     def __init__ (self, parent:QTextDocument=None):
         super().__init__(parent)
+        self._rules = []
+        self.__init_rules()
+
+    def __init_rules (self):
+        fmt_keyword = QTextCharFormat()
+        fmt_keyword.setForeground(QBrush(QColor(0, 0, 255)))
+        fmt_keyword.setFontWeight(QFont.Bold)
+        self._rules.append((
+            QRegularExpression(
+                r'\b(' + _CPP_KEYWORDS + r')\b'),
+            fmt_keyword))
+
+        fmt_preproc = QTextCharFormat()
+        fmt_preproc.setForeground(QBrush(QColor(0, 128, 0)))
+        self._rules.append((
+            QRegularExpression(
+                r'^#\s*(' + _CPP_PREPROCESSOR + r')\b'),
+            fmt_preproc))
+
+        fmt_string = QTextCharFormat()
+        fmt_string.setForeground(QBrush(QColor(163, 21, 21)))
+        self._rules.append((
+            QRegularExpression(r'"[^"\\\n]*(?:\\.[^"\\\n]*)*"'),
+            fmt_string))
+
+        fmt_char = QTextCharFormat()
+        fmt_char.setForeground(QBrush(QColor(163, 21, 21)))
+        self._rules.append((
+            QRegularExpression(r"'[^'\\\n]*(?:\\.[^'\\\n]*)*'"),
+            fmt_char))
+
+        fmt_comment_single = QTextCharFormat()
+        fmt_comment_single.setForeground(QBrush(QColor(128, 128, 128)))
+        self._rules.append((
+            QRegularExpression(r'//[^\n]*'),
+            fmt_comment_single))
+
+        fmt_comment_multi = QTextCharFormat()
+        fmt_comment_multi.setForeground(QBrush(QColor(128, 128, 128)))
+        self._multi_start = QRegularExpression(r'/\*')
+        self._multi_end = QRegularExpression(r'\*/')
+        self._multi_fmt = fmt_comment_multi
+
+        fmt_number = QTextCharFormat()
+        fmt_number.setForeground(QBrush(QColor(0, 0, 128)))
+        self._rules.append((
+            QRegularExpression(
+                r'\b[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?[fFlLuU]*\b'),
+            fmt_number))
 
     def highlightBlock (self, text:str):
-        pass
+        # First: apply single-line rules (first-match-wins)
+        for regex, fmt in self._rules:
+            it = regex.globalMatch(text)
+            while it.hasNext():
+                match = it.next()
+                start = match.capturedStart()
+                length = match.capturedLength()
+                # Only apply if not already formatted by a higher-priority rule
+                self.__format_if_free(start, length, fmt)
+
+        # Multi-line comment handling
+        self.__highlight_multiline_comments(text)
+
+    def __format_if_free (self, start:int, length:int, fmt):
+        """Apply format only to unformatted regions (first-match-wins)."""
+        existing = self.format(start)
+        fg = existing.foreground()
+        if not fg.style() or fg.color() == QColor():
+            self.setFormat(start, length, fmt)
+
+    def __highlight_multiline_comments (self, text:str):
+        start_state = self.previousBlockState()
+        start_idx = 0
+        if start_state != 1:
+            match = self._multi_start.match(text)
+            if match.hasMatch():
+                start_idx = match.capturedStart()
+            else:
+                self.setCurrentBlockState(0)
+                return
+        end_match = self._multi_end.match(text, start_idx)
+        if end_match.hasMatch():
+            end_idx = end_match.capturedEnd()
+            self.setFormat(start_idx, end_idx - start_idx,
+                           self._multi_fmt)
+            self.setCurrentBlockState(0)
+            # Continue looking for more /* after */
+            next_start = self._multi_start.match(text, end_idx)
+            if next_start.hasMatch():
+                ns = next_start.capturedStart()
+                next_end = self._multi_end.match(text, ns)
+                if next_end.hasMatch():
+                    ne = next_end.capturedEnd()
+                    self.setFormat(ns, ne - ns, self._multi_fmt)
+                else:
+                    self.setFormat(ns, len(text) - ns, self._multi_fmt)
+                    self.setCurrentBlockState(1)
+        else:
+            self.setFormat(start_idx, len(text) - start_idx,
+                           self._multi_fmt)
+            self.setCurrentBlockState(1)
 
 
 #----------------------------------------------------------------------
@@ -480,8 +594,8 @@ class TabData:
             self.editor_doc.setModified(False)
         self.editor_doc.blockSignals(False)
 
-        # Highlighter created but deferred — not attached to editor_doc yet.
-        self.highlighter = CppHighlighter()
+        # Highlighter created and attached to editor_doc
+        self.highlighter = CppHighlighter(self.editor_doc)
 
         # Connect dirty tracking via modificationChanged
         self.editor_doc.modificationChanged.connect(
@@ -574,12 +688,18 @@ class CodeEditor (QTextEdit):
     _LINE_NUM_COLOR = QColor(120, 120, 120)
     _LINE_NUM_BG = QColor(235, 235, 235)
 
+    _BRACKET_OPEN = {'(': ')', '{': '}', '[': ']', '"': '"', "'": "'"}
+    _BRACKET_CLOSE = {')': '(', '}': '{', ']': '['}
+    _BRACKET_AUTO_CLOSE = {'(', '{', '['}  # quotes handled differently
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
         self.setLineWrapMode(QTextEdit.NoWrap)
         self._update_tab_width()
         self.line_number_area = LineNumberArea(self)
+        self.overwrite_mode = False
+        self._bracket_completion_enabled = True
         self.document().blockCountChanged.connect(
             self._update_line_number_area_width)
         self.verticalScrollBar().valueChanged.connect(
@@ -678,11 +798,161 @@ class CodeEditor (QTextEdit):
         painter.end()
 
     def keyPressEvent (self, event):
-        if event.key() == Qt.Key_Tab:
+        key = event.key()
+        text = event.text()
+
+        # Insert key toggles overwrite mode
+        if key == Qt.Key_Insert:
+            self.overwrite_mode = not self.overwrite_mode
+            self._notify_overwrite_changed()
+            return
+
+        # Tab key
+        if key == Qt.Key_Tab:
             cursor = self.textCursor()
             cursor.insertText('\t')
-        else:
+            return
+
+        # Enter key — auto indent
+        if key == Qt.Key_Return or key == Qt.Key_Enter:
+            self._handle_enter_key()
+            return
+
+        # Backspace — bracket deletion
+        if key == Qt.Key_Backspace:
+            if self._bracket_completion_enabled:
+                cursor = self.textCursor()
+                if not cursor.hasSelection():
+                    pos = cursor.position()
+                    doc = self.document()
+                    if pos > 0 and pos < doc.characterCount():
+                        char_before = doc.characterAt(pos - 1)
+                        char_after = doc.characterAt(pos)
+                        if char_before in self._BRACKET_OPEN:
+                            expected_close = self._BRACKET_OPEN[char_before]
+                            if char_after == expected_close:
+                                cursor.beginEditBlock()
+                                cursor.deleteChar()
+                                cursor.deletePreviousChar()
+                                cursor.endEditBlock()
+                                self.setTextCursor(cursor)
+                                return
             super().keyPressEvent(event)
+            return
+
+        # Bracket completion
+        if text and self._bracket_completion_enabled:
+            if text in self._BRACKET_OPEN:
+                self._handle_bracket_open(text)
+                return
+            if text in self._BRACKET_CLOSE:
+                if self._handle_bracket_close(text):
+                    return
+
+        # Overwrite mode: normal character input
+        if text and self.overwrite_mode and key != Qt.Key_Backspace:
+            cursor = self.textCursor()
+            if not cursor.hasSelection():
+                cursor.beginEditBlock()
+                if not cursor.atBlockEnd():
+                    cursor.deleteChar()
+                cursor.insertText(text)
+                cursor.endEditBlock()
+                self.setTextCursor(cursor)
+                return
+
+        super().keyPressEvent(event)
+
+    def set_bracket_completion (self, enabled:bool):
+        self._bracket_completion_enabled = enabled
+
+    def _handle_bracket_open (self, text:str):
+        cursor = self.textCursor()
+        # For quotes: if cursor is inside a matching pair, skip over
+        if text in ('"', "'"):
+            pos = cursor.position()
+            doc = self.document()
+            if pos < doc.characterCount():
+                char_after = doc.characterAt(pos)
+                if char_after == text:
+                    cursor.movePosition(QTextCursor.Right)
+                    self.setTextCursor(cursor)
+                    return
+        # Insert open + close, place cursor between
+        close = self._BRACKET_OPEN[text]
+        cursor.beginEditBlock()
+        cursor.insertText(text + close)
+        cursor.movePosition(QTextCursor.Left)
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+
+    def _handle_bracket_close (self, text:str) -> bool:
+        cursor = self.textCursor()
+        pos = cursor.position()
+        doc = self.document()
+        if pos < doc.characterCount():
+            char_after = doc.characterAt(pos)
+            if char_after == text:
+                cursor.movePosition(QTextCursor.Right)
+                self.setTextCursor(cursor)
+                return True
+        return False
+
+    def _handle_enter_key (self):
+        cursor = self.textCursor()
+        block = cursor.block()
+        line_text = block.text()
+        indent = self.__extract_indent(line_text)
+        pos = cursor.position()
+        doc = self.document()
+        char_before = ''
+        char_after = ''
+        if pos > 0:
+            char_before = doc.characterAt(pos - 1)
+        if pos < doc.characterCount():
+            char_after = doc.characterAt(pos)
+
+        extra_indent = ''
+        if char_before == '{':
+            if '\t' in indent:
+                extra_indent = '\t'
+            else:
+                extra_indent = '    '
+
+        new_indent = indent + extra_indent
+        # When cursor is between { and }, insert two newlines
+        # so } ends up on its own line with base indent
+        if char_before == '{' and char_after == '}':
+            cursor.beginEditBlock()
+            cursor.insertText('\n' + new_indent + '\n' + indent)
+            cursor.endEditBlock()
+            # Move cursor to the indented middle line
+            # (position after first newline + new_indent)
+            new_pos = pos + 1 + len(new_indent)
+            cursor.setPosition(new_pos)
+            self.setTextCursor(cursor)
+        else:
+            cursor.beginEditBlock()
+            cursor.insertText('\n' + new_indent)
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+
+    def __extract_indent (self, line:str) -> str:
+        result = []
+        for ch in line:
+            if ch in (' ', '\t'):
+                result.append(ch)
+            else:
+                break
+        return ''.join(result)
+
+    def _notify_overwrite_changed (self):
+        """Update status bar INS/OVR display."""
+        win = self.window()
+        if hasattr(win, '_update_status_info'):
+            tab = win.tab_manager.get_current()
+            if tab:
+                win._update_status_info(tab)
 
 
 #----------------------------------------------------------------------
@@ -1145,7 +1415,7 @@ class MainWindow (QMainWindow):
         line = cursor.blockNumber() + 1
         col = cursor.columnNumber() + 1
         total = self.editor.document().blockCount()
-        mode = 'INS'
+        mode = 'OVR' if self.editor.overwrite_mode else 'INS'
         text = 'Ln {}/{}, Col {} | {} | {}'.format(
             line, total, col, tab.encoding, mode)
         self.status_info.setText(text)

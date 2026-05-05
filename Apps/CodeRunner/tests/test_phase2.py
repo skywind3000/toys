@@ -115,7 +115,8 @@ class TestTabData (unittest.TestCase):
     def test_highlighter_created (self):
         tab = TabData(is_new=True, content='')
         self.assertIsInstance(tab.highlighter, CppHighlighter)
-        self.assertIsNone(tab.highlighter.document())
+        # Highlighter is now attached to editor_doc (Phase 4)
+        self.assertIs(tab.highlighter.document(), tab.editor_doc)
 
     def test_dirty_callback_on_edit (self):
         changes = []
