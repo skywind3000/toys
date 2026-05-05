@@ -486,7 +486,7 @@ _SETTINGS_DEFAULTS = {
     'compiler_path': 'g++',
     'compiler_flags': '-std=c++14',
     'env_vars': {},
-    'run_timeout': 10,
+    'run_timeout': 30,
     'compile_timeout': 20,
     'editor_font_family': '',
     'editor_font_size': 11,
@@ -884,7 +884,7 @@ class ProcessManager (QObject):
     compile_finished = pyqtSignal(int, str)
     run_stdout_ready = pyqtSignal(str)
     run_stderr_ready = pyqtSignal(str)
-    run_finished = pyqtSignal(int, float, int)
+    run_finished = pyqtSignal(int, float, int, bool)  # exit_code, elapsed, peak, killed
     compile_timeout_occurred = pyqtSignal()
     run_timeout_occurred = pyqtSignal()
     launch_failed = pyqtSignal(str)  # error message when process can't start
@@ -904,6 +904,7 @@ class ProcessManager (QObject):
         self._stdin_data = None
         self._enc_mgr = EncodingManager()
         self._stderr_buffer = ''
+        self._killed_by_us = False  # True when timeout/stop kills process
 
     def start_compile (self, command:list, work_dir:str,
                        env:QProcessEnvironment, timeout:int=20):
@@ -912,6 +913,7 @@ class ProcessManager (QObject):
         self._start_time = time.time()
         self._stderr_buffer = ''
         self._peak_memory = 0
+        self._killed_by_us = False
         self.process = QProcess(self)
         self.process.setProcessEnvironment(env)
         self.process.setWorkingDirectory(work_dir)
@@ -919,24 +921,27 @@ class ProcessManager (QObject):
         self.process.readyReadStandardError.connect(
             self._on_compile_stderr_ready)
         self.process.finished.connect(self._on_compile_finished)
-        self.process.start(command[0], command[1:])
-        if not self.process.waitForStarted(5000):
-            err_msg = self.process.errorString()
-            self._cleanup()
-            self.launch_failed.emit(err_msg)
-            return
+        # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_compile_timeout)
         self._timeout_timer.start(timeout * 1000)
+        self.process.start(command[0], command[1:])
+        if not self.process.waitForStarted(5000):
+            self._stop_timeout_timer()
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.launch_failed.emit(err_msg)
+            return
 
     def start_test_run (self, exe_path:str, work_dir:str,
                         env:QProcessEnvironment, stdin_data:bytes,
-                        timeout:int=10):
+                        timeout:int=30):
         self.busy = True
         self.mode = 'test_run'
         self._start_time = time.time()
         self._peak_memory = 0
+        self._killed_by_us = False
         self._stdin_data = stdin_data
         self.process = QProcess(self)
         self.process.setProcessEnvironment(env)
@@ -948,23 +953,26 @@ class ProcessManager (QObject):
             self._on_run_stderr_ready)
         self.process.started.connect(self._on_run_started)
         self.process.finished.connect(self._on_run_finished)
-        self.process.start(exe_path)
-        if not self.process.waitForStarted(5000):
-            err_msg = self.process.errorString()
-            self._cleanup()
-            self.launch_failed.emit(err_msg)
-            return
+        # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_run_timeout)
         self._timeout_timer.start(timeout * 1000)
+        self.process.start(exe_path)
+        if not self.process.waitForStarted(5000):
+            self._stop_timeout_timer()
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.launch_failed.emit(err_msg)
+            return
 
     def kill_process (self):
-        """Kill current process and clean up."""
+        """Kill current process. Sets _killed_by_us flag so _on_*_finished
+        handlers skip their signal emission — the caller handles the rest."""
         if self.process and self.process.state() != QProcess.NotRunning:
+            self._killed_by_us = True
+            self._stop_timeout_timer()
             self.process.kill()
-            self.process.waitForFinished(1000)
-        self._cleanup()
 
     def _cleanup (self):
         """Clean up timers and process references."""
@@ -991,6 +999,11 @@ class ProcessManager (QObject):
 
     def _on_compile_finished (self, exit_code:int, _exit_status):
         self._stop_timeout_timer()
+        if self._killed_by_us:
+            # Process was killed by timeout or user stop — skip signal,
+            # the timeout/stop handler will emit the appropriate signal.
+            self._cleanup()
+            return
         # Read any remaining stderr
         remaining = self.process.readAllStandardError()
         if remaining and bytes(remaining):
@@ -1000,6 +1013,10 @@ class ProcessManager (QObject):
         self.compile_finished.emit(exit_code, stderr_text)
 
     def _on_compile_timeout (self):
+        if not self.process or self.process.state() == QProcess.NotRunning:
+            return
+        self._killed_by_us = True
+        self._stop_timeout_timer()
         self.process.kill()
         self.process.waitForFinished(1000)
         self._cleanup()
@@ -1029,8 +1046,14 @@ class ProcessManager (QObject):
             text = self._enc_mgr.decode_stderr(data)
             self.run_stderr_ready.emit(text)
 
-    def _on_run_finished (self, exit_code:int, _exit_status):
+    def _on_run_finished (self, exit_code:int, exit_status):
         self._stop_timeout_timer()
+        if self._killed_by_us:
+            # Process was killed by timeout or user stop — skip signal,
+            # the timeout/stop handler will emit the appropriate signal.
+            self._cleanup()
+            return
+        killed = (exit_status != QProcess.NormalExit)
         # Read any remaining buffered data
         remaining_stdout = self.process.readAllStandardOutput()
         if remaining_stdout and bytes(remaining_stdout):
@@ -1044,9 +1067,13 @@ class ProcessManager (QObject):
         peak = self._peak_memory
         self._stop_memory_tracking()
         self._cleanup()
-        self.run_finished.emit(exit_code, elapsed, peak)
+        self.run_finished.emit(exit_code, elapsed, peak, killed)
 
     def _on_run_timeout (self):
+        if not self.process or self.process.state() == QProcess.NotRunning:
+            return
+        self._killed_by_us = True
+        self._stop_timeout_timer()
         # Read any data before killing
         remaining_stdout = self.process.readAllStandardOutput()
         if remaining_stdout and bytes(remaining_stdout):
@@ -1111,7 +1138,7 @@ class CodeEditor (QTextEdit):
 
     _BRACKET_OPEN = {'(': ')', '{': '}', '[': ']', '"': '"', "'": "'"}
     _BRACKET_CLOSE = {')': '(', '}': '{', ']': '['}
-    
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
@@ -2013,6 +2040,12 @@ class MainWindow (QMainWindow):
     def _action_stop (self):
         if self.proc_mgr.busy:
             self.proc_mgr.kill_process()
+            self.status_message.setText('Process stopped')
+            _output_append(self._flow_tab.output_doc, 'Process stopped\n',
+                           QColor(128, 128, 128))
+        # Safety reset
+        self._flow_state = None
+        self._flow_tab = None
 
     def _action_about (self):
         QMessageBox.about(
@@ -2174,12 +2207,16 @@ class MainWindow (QMainWindow):
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
 
     def _on_run_finished (self, exit_code:int, elapsed:float,
-                          peak_memory:int):
+                          peak_memory:int, killed:bool):
         tab = self._flow_tab
         if not tab:
             return
         # Build exit status line
-        if exit_code != 0:
+        if killed:
+            _output_append(tab.output_doc, 'Process stopped\n',
+                           QColor(128, 128, 128))
+            self.status_message.setText('Process stopped')
+        elif exit_code != 0:
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
             _output_append(tab.output_doc, line, QColor(Qt.red))
             self.status_message.setText(
