@@ -153,266 +153,35 @@ def _make_io_section (settings, label_text:str, text_edit:QWidget,
 
 
 #----------------------------------------------------------------------
-# Toolbar icon generation
+# Action definitions (data-driven creation)
 #----------------------------------------------------------------------
-_ICON_BASE = 24
-
-# Custom colors for semantic toolbar icons
-_COLOR_NEW = QColor(120, 120, 120)  # gray: neutral
-_COLOR_SAVE = QColor(60, 100, 200)  # blue: floppy disk
-_COLOR_OPEN = QColor(220, 180, 40)  # yellow: folder
-_COLOR_RUN = QColor(0, 160, 0)  # green: go
-_COLOR_TEST = QColor(50, 100, 220)  # blue: experiment
-_COLOR_STOP = QColor(220, 50, 50)  # red: halt
-
-
-def _generate_new_icon (dpi:float=1.0) -> QIcon:
-    """Generate a New icon: document with folded corner,
-    gray border/white fill."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    border = _COLOR_NEW
-    fill = QColor(255, 255, 255)
-    margin = 3
-    fold = 5
-    polygon = QPolygonF([
-        QPointF(margin, margin),
-        QPointF(_ICON_BASE - margin, margin),
-        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
-        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
-        QPointF(margin, _ICON_BASE - margin),
-    ])
-    p.setPen(QPen(border, 1.2))
-    p.setBrush(QBrush(fill))
-    p.drawPolygon(polygon)
-    fold_fill = QColor(180, 180, 180)
-    p.setBrush(QBrush(fold_fill))
-    p.setPen(QPen(border, 0.8))
-    fold_tri = QPolygonF([
-        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
-        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
-        QPointF(_ICON_BASE - margin, _ICON_BASE - margin),
-    ])
-    p.drawPolygon(fold_tri)
-    p.setPen(QPen(QColor(30, 30, 30), 1.3))
-    line_y1 = margin + 7
-    line_y2 = margin + 11
-    line_left = margin + 3
-    line_right = _ICON_BASE - margin - fold - 1
-    p.drawLine(QPointF(line_left, line_y1), QPointF(line_right, line_y1))
-    p.drawLine(QPointF(line_left, line_y2), QPointF(line_right - 3, line_y2))
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_save_icon (dpi:float=1.0) -> QIcon:
-    """Generate a Save icon: 3.5-inch floppy disk, blue."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = _COLOR_SAVE
-    lighter = QColor(color.red() + 60, color.green() + 60, color.blue() + 40)
-    darker = QColor(color.red() - 20, color.green() - 20, color.blue() - 30)
-    m = 3
-    p.setPen(QPen(darker, 1.0))
-    p.setBrush(QBrush(color))
-    p.drawRoundedRect(m, m, _ICON_BASE - 2 * m, _ICON_BASE - 2 * m, 1.5, 1.5)
-    sl_m = 5
-    sl_h = 7
-    p.setPen(QPen(darker, 0.8))
-    p.setBrush(QBrush(lighter))
-    p.drawRect(m + sl_m, m, _ICON_BASE - 2 * m - 2 * sl_m, sl_h)
-    p.setCompositionMode(QPainter.CompositionMode_Clear)
-    hole_w = _ICON_BASE - 2 * m - 2 * sl_m - 6
-    hole_h = 3
-    p.drawRect(m + sl_m + 3, m + 2, hole_w, hole_h)
-    p.setCompositionMode(QPainter.CompositionMode_SourceOver)
-    lb_m = 5
-    lb_h = 6
-    lb_top = _ICON_BASE - m - lb_h - 2
-    p.setPen(QPen(darker, 0.8))
-    p.setBrush(QBrush(QColor(255, 255, 255, 230)))
-    p.drawRect(m + lb_m, lb_top, _ICON_BASE - 2 * m - 2 * lb_m, lb_h)
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_open_icon (dpi:float=1.0) -> QIcon:
-    """Generate an Open icon: Win2K-style folder, yellow."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = _COLOR_OPEN
-    darker = QColor(color.red() - 50, color.green() - 50, color.blue() - 10)
-    p.setPen(QPen(darker, 1.0))
-    p.setBrush(QBrush(color))
-    m = 3
-    p.drawRoundedRect(m, 6, _ICON_BASE - 2 * m, _ICON_BASE - m - 6, 1.0, 1.0)
-    tab_w = 8
-    p.setBrush(QBrush(darker))
-    p.drawRoundedRect(m, 2, tab_w, 6, 1.0, 1.0)
-    flap_m = m + 3
-    flap_top = 8
-    p.setBrush(QBrush(color))
-    p.drawRoundedRect(flap_m, flap_top, _ICON_BASE - flap_m - m,
-                      _ICON_BASE - m - flap_top, 1.0, 1.0)
-    p.setPen(QPen(QColor(255, 255, 255, 100), 1.0))
-    p.drawLine(QPointF(flap_m + 1, flap_top + 0.5),
-               QPointF(_ICON_BASE - m - 1, flap_top + 0.5))
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_test_icon (dpi:float=1.0) -> QIcon:
-    """Generate a Test icon: Erlenmeyer flask shape (experiment/test), blue."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = _COLOR_TEST
-    p.setPen(QPen(color, 1.2))
-    p.setBrush(QBrush(color))
-    body_bottom = _ICON_BASE - 4.0
-    neck_w = 5.0
-    body_w = 15.0
-    body_h = 11.0
-    neck_h = 5.0
-    cx = _ICON_BASE / 2.0
-    neck_left = cx - neck_w / 2.0
-    neck_right = cx + neck_w / 2.0
-    neck_top = body_bottom - body_h - neck_h
-    neck_bottom = body_bottom - body_h
-    body_left = cx - body_w / 2.0
-    body_right = cx + body_w / 2.0
-    polygon = QPolygonF([
-        QPointF(neck_left, neck_top),
-        QPointF(neck_right, neck_top),
-        QPointF(neck_right, neck_bottom),
-        QPointF(body_right, body_bottom),
-        QPointF(body_left, body_bottom),
-        QPointF(neck_left, neck_bottom),
-    ])
-    p.drawPolygon(polygon)
-    p.setPen(QPen(color, 1.5))
-    liquid_y = body_bottom - 4.0
-    liquid_left = body_left + 2.5
-    liquid_right = body_right - 2.5
-    p.drawLine(QPointF(liquid_left, liquid_y),
-               QPointF(liquid_right, liquid_y))
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_settings_icon (dpi:float=1.0) -> QIcon:
-    """Generate a Settings icon: simple gear/cog shape."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = QApplication.palette().windowText().color()
-    p.setPen(Qt.NoPen)
-    p.setBrush(QBrush(color))
-    cx = cy = _ICON_BASE / 2.0
-    body_r = 5.5
-    tooth_len = 3.5
-    tooth_w = 3.5
-    num_teeth = 6
-    for i in range(num_teeth):
-        angle = 2.0 * math.pi * i / num_teeth - math.pi / 2.0
-        tx = cx + (body_r + tooth_len / 2.0) * math.cos(angle)
-        ty = cy + (body_r + tooth_len / 2.0) * math.sin(angle)
-        p.save()
-        p.translate(tx, ty)
-        p.rotate(math.degrees(angle) + 90.0)
-        p.drawRoundedRect(int(-tooth_w / 2), int(-tooth_len / 2),
-                          int(tooth_w), int(tooth_len), 1, 1)
-        p.restore()
-    p.setBrush(QBrush(color))
-    p.drawEllipse(QPointF(cx, cy), body_r, body_r)
-    p.setCompositionMode(QPainter.CompositionMode_Clear)
-    p.drawEllipse(QPointF(cx, cy), 3.0, 3.0)
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_run_icon (dpi:float=1.0) -> QIcon:
-    """Generate a Run icon: play triangle, green."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = _COLOR_RUN
-    p.setPen(Qt.NoPen)
-    p.setBrush(QBrush(color))
-    margin = 4.0
-    tri_top = 3.0
-    tri_bottom = _ICON_BASE - 3.0
-    tri_left = margin
-    tri_right = _ICON_BASE - 3.0
-    mid_y = (tri_top + tri_bottom) / 2.0
-    polygon = QPolygonF([
-        QPointF(tri_left, tri_top),
-        QPointF(tri_right, mid_y),
-        QPointF(tri_left, tri_bottom),
-    ])
-    p.drawPolygon(polygon)
-    p.end()
-    return QIcon(pixmap)
-
-
-def _generate_stop_icon (dpi:float=1.0) -> QIcon:
-    """Generate a Stop icon: filled square, red."""
-    size = int(_ICON_BASE * dpi)
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    pixmap.setDevicePixelRatio(dpi)
-    p = QPainter(pixmap)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.scale(dpi, dpi)
-    color = _COLOR_STOP
-    p.setPen(Qt.NoPen)
-    p.setBrush(QBrush(color))
-    margin = 4
-    p.drawRoundedRect(margin, margin, _ICON_BASE - 2 * margin,
-                      _ICON_BASE - 2 * margin, 2.0, 2.0)
-    p.end()
-    return QIcon(pixmap)
-
-
-def _create_toolbar_icons () -> dict:
-    """Create all toolbar icons as self-drawn, color-coded."""
-    dpi = _dpi_factor()
-    icons = {}
-    icons['new'] = _generate_new_icon(dpi)
-    icons['save'] = _generate_save_icon(dpi)
-    icons['open'] = _generate_open_icon(dpi)
-    icons['run'] = _generate_run_icon(dpi)
-    icons['test'] = _generate_test_icon(dpi)
-    icons['stop'] = _generate_stop_icon(dpi)
-    icons['settings'] = _generate_settings_icon(dpi)
-    return icons
+_ACTION_DEFS = [
+    # (attr_name, label, icon_key, shortcuts, tooltip)
+    # icon_key: None or string key in self.icons dict
+    # shortcuts: str, list of str, or None
+    # tooltip: None = auto "Label (Shortcut)", '' = no tooltip, str = explicit
+    ('act_new', 'New', 'new', 'Ctrl+N', None),
+    ('act_save', 'Save', 'save', 'Ctrl+S', None),
+    ('act_open', 'Open', 'open', 'Ctrl+O', None),
+    ('act_save_as', 'Save As', None, 'Ctrl+Shift+S', None),
+    ('act_close', 'Close', None, 'Ctrl+W', None),
+    ('act_run', 'Run', 'run', 'F5', None),
+    ('act_test', 'Test', 'test', 'F9', None),
+    ('act_stop', 'Stop', 'stop', 'F7', None),
+    ('act_settings', 'Settings', 'settings', None, 'Settings'),
+    ('act_zoom_in', 'Zoom In', None, ['Ctrl++', 'Ctrl+='], None),
+    ('act_zoom_out', 'Zoom Out', None, ['Ctrl+-'], None),
+    ('act_undo', 'Undo', None, 'Ctrl+Z', None),
+    ('act_redo', 'Redo', None, 'Ctrl+Y', None),
+    ('act_cut', 'Cut', None, 'Ctrl+X', None),
+    ('act_copy', 'Copy', None, 'Ctrl+C', None),
+    ('act_paste', 'Paste', None, 'Ctrl+V', None),
+    ('act_find', 'Find', None, 'Ctrl+F', None),
+    ('act_replace', 'Replace', None, 'Ctrl+H', None),
+    ('act_goto_line', 'Goto Line', None, 'Ctrl+G', None),
+    ('act_build', 'Build', None, 'Ctrl+B', None),
+    ('act_about', 'About', None, None, ''),
+]
 
 
 #----------------------------------------------------------------------
@@ -1260,6 +1029,32 @@ class ProcessManager (QObject):
 
 
 #----------------------------------------------------------------------
+# FileDragMixin — forward file drag-drop events to MainWindow
+#----------------------------------------------------------------------
+class FileDragMixin:
+    """Mixin that ignores URL drag-drop (letting MainWindow handle it)
+    while passing text drag-drop to the QTextEdit default behavior."""
+
+    def dragEnterEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dropEvent(event)
+
+
+#----------------------------------------------------------------------
 # LineNumberArea
 #----------------------------------------------------------------------
 class LineNumberArea (QWidget):
@@ -1278,28 +1073,7 @@ class LineNumberArea (QWidget):
 #----------------------------------------------------------------------
 # CodeEditor (uses QTextEdit for setDocument compatibility)
 #----------------------------------------------------------------------
-class CodeEditor (QTextEdit):
-
-    def _is_file_drag (self, event) -> bool:
-        return event.mimeData().hasUrls()
-
-    def dragEnterEvent (self, event):
-        if self._is_file_drag(event):
-            event.ignore()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent (self, event):
-        if self._is_file_drag(event):
-            event.ignore()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent (self, event):
-        if self._is_file_drag(event):
-            event.ignore()
-        else:
-            super().dropEvent(event)
+class CodeEditor (FileDragMixin, QTextEdit):
 
     _LINE_NUM_COLOR = QColor(120, 120, 120)
     _LINE_NUM_BG = QColor(235, 235, 235)
@@ -1615,25 +1389,7 @@ class CodeEditor (QTextEdit):
 #----------------------------------------------------------------------
 # InputPanel
 #----------------------------------------------------------------------
-class InputPanel (QTextEdit):
-
-    def dragEnterEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dropEvent(event)
+class InputPanel (FileDragMixin, QTextEdit):
 
     def __init__ (self, parent=None):
         super().__init__(parent)
@@ -1678,25 +1434,7 @@ def _output_append (doc:QTextDocument, text:str, color:QColor=None):
 #----------------------------------------------------------------------
 # OutputPanel
 #----------------------------------------------------------------------
-class OutputPanel (QTextEdit):
-
-    def dragEnterEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent (self, event):
-        if event.mimeData().hasUrls():
-            event.ignore()
-        else:
-            super().dropEvent(event)
+class OutputPanel (FileDragMixin, QTextEdit):
 
     def __init__ (self, parent=None):
         super().__init__(parent)
@@ -2090,6 +1828,8 @@ class SettingsDialog (QDialog):
 #----------------------------------------------------------------------
 class MainWindow (QMainWindow):
 
+    #===== Initialization =====
+
     def __init__ (self, settings=None):
         super().__init__()
         if settings is None:
@@ -2191,93 +1931,29 @@ class MainWindow (QMainWindow):
         self._enter_zero_tab_state()
         self._load_window_state()
 
+    #===== UI Construction =====
+
     def __create_actions (self):
-        self.act_new = QAction(self.icons['new'], 'New', self)
-        self.act_new.setShortcut(QKeySequence('Ctrl+N'))
-        self.act_new.setToolTip('New (Ctrl+N)')
-
-        self.act_save = QAction(self.icons['save'], 'Save', self)
-        self.act_save.setShortcut(QKeySequence('Ctrl+S'))
-        self.act_save.setToolTip('Save (Ctrl+S)')
-
-        self.act_open = QAction(self.icons['open'], 'Open', self)
-        self.act_open.setShortcut(QKeySequence('Ctrl+O'))
-        self.act_open.setToolTip('Open (Ctrl+O)')
-
-        self.act_save_as = QAction('Save As', self)
-        self.act_save_as.setShortcut(QKeySequence('Ctrl+Shift+S'))
-        self.act_save_as.setToolTip('Save As (Ctrl+Shift+S)')
-
-        self.act_close = QAction('Close', self)
-        self.act_close.setShortcut(QKeySequence('Ctrl+W'))
-        self.act_close.setToolTip('Close (Ctrl+W)')
-
-        self.act_run = QAction(self.icons['run'], 'Run', self)
-        self.act_run.setShortcut(QKeySequence('F5'))
-        self.act_run.setToolTip('Run (F5)')
-
-        self.act_test = QAction(self.icons['test'], 'Test', self)
-        self.act_test.setShortcut(QKeySequence('F9'))
-        self.act_test.setToolTip('Test (F9)')
-
-        self.act_stop = QAction(self.icons['stop'], 'Stop', self)
-        self.act_stop.setShortcut(QKeySequence('F7'))
-        self.act_stop.setToolTip('Stop (F7)')
-
-        self.act_settings = QAction(
-            self.icons['settings'], 'Settings', self)
-        self.act_settings.setToolTip('Settings')
-
-        self.act_zoom_in = QAction('Zoom In', self)
-        self.act_zoom_in.setShortcuts([
-            QKeySequence('Ctrl++'), QKeySequence('Ctrl+=')])
-        self.act_zoom_in.setToolTip('Zoom In (Ctrl++)')
-
-        self.act_zoom_out = QAction('Zoom Out', self)
-        self.act_zoom_out.setShortcuts([
-            QKeySequence('Ctrl+-')])
-        self.act_zoom_out.setToolTip('Zoom Out (Ctrl+-)')
-
-        # Edit actions
-        self.act_undo = QAction('Undo', self)
-        self.act_undo.setShortcut(QKeySequence('Ctrl+Z'))
-        self.act_undo.setToolTip('Undo (Ctrl+Z)')
-
-        self.act_redo = QAction('Redo', self)
-        self.act_redo.setShortcut(QKeySequence('Ctrl+Y'))
-        self.act_redo.setToolTip('Redo (Ctrl+Y)')
-
-        self.act_cut = QAction('Cut', self)
-        self.act_cut.setShortcut(QKeySequence('Ctrl+X'))
-        self.act_cut.setToolTip('Cut (Ctrl+X)')
-
-        self.act_copy = QAction('Copy', self)
-        self.act_copy.setShortcut(QKeySequence('Ctrl+C'))
-        self.act_copy.setToolTip('Copy (Ctrl+C)')
-
-        self.act_paste = QAction('Paste', self)
-        self.act_paste.setShortcut(QKeySequence('Ctrl+V'))
-        self.act_paste.setToolTip('Paste (Ctrl+V)')
-
-        self.act_find = QAction('Find', self)
-        self.act_find.setShortcut(QKeySequence('Ctrl+F'))
-        self.act_find.setToolTip('Find (Ctrl+F)')
-
-        self.act_replace = QAction('Replace', self)
-        self.act_replace.setShortcut(QKeySequence('Ctrl+H'))
-        self.act_replace.setToolTip('Replace (Ctrl+H)')
-
-        self.act_goto_line = QAction('Goto Line', self)
-        self.act_goto_line.setShortcut(QKeySequence('Ctrl+G'))
-        self.act_goto_line.setToolTip('Goto Line (Ctrl+G)')
-
-        # Build action
-        self.act_build = QAction('Build', self)
-        self.act_build.setShortcut(QKeySequence('Ctrl+B'))
-        self.act_build.setToolTip('Build (Ctrl+B)')
-
-        # About action
-        self.act_about = QAction('About', self)
+        for attr, label, icon_key, shortcuts, tooltip in _ACTION_DEFS:
+            icon = self.icons.get(icon_key) if icon_key else None
+            if icon:
+                action = QAction(icon, label, self)
+            else:
+                action = QAction(label, self)
+            if shortcuts:
+                if isinstance(shortcuts, list):
+                    action.setShortcuts([QKeySequence(s) for s in shortcuts])
+                else:
+                    action.setShortcut(QKeySequence(shortcuts))
+            if tooltip is None:
+                ks = shortcuts[0] if isinstance(shortcuts, list) else shortcuts
+                if ks:
+                    action.setToolTip('{} ({})'.format(label, ks))
+                else:
+                    action.setToolTip(label)
+            elif tooltip:
+                action.setToolTip(tooltip)
+            setattr(self, attr, action)
 
     def __build_menubar (self):
         menubar = self.menuBar()
@@ -2382,6 +2058,8 @@ class MainWindow (QMainWindow):
         statusbar.addWidget(self.status_message, 1)
         statusbar.addPermanentWidget(self.status_info, 0)
 
+    #===== Signal Wiring =====
+
     def __connect_signals (self):
         # Toolbar/menu actions
         self.act_new.triggered.connect(self._action_new)
@@ -2444,7 +2122,7 @@ class MainWindow (QMainWindow):
         s0 = QShortcut(QKeySequence('Alt+0'), self)
         s0.activated.connect(lambda: self._switch_to_tab(9))
 
-    #----- Action handlers -----
+    #===== Action Handlers =====
 
     def _action_new (self):
         tab = TabData(
@@ -2657,6 +2335,8 @@ class MainWindow (QMainWindow):
             'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
                 time.strftime('%Y/%m/%d %H:%M:%S')))
 
+    #===== Settings =====
+
     def _set_flow_state (self, state, tab=None, intent=None):
         """Set flow state and update status bar accordingly."""
         self._flow_state = state
@@ -2730,7 +2410,7 @@ class MainWindow (QMainWindow):
             zoom_size = max(6, s.editor_font_size)
             self.editor.setFontSize(zoom_size)
 
-    #----- Compile/run helper methods -----
+    #===== Compile/Run Flow =====
 
     def _need_recompile (self, tab:TabData) -> bool:
         """Check if recompilation is needed."""
@@ -3014,7 +2694,7 @@ class MainWindow (QMainWindow):
                 'Program exited with code 0 in {:.3}s{}'.format(
                     elapsed, mem_str))
 
-    #----- Tab management (UI operations) -----
+    #===== Tab Management =====
 
     def _switch_to_tab (self, index:int):
         """Switch to tab: save old state, swap documents, restore new state."""
@@ -3135,8 +2815,9 @@ class MainWindow (QMainWindow):
             self._switch_to_tab(new_index)
         return True
 
+    #===== Status & Title =====
+
     def _update_status_info (self, tab:TabData):
-        """Update status bar right side with cursor position and encoding."""
         cursor = self.editor.textCursor()
         line = cursor.blockNumber() + 1
         col = cursor.columnNumber() + 1
@@ -3170,7 +2851,7 @@ class MainWindow (QMainWindow):
             self.setWindowTitle(
                 '{} ({}) - CodeRunner'.format(name, dir_path))
 
-    #----- Helpers -----
+    #===== File Operations =====
 
     def _save_if_dirty (self, tab:TabData) -> int:
         """Save tab if it has unsaved changes. Returns 0 success/clean,
@@ -3308,7 +2989,7 @@ class MainWindow (QMainWindow):
         tab.highlighter.start_batch_highlight(self.editor)
         tab._highlight_pending = False
 
-    #----- Window close -----
+    #===== Window State & Lifecycle =====
 
     def closeEvent (self, event):
         # Kill any running process before closing
@@ -3550,7 +3231,7 @@ class MainWindow (QMainWindow):
         self._switch_to_tab(index)
         self._add_recent_file(path)
 
-    #----- Drag-drop -----
+    #===== Drag-Drop =====
 
     def dragEnterEvent (self, event):
         if event.mimeData().hasUrls():
@@ -3570,6 +3251,230 @@ class MainWindow (QMainWindow):
                                 for ext in _SOURCE_EXTENSIONS):
                     self._open_file_path(path, add_recent=True)
         event.acceptProposedAction()
+
+
+#----------------------------------------------------------------------
+# Toolbar icon generation
+#----------------------------------------------------------------------
+_ICON_BASE = 24
+
+_COLOR_NEW = QColor(120, 120, 120)
+_COLOR_SAVE = QColor(60, 100, 200)
+_COLOR_OPEN = QColor(220, 180, 40)
+_COLOR_RUN = QColor(0, 160, 0)
+_COLOR_TEST = QColor(50, 100, 220)
+_COLOR_STOP = QColor(220, 50, 50)
+
+
+def _icon_canvas (dpi:float=1.0):
+    """Create icon pixmap and painter with standard setup.
+    Returns (pixmap, painter). Caller draws and calls painter.end()."""
+    size = int(_ICON_BASE * dpi)
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    pixmap.setDevicePixelRatio(dpi)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(dpi, dpi)
+    return (pixmap, painter)
+
+
+def _generate_new_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    border = _COLOR_NEW
+    fill = QColor(255, 255, 255)
+    margin = 3
+    fold = 5
+    polygon = QPolygonF([
+        QPointF(margin, margin),
+        QPointF(_ICON_BASE - margin, margin),
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
+        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
+        QPointF(margin, _ICON_BASE - margin),
+    ])
+    p.setPen(QPen(border, 1.2))
+    p.setBrush(QBrush(fill))
+    p.drawPolygon(polygon)
+    fold_fill = QColor(180, 180, 180)
+    p.setBrush(QBrush(fold_fill))
+    p.setPen(QPen(border, 0.8))
+    fold_tri = QPolygonF([
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin - fold),
+        QPointF(_ICON_BASE - margin - fold, _ICON_BASE - margin),
+        QPointF(_ICON_BASE - margin, _ICON_BASE - margin),
+    ])
+    p.drawPolygon(fold_tri)
+    p.setPen(QPen(QColor(30, 30, 30), 1.3))
+    line_y1 = margin + 7
+    line_y2 = margin + 11
+    line_left = margin + 3
+    line_right = _ICON_BASE - margin - fold - 1
+    p.drawLine(QPointF(line_left, line_y1), QPointF(line_right, line_y1))
+    p.drawLine(QPointF(line_left, line_y2), QPointF(line_right - 3, line_y2))
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_save_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = _COLOR_SAVE
+    lighter = QColor(color.red() + 60, color.green() + 60, color.blue() + 40)
+    darker = QColor(color.red() - 20, color.green() - 20, color.blue() - 30)
+    m = 3
+    p.setPen(QPen(darker, 1.0))
+    p.setBrush(QBrush(color))
+    p.drawRoundedRect(m, m, _ICON_BASE - 2 * m, _ICON_BASE - 2 * m, 1.5, 1.5)
+    sl_m = 5
+    sl_h = 7
+    p.setPen(QPen(darker, 0.8))
+    p.setBrush(QBrush(lighter))
+    p.drawRect(m + sl_m, m, _ICON_BASE - 2 * m - 2 * sl_m, sl_h)
+    p.setCompositionMode(QPainter.CompositionMode_Clear)
+    hole_w = _ICON_BASE - 2 * m - 2 * sl_m - 6
+    hole_h = 3
+    p.drawRect(m + sl_m + 3, m + 2, hole_w, hole_h)
+    p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+    lb_m = 5
+    lb_h = 6
+    lb_top = _ICON_BASE - m - lb_h - 2
+    p.setPen(QPen(darker, 0.8))
+    p.setBrush(QBrush(QColor(255, 255, 255, 230)))
+    p.drawRect(m + lb_m, lb_top, _ICON_BASE - 2 * m - 2 * lb_m, lb_h)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_open_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = _COLOR_OPEN
+    darker = QColor(color.red() - 50, color.green() - 50, color.blue() - 10)
+    p.setPen(QPen(darker, 1.0))
+    p.setBrush(QBrush(color))
+    m = 3
+    p.drawRoundedRect(m, 6, _ICON_BASE - 2 * m, _ICON_BASE - m - 6, 1.0, 1.0)
+    tab_w = 8
+    p.setBrush(QBrush(darker))
+    p.drawRoundedRect(m, 2, tab_w, 6, 1.0, 1.0)
+    flap_m = m + 3
+    flap_top = 8
+    p.setBrush(QBrush(color))
+    p.drawRoundedRect(flap_m, flap_top, _ICON_BASE - flap_m - m,
+                      _ICON_BASE - m - flap_top, 1.0, 1.0)
+    p.setPen(QPen(QColor(255, 255, 255, 100), 1.0))
+    p.drawLine(QPointF(flap_m + 1, flap_top + 0.5),
+               QPointF(_ICON_BASE - m - 1, flap_top + 0.5))
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_test_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = _COLOR_TEST
+    p.setPen(QPen(color, 1.2))
+    p.setBrush(QBrush(color))
+    body_bottom = _ICON_BASE - 4.0
+    neck_w = 5.0
+    body_w = 15.0
+    body_h = 11.0
+    neck_h = 5.0
+    cx = _ICON_BASE / 2.0
+    neck_left = cx - neck_w / 2.0
+    neck_right = cx + neck_w / 2.0
+    neck_top = body_bottom - body_h - neck_h
+    neck_bottom = body_bottom - body_h
+    body_left = cx - body_w / 2.0
+    body_right = cx + body_w / 2.0
+    polygon = QPolygonF([
+        QPointF(neck_left, neck_top),
+        QPointF(neck_right, neck_top),
+        QPointF(neck_right, neck_bottom),
+        QPointF(body_right, body_bottom),
+        QPointF(body_left, body_bottom),
+        QPointF(neck_left, neck_bottom),
+    ])
+    p.drawPolygon(polygon)
+    p.setPen(QPen(color, 1.5))
+    liquid_y = body_bottom - 4.0
+    liquid_left = body_left + 2.5
+    liquid_right = body_right - 2.5
+    p.drawLine(QPointF(liquid_left, liquid_y),
+               QPointF(liquid_right, liquid_y))
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_settings_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = QApplication.palette().windowText().color()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    cx = cy = _ICON_BASE / 2.0
+    body_r = 5.5
+    tooth_len = 3.5
+    tooth_w = 3.5
+    num_teeth = 6
+    for i in range(num_teeth):
+        angle = 2.0 * math.pi * i / num_teeth - math.pi / 2.0
+        tx = cx + (body_r + tooth_len / 2.0) * math.cos(angle)
+        ty = cy + (body_r + tooth_len / 2.0) * math.sin(angle)
+        p.save()
+        p.translate(tx, ty)
+        p.rotate(math.degrees(angle) + 90.0)
+        p.drawRoundedRect(int(-tooth_w / 2), int(-tooth_len / 2),
+                          int(tooth_w), int(tooth_len), 1, 1)
+        p.restore()
+    p.setBrush(QBrush(color))
+    p.drawEllipse(QPointF(cx, cy), body_r, body_r)
+    p.setCompositionMode(QPainter.CompositionMode_Clear)
+    p.drawEllipse(QPointF(cx, cy), 3.0, 3.0)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_run_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = _COLOR_RUN
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    margin = 4.0
+    tri_top = 3.0
+    tri_bottom = _ICON_BASE - 3.0
+    tri_left = margin
+    tri_right = _ICON_BASE - 3.0
+    mid_y = (tri_top + tri_bottom) / 2.0
+    polygon = QPolygonF([
+        QPointF(tri_left, tri_top),
+        QPointF(tri_right, mid_y),
+        QPointF(tri_left, tri_bottom),
+    ])
+    p.drawPolygon(polygon)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _generate_stop_icon (dpi:float=1.0) -> QIcon:
+    pixmap, p = _icon_canvas(dpi)
+    color = _COLOR_STOP
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    margin = 4
+    p.drawRoundedRect(margin, margin, _ICON_BASE - 2 * margin,
+                      _ICON_BASE - 2 * margin, 2.0, 2.0)
+    p.end()
+    return QIcon(pixmap)
+
+
+def _create_toolbar_icons () -> dict:
+    dpi = _dpi_factor()
+    icons = {}
+    icons['new'] = _generate_new_icon(dpi)
+    icons['save'] = _generate_save_icon(dpi)
+    icons['open'] = _generate_open_icon(dpi)
+    icons['run'] = _generate_run_icon(dpi)
+    icons['test'] = _generate_test_icon(dpi)
+    icons['stop'] = _generate_stop_icon(dpi)
+    icons['settings'] = _generate_settings_icon(dpi)
+    return icons
 
 
 #----------------------------------------------------------------------
