@@ -2709,6 +2709,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText('Failed to start program')
             self._maybe_scroll_output(tab)
+        elif reason == 'timeout':
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
             _output_append(
                 tab.output_doc,
@@ -2720,6 +2721,7 @@ class MainWindow (QMainWindow):
                 'Timeout after {} seconds'.format(
                     self.settings.run_timeout))
             self._maybe_scroll_output(tab)
+        elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
                 _output_append(tab.output_doc, '\n', QColor(Qt.red))
@@ -2740,6 +2742,7 @@ class MainWindow (QMainWindow):
             else:
                 self.status_message.setText('Process stopped')
             self._maybe_scroll_output(tab)
+        elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
@@ -2753,6 +2756,7 @@ class MainWindow (QMainWindow):
                 msg = 'Runtime Error: {}'.format(detail)
             self.status_message.setText(msg)
             self._maybe_scroll_output(tab)
+        else:
             mem_str = ''
             if peak_memory > 0:
                 mem_mb = peak_memory / (1024 * 1024)
