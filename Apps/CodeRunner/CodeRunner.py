@@ -693,6 +693,7 @@ class TabData:
         self.scroll_pos = 0
         self.input_cursor = QTextCursor(self.input_doc)
         self.input_scroll = 0
+        self.output_scroll = 0
 
         self.encoding = encoding
         self.zoom_font_size = 0
@@ -2144,6 +2145,10 @@ class MainWindow (QMainWindow):
         self.proc_mgr.run_finished.connect(
             self._on_run_finished)
 
+        # Output panel scroll — detect user scroll-up to deactivate auto-scroll
+        self.output_panel.verticalScrollBar().valueChanged.connect(
+            self._on_output_scroll_changed)
+
     def __setup_tab_switch_shortcuts (self):
         # Alt+1~9 → switch to tab 0~8, Alt+0 → tab 9
         for i in range(1, 10):
@@ -2334,8 +2339,17 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_COMPILING, tab=tab, intent='run')
             self._clear_and_start_compile(tab)
         else:
-            self._launch_terminal(tab)
-            self.status_message.setText('Running in terminal')
+            ok = self._launch_terminal(tab)
+            if ok:
+                self.status_message.setText('Running in terminal')
+            else:
+                _output_clear(tab.output_doc)
+                tab._need_scroll = True
+                _output_append(tab.output_doc,
+                               'Failed to launch terminal\n',
+                               QColor(Qt.red))
+                self.status_message.setText('Failed to launch terminal')
+                self._maybe_scroll_output(tab)
 
     def _action_test (self):
         if self._flow_state != _FLOW_IDLE:
@@ -2533,8 +2547,8 @@ class MainWindow (QMainWindow):
             exe_path, work_dir, env, stdin_data,
             self.settings.run_timeout)
 
-    def _launch_terminal (self, tab:TabData):
-        """Launch exe in external terminal window."""
+    def _launch_terminal (self, tab:TabData) -> bool:
+        """Launch exe in external terminal window. Returns True on success."""
         exe_path = self._get_exe_path(tab)
         if sys.platform == 'win32':
             exe_path = exe_path.replace('/', '\\')
@@ -2552,12 +2566,7 @@ class MainWindow (QMainWindow):
         del os.environ['CR_PAUSE']
         if 'CR_PATH_PREFIX' in os.environ:
             del os.environ['CR_PATH_PREFIX']
-        if not ok:
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            _output_append(tab.output_doc,
-                           'Failed to launch terminal\n',
-                           QColor(Qt.red))
+        return ok
 
     def _count_compile_errors (self, stderr_text:str) -> int:
         """Count the number of compile error lines in stderr output.
@@ -2572,11 +2581,10 @@ class MainWindow (QMainWindow):
         return 1 if stderr_text.strip() else 0
 
     def _maybe_scroll_output (self, tab:TabData):
-        """Mark tab for deferred scroll if output panel is at bottom."""
-        if tab is self.tab_manager.get_current():
-            if self._is_output_at_bottom():
-                tab._need_scroll = True
-            if tab._need_scroll and not self._scroll_output_timer.isActive():
+        """Start scroll timer if auto-scroll is active for this tab.
+        _need_scroll stays True until user scrolls up — don't reset it here."""
+        if tab is self.tab_manager.get_current() and tab._need_scroll:
+            if not self._scroll_output_timer.isActive():
                 self._scroll_output_timer.start(50)
 
     def _is_output_at_bottom (self) -> bool:
@@ -2584,15 +2592,28 @@ class MainWindow (QMainWindow):
         sb = self.output_panel.verticalScrollBar()
         return sb.maximum() - sb.value() <= 3
 
+    def _on_output_scroll_changed (self):
+        """Detect user scrolling up in output panel — deactivate auto-scroll.
+        Programmatic scrolls (from _on_scroll_output_timer) land at bottom,
+        so _is_output_at_bottom() is True and _need_scroll stays True.
+        Only a genuine user scroll-up makes _is_output_at_bottom() False."""
+        tab = self.tab_manager.get_current()
+        if tab and not self._is_output_at_bottom():
+            tab._need_scroll = False
+            self._scroll_output_timer.stop()
+
     def _on_scroll_output_timer (self):
-        """Batched scroll: check current tab's _need_scroll, scroll if set."""
+        """Batched scroll: scroll to bottom if auto-scroll is active.
+        _need_scroll stays True until user scrolls up — don't reset it.
+        Stop timer when caught up (at bottom after scroll)."""
         tab = self.tab_manager.get_current()
         if tab and tab._need_scroll:
             self.output_panel.verticalScrollBar().setValue(
                 self.output_panel.verticalScrollBar().maximum())
-            tab._need_scroll = False
-        # Stop timer when no tab needs scrolling
-        if not tab or not tab._need_scroll:
+            # Stop timer when caught up (already at bottom)
+            if self._is_output_at_bottom():
+                self._scroll_output_timer.stop()
+        else:
             self._scroll_output_timer.stop()
 
     #----- ProcessManager signal handlers -----
@@ -2681,30 +2702,30 @@ class MainWindow (QMainWindow):
                     tab.output_doc,
                     'Build OK in {:.3}s\n'.format(elapsed),
                     QColor(128, 128, 128))
-                self._launch_terminal(tab)
+                ok = self._launch_terminal(tab)
                 self._set_flow_state(_FLOW_IDLE)
-                self.status_message.setText('Running in terminal')
+                if ok:
+                    self.status_message.setText('Running in terminal')
+                else:
+                    _output_append(tab.output_doc,
+                                   'Failed to launch terminal\n',
+                                   QColor(Qt.red))
+                    self.status_message.setText('Failed to launch terminal')
                 self._maybe_scroll_output(tab)
 
     def _on_run_stdout_ready (self, text:str):
         tab = self.proc_mgr.target_tab
         if tab:
-            at_bottom = tab is self.tab_manager.get_current() \
-                and self._is_output_at_bottom()
             _output_append(tab.output_doc, text)
-            if at_bottom:
-                tab._need_scroll = True
+            if tab is self.tab_manager.get_current() and tab._need_scroll:
                 if not self._scroll_output_timer.isActive():
                     self._scroll_output_timer.start(50)
 
     def _on_run_stderr_ready (self, text:str):
         tab = self.proc_mgr.target_tab
         if tab:
-            at_bottom = tab is self.tab_manager.get_current() \
-                and self._is_output_at_bottom()
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
-            if at_bottom:
-                tab._need_scroll = True
+            if tab is self.tab_manager.get_current() and tab._need_scroll:
                 if not self._scroll_output_timer.isActive():
                     self._scroll_output_timer.start(50)
 
@@ -2715,9 +2736,6 @@ class MainWindow (QMainWindow):
         tab = self._flow_tab
         if not tab:
             return
-        # Check at_bottom BEFORE any content changes
-        at_bottom = tab is self.tab_manager.get_current() \
-            and self._is_output_at_bottom()
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
             tab._need_scroll = True
@@ -2741,10 +2759,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Timeout after {} seconds'.format(
                     self.settings.run_timeout))
-            if at_bottom:
-                tab._need_scroll = True
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            self._maybe_scroll_output(tab)
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
@@ -2765,10 +2780,7 @@ class MainWindow (QMainWindow):
                     'Program crashed: {}'.format(detail))
             else:
                 self.status_message.setText('Process stopped')
-            if at_bottom:
-                tab._need_scroll = True
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            self._maybe_scroll_output(tab)
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
@@ -2782,10 +2794,7 @@ class MainWindow (QMainWindow):
             if detail:
                 msg = 'Runtime Error: {}'.format(detail)
             self.status_message.setText(msg)
-            if at_bottom:
-                tab._need_scroll = True
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            self._maybe_scroll_output(tab)
         else:
             mem_str = ''
             if peak_memory > 0:
@@ -2799,10 +2808,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Program exited with code 0 in {:.3}s{}'.format(
                     elapsed, mem_str))
-            if at_bottom:
-                tab._need_scroll = True
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            self._maybe_scroll_output(tab)
 
     #===== Tab Management =====
 
@@ -2820,6 +2826,7 @@ class MainWindow (QMainWindow):
             old_tab.scroll_pos = self.editor.verticalScrollBar().value()
             old_tab.input_cursor = self.input_panel.textCursor()
             old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
+            old_tab.output_scroll = self.output_panel.verticalScrollBar().value()
             # Cancel batch highlighting on old tab to avoid editor flicker
             if old_tab.highlighter._batch_timer is not None:
                 old_tab.highlighter.cancel_batch_highlight()
@@ -2855,11 +2862,13 @@ class MainWindow (QMainWindow):
             self.input_panel.setUpdatesEnabled(True)
             self.output_panel.setUpdatesEnabled(True)
 
-            # If new tab needs output scroll, do it immediately
+            # Restore output scroll position
             if new_tab._need_scroll:
                 self.output_panel.verticalScrollBar().setValue(
                     self.output_panel.verticalScrollBar().maximum())
-                new_tab._need_scroll = False
+            else:
+                self.output_panel.verticalScrollBar().setValue(
+                    new_tab.output_scroll)
 
         # Update tabbar current index
         self._tab_switching = True
@@ -2917,6 +2926,7 @@ class MainWindow (QMainWindow):
             old_tab.scroll_pos = self.editor.verticalScrollBar().value()
             old_tab.input_cursor = self.input_panel.textCursor()
             old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
+            old_tab.output_scroll = self.output_panel.verticalScrollBar().value()
 
         # Mark no active tab so switch won't try to save old state
         tm.current_index = -1
