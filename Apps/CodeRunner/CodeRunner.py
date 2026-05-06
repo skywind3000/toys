@@ -26,7 +26,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, QSize, QPointF, QTimer, QRect, QRegularExpression,
-    QProcess, QProcessEnvironment, pyqtSignal, QObject
+    QProcess, QProcessEnvironment, pyqtSignal, QObject,
+    QtMsgType, qInstallMessageHandler
 )
 from PyQt5.QtGui import (
     QKeySequence, QFontDatabase, QIcon, QPainter, QPixmap,
@@ -569,8 +570,8 @@ def _ensure_cmd_file () -> str:
 # Settings defaults
 #----------------------------------------------------------------------
 _SETTINGS_DEFAULTS = {
-    'compiler_path': 'g++',
-    'compiler_flags': '-std=c++14',
+    'compiler_path': 'gcc',
+    'compiler_flags': '',
     'env_vars': {},
     'run_timeout': 10,
     'compile_timeout': 20,
@@ -3488,6 +3489,25 @@ class MainWindow (QMainWindow):
                     self._switch_to_tab(index)
                     self._add_recent_file(path)
         event.acceptProposedAction()
+
+
+#----------------------------------------------------------------------
+# Qt message handler — suppress harmless Windows platform warnings
+#----------------------------------------------------------------------
+_SUPPRESSED_WARNINGS = ('setMouseGrabEnabled', 'setKeyboardGrabEnabled')
+
+
+def _qt_message_handler (msg_type:QtMsgType, context, msg:str):
+    if msg_type == QtMsgType.QtWarningMsg:
+        for pattern in _SUPPRESSED_WARNINGS:
+            if pattern in msg:
+                return
+    # Pass everything else through to default handler
+    if _default_qt_handler:
+        _default_qt_handler(msg_type, context, msg)
+
+
+_default_qt_handler = qInstallMessageHandler(_qt_message_handler)
 
 
 #----------------------------------------------------------------------

@@ -128,7 +128,7 @@ class TestSettingsJSON (unittest.TestCase):
         s2.compiler_path = 'different'
         # Original unchanged
         self.assertEqual(s.env_vars['A'], '1')
-        self.assertEqual(s.compiler_path, 'g++')
+        self.assertEqual(s.compiler_path, 'gcc')
 
     def test_settings_apply_from (self):
         """Settings.apply_from() merges all attributes."""
