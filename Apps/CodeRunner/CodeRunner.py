@@ -888,19 +888,19 @@ class ProcessManager (QObject):
         if self.process:
             try:
                 self.process.finished.disconnect()
-            except TypeError:
+            except (RuntimeError, TypeError):
                 pass
             try:
                 self.process.readyReadStandardError.disconnect()
-            except TypeError:
+            except (RuntimeError, TypeError):
                 pass
             try:
                 self.process.readyReadStandardOutput.disconnect()
-            except TypeError:
+            except (RuntimeError, TypeError):
                 pass
             try:
                 self.process.started.disconnect()
-            except TypeError:
+            except (RuntimeError, TypeError):
                 pass
             self.process.deleteLater()
             self.process = None
@@ -944,9 +944,15 @@ class ProcessManager (QObject):
         if not self.process or self.process.state() == QProcess.NotRunning:
             return
         self._finished_emitted = True
-        self._stop_timeout_timer()
+        # Read any remaining stderr before cleanup
+        remaining = self.process.readAllStandardError()
+        if remaining and bytes(remaining):
+            self._stderr_buffer += self._enc_mgr.decode_stderr(
+                bytes(remaining))
+        stderr_text = self._stderr_buffer
         self.process.kill()
-        self.compile_finished.emit(-1, '', 'timeout')
+        self._cleanup()
+        self.compile_finished.emit(-1, stderr_text, 'timeout')
 
     #----- Run handlers -----
 
@@ -1009,10 +1015,10 @@ class ProcessManager (QObject):
             text = self._enc_mgr.decode_stderr(bytes(remaining_stderr))
             self.run_stderr_ready.emit(text)
         self._finished_emitted = True
-        self._stop_timeout_timer()
         elapsed = time.time() - self.start_time
         peak = self._peak_memory
         self.process.kill()
+        self._cleanup()
         self.run_finished.emit(-1, elapsed, peak, 'timeout', '')  # error_detail: unused
 
     #----- Memory tracking -----
@@ -2442,8 +2448,11 @@ class MainWindow (QMainWindow):
         exe_path = self._get_exe_path(tab)
         if not exe_path or not os.path.exists(exe_path):
             return True
-        source_mtime = os.path.getmtime(tab.file_path)
-        exe_mtime = os.path.getmtime(exe_path)
+        try:
+            source_mtime = os.path.getmtime(tab.file_path)
+            exe_mtime = os.path.getmtime(exe_path)
+        except OSError:
+            return True
         if exe_mtime < source_mtime:
             return True
         if exe_mtime < tab.compiler_mtime:
@@ -3117,9 +3126,10 @@ class MainWindow (QMainWindow):
                         event.ignore()
                         return
 
-        # Kill any running process only after confirming all dirty tabs
+        # Clean up any running process only after confirming all dirty tabs
         if self.proc_mgr.busy:
             self.proc_mgr.kill_process()
+            self.proc_mgr._cleanup()
 
         # Save window state only after confirming all dirty tabs
         self._save_window_state()
