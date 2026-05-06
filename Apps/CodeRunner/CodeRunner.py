@@ -408,7 +408,10 @@ class Settings:
         # Only load keys that exist in defaults (ignore unknown keys)
         for key in _SETTINGS_DEFAULTS:
             if key in data:
-                setattr(self, key, data[key])
+                value = data[key]
+                if key == 'env_vars' and not isinstance(value, dict):
+                    value = {}
+                setattr(self, key, value)
         return 0
 
     def save (self, path:str=None) -> int:
@@ -2165,6 +2168,16 @@ class MainWindow (QMainWindow):
             is_new=True, encoding='UTF-8',
             content=self.settings.template_text,
             dirty_callback=self._on_tab_dirty_changed)
+        # Position cursor inside main() body (after first '{')
+        cursor = QTextCursor(tab.editor_doc)
+        search = tab.editor_doc.find('{', cursor)
+        if search.hasSelection():
+            block = search.block().next()
+            if block.isValid():
+                text = block.text()
+                indent_len = len(text) - len(text.lstrip())
+                cursor.setPosition(block.position() + indent_len)
+        tab.cursor = cursor
         index = self.tab_manager.add_tab(tab)
         self.tabbar.addTab(tab.tab_name())
         self._switch_to_tab(index)
@@ -2224,6 +2237,7 @@ class MainWindow (QMainWindow):
             'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
         if not path:
             return
+        path = os.path.normpath(path)
         old_path = tab.file_path
         old_is_new = tab.is_new
         tab.file_path = path
@@ -2448,6 +2462,7 @@ class MainWindow (QMainWindow):
             lbl_font.setFamily(s.io_font_family)
             lbl_font.setPointSize(s.io_font_size)
             label.setFont(lbl_font)
+            label.setFixedHeight(label.sizeHint().height() + int(4 * self._dpi))
         # Update all zoom sizes (reset zoom offset)
         for t in self.tab_manager.tabs:
             t.zoom_font_size = 0
@@ -3002,6 +3017,7 @@ class MainWindow (QMainWindow):
                 '*.hpp *.hh);;All Files (*)')
             if not path:
                 return -1
+            path = os.path.normpath(path)
             content = tab.editor_doc.toPlainText()
             try:
                 with open(path, 'w', encoding=tab.encoding) as f:
@@ -3284,7 +3300,6 @@ class MainWindow (QMainWindow):
                     dirty_callback=self._on_tab_dirty_changed)
                 tab.input_doc.setPlainText(
                     entry.get('input_text', ''))
-                self._add_recent_file(file_path)
             self.tab_manager.add_tab(tab)
             self.tabbar.addTab(tab.tab_name())
         # Restore active tab
@@ -3346,7 +3361,7 @@ class MainWindow (QMainWindow):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
-                if path and any(path.endswith(ext)
+                if path and any(path.lower().endswith(ext)
                                 for ext in _SOURCE_EXTENSIONS):
                     event.acceptProposedAction()
                     return
@@ -3356,7 +3371,7 @@ class MainWindow (QMainWindow):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
-                if path and any(path.endswith(ext)
+                if path and any(path.lower().endswith(ext)
                                 for ext in _SOURCE_EXTENSIONS):
                     self._open_file_path(path, add_recent=True)
         event.acceptProposedAction()

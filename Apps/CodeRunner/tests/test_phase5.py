@@ -512,17 +512,17 @@ class TestOutputScroll (unittest.TestCase):
         sb.setValue(sb.maximum())
         self.assertTrue(window._is_output_at_bottom())
 
-    def test_maybe_scroll_sets_flag_when_at_bottom (self):
-        """_maybe_scroll_output sets _need_scroll when panel is at bottom."""
+    def test_maybe_scroll_starts_timer_when_needed (self):
+        """_maybe_scroll_output starts scroll timer when _need_scroll is True."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
-        tab._need_scroll = False
+        tab._need_scroll = True
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
-        # Empty doc = at bottom
+        self.assertFalse(window._scroll_output_timer.isActive())
         window._maybe_scroll_output(tab)
-        self.assertTrue(tab._need_scroll)
+        self.assertTrue(window._scroll_output_timer.isActive())
 
     def test_maybe_scroll_skips_when_not_at_bottom (self):
         """_maybe_scroll_output does not set flag when not at bottom."""
@@ -539,8 +539,8 @@ class TestOutputScroll (unittest.TestCase):
         window._maybe_scroll_output(tab)
         self.assertFalse(tab._need_scroll)
 
-    def test_scroll_timer_callback (self):
-        """_on_scroll_output_timer scrolls and clears flag."""
+    def test_scroll_timer_scrolls_to_bottom (self):
+        """_on_scroll_output_timer scrolls to bottom, _need_scroll stays True."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(50)])
@@ -548,10 +548,13 @@ class TestOutputScroll (unittest.TestCase):
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
+        # Scroll to top first
+        window.output_panel.verticalScrollBar().setValue(0)
         tab._need_scroll = True
         window._on_scroll_output_timer()
-        # After callback, scroll should be at bottom
-        self.assertFalse(tab._need_scroll)
+        self.assertTrue(window._is_output_at_bottom())
+        # _need_scroll stays True (only cleared by user scroll-up)
+        self.assertTrue(tab._need_scroll)
 
     def test_maybe_scroll_starts_timer_if_need_scroll_already_true (self):
         """_maybe_scroll_output starts timer even if _need_scroll was already
