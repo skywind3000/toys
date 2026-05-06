@@ -437,7 +437,7 @@ class ProcessManager(QObject):
 6. 如不需重编译：**IDLE → RUNNING**，直接启动 Test 运行
 7. Test 运行中（**RUNNING** 状态）：
    - 设置工作目录为 exe 所在目录
-   - 设置环境变量（Settings.env_vars 展开 $VAR_NAME 后合并到 QProcessEnvironment）
+   - 设置环境变量（Settings.env_vars 展开 $VAR_NAME 后合并到 QProcessEnvironment；如果 compiler_path 含路径组件，_resolve_compiler_path 取得的 bin_dir prepend 到 PATH 前端）
    - 将 InputPanel 内容转换为平台编码后写入 stdin
    - stdout/stderr 数据到达时实时追加到 OutputPanel（stdout 默认色，stderr 灰色）。此"追加"是指在单次运行的输出中逐步追加新到达的数据；跨运行间则整体替换（每次 Test/Build 开始时先清空 OutputPanel 再写入新内容）
    - 正常退出(reason=normal, exit 0)：**RUNNING → IDLE**，追加灰色退出状态行（含耗时和峰值内存）
@@ -471,6 +471,7 @@ class ProcessManager(QObject):
 
 ```batch
 @echo off
+if defined CR_PATH_PREFIX set PATH=%CR_PATH_PREFIX%;%PATH%
 call %CR_COMMAND%
 set CR_EXITCODE=%ERRORLEVEL%
 call %CR_PAUSE%
@@ -480,6 +481,7 @@ exit %CR_EXITCODE%
 变化部分通过环境变量传入：
 - `CR_COMMAND`：要运行的 exe 完整路径（如 `"C:\Users\xxx\test.exe"`）
 - `CR_PAUSE`：程序结束后的行为，正常 Run 设为 `pause`（显示"Press any key..."），不需要暂停时设为 `rem`（无操作）
+- `CR_PATH_PREFIX`：编译器 bin 目录路径（如 `C:\MinGW\bin`），当 `compiler_path` 含路径组件时设置，用于确保运行程序能找到 libstdc++-6.dll 等动态库；未设置时（裸名 `g++`）不修改 PATH
 
 **设计要点**：
 - **固定文件名**：避免每次 Run 生成新临时文件，崩溃/死机后不会残留大量垃圾文件
@@ -488,9 +490,9 @@ exit %CR_EXITCODE%
 
 **启动流程**：
 1. 检查 `%TEMP%\coderunner.cmd` 是否存在：不存在则创建；已存在则读取内容与预期对比，内容一致时跳过写入，不一致时才覆盖重写。避免每次 Run 都触发文件写操作，减少与正在运行的批处理之间的临界情况
-2. 临时修改 `os.environ`：设置 `CR_COMMAND` 为 exe 路径，`CR_PAUSE` 为 `pause`
+2. 临时修改 `os.environ`：设置 `CR_COMMAND` 为 exe 路径，`CR_PAUSE` 为 `pause`；如果 `compiler_path` 含路径组件，通过 `_resolve_compiler_path` 取得 bin_dir 后设置 `CR_PATH_PREFIX` 为该目录，否则不设置
 3. 调用 `QProcess.startDetached('cmd', ['/c', 'start', '', '/D', work_dir, bat_path])`（startDetached 同步返回，子进程创建完毕即拿到环境副本）
-4. 还原 `os.environ`（删除 `CR_COMMAND` 和 `CR_PAUSE`）
+4. 还原 `os.environ`（删除 `CR_COMMAND`、`CR_PAUSE` 和 `CR_PATH_PREFIX`）
 
 **Build 流程**（状态机视角）：
 1. 用户点击 Build → 检查 `_flow_state == IDLE` 和 `proc_mgr.busy == False`，否则弹 Busy 提示
@@ -777,4 +779,5 @@ def main():
 | Settings JSON 读写 | 2026/05/06 | Settings 类增加 `to_dict()`/`load()`/`save()` 方法，JSON 存于 `~/.config/coderunner/settings.json`。`load()` 只加载 `_SETTINGS_DEFAULTS` 中存在的键（忽略未知键），首次运行不存在时返回 -1 保留默认值 |
 | Window state 持久化 | 2026/05/06 | `~/.cache/coderunner/window.json` 存储窗口几何、分割条位置、标签列表（已保存文件存 file_path+input_text，新文件存 editor_text+input_text+untitled_number）、活跃标签、last_file_dir、recent_files。退出时 `_save_window_state()` 写入，启动时 `_load_window_state()` 恢复。恢复新文件标签时 `is_dirty=True`+`editor_doc.setModified(True)`，恢复已保存文件时跳过已删除文件 |
 | Recent Files 子菜单 | 2026/05/06 | File 菜单增加 Recent Files 子菜单（QMenu），最多 10 条按时间倒序。点击已删除文件弹 QMessageBox "File not found" 并从列表移除。`_action_open` 和 drag-drop 打开文件时自动调用 `_add_recent_file()` |
+| 工具链 PATH 自动注入 | 2026/05/07 | 当 `compiler_path` 含路径时（绝对路径或相对路径），自动将编译器所在目录 prepend 到 PATH，确保 g++ 能找到同目录的工具链组件、编译产物能找到 libstdc++-6.dll 等动态库。实现方式：`_resolve_compiler_path()` 函数解析三种路径类型（裸名、绝对路径、相对路径），返回 `(resolved_path, bin_dir)` 元组；`_make_process_env()` 在 `bin_dir` 非空时 prepend 到 PATH 前端；编译和 Test 运行均使用此环境；Run 外部终端通过临时修改 `os.environ['CR_PATH_PREFIX']` 传递 prepend 目录，`coderunner.cmd` 中 `set PATH=%CR_PATH_PREFIX%;%PATH%` 注入。不修改 CodeRunner 主进程 PATH，每个子进程通过 QProcessEnvironment 获得干净独立的 PATH |
 | Drag-drop 打开文件 | 2026/05/06 | MainWindow 设置 `setAcceptDrops(True)`，`dragEnterEvent` 检查 MIME URLs 的后缀为 .cpp/.c/.cc/.cxx/.h/.hpp，`dropEvent` 执行 Open 流程（已有标签则切换，否则新建标签）。已在 `_load_window_state` 恢复的标签不会重复打开 |

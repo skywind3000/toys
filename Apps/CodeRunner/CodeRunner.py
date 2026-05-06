@@ -497,6 +497,44 @@ def _expand_env_vars (value:str) -> str:
 
 
 #----------------------------------------------------------------------
+# Compiler path resolution
+#----------------------------------------------------------------------
+def _resolve_compiler_path (compiler_path:str) -> tuple:
+    """Resolve compiler_path to (resolved_path, bin_dir).
+
+    Returns:
+        (resolved_path, bin_dir) where:
+        - resolved_path: the actual compiler executable path to use
+        - bin_dir: directory to prepend to PATH (empty string if none)
+
+    Three cases:
+        - Bare name (e.g. 'g++'): resolved_path stays as-is,
+          bin_dir is '' (assumed already in PATH)
+        - Absolute path (e.g. 'C:\\MinGW\\bin\\g++'): resolved_path
+          stays as-is, bin_dir is the directory part
+        - Relative path (e.g. '.\\g++' or '../bin/g++'): resolved
+          relative to CodeRunner.py's directory, bin_dir is the
+          resolved directory part
+    """
+    if not compiler_path:
+        return (compiler_path, '')
+    # Check if it's a bare name (no directory separator)
+    dir_part = os.path.dirname(compiler_path)
+    if not dir_part:
+        # Bare name like 'g++' — already in PATH
+        return (compiler_path, '')
+    if os.path.isabs(compiler_path):
+        # Absolute path like C:\MinGW\bin\g++.exe
+        bin_dir = os.path.dirname(compiler_path)
+        return (compiler_path, bin_dir)
+    # Relative path — resolve against CodeRunner.py's directory
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    resolved = os.path.abspath(os.path.join(base_dir, compiler_path))
+    bin_dir = os.path.dirname(resolved)
+    return (resolved, bin_dir)
+
+
+#----------------------------------------------------------------------
 # Run external terminal helper
 #----------------------------------------------------------------------
 def _ensure_cmd_file () -> str:
@@ -506,6 +544,7 @@ def _ensure_cmd_file () -> str:
         'coderunner.cmd')
     content = (
         '@echo off\n'
+        'if defined CR_PATH_PREFIX set PATH=%CR_PATH_PREFIX%;%PATH%\n'
         'call %CR_COMMAND%\n'
         'set CR_EXITCODE=%ERRORLEVEL%\n'
         'call %CR_PAUSE%\n'
@@ -2540,7 +2579,8 @@ class MainWindow (QMainWindow):
         """Construct the compile command list."""
         exe_path = self._get_exe_path(tab)
         flags = self.enc_mgr.build_flags(tab.encoding)
-        command = [self.settings.compiler_path]
+        resolved, _ = _resolve_compiler_path(self.settings.compiler_path)
+        command = [resolved]
         command.extend(flags)
         if self.settings.compiler_flags:
             command.extend(self.settings.compiler_flags.split())
@@ -2554,10 +2594,17 @@ class MainWindow (QMainWindow):
         return command
 
     def _make_process_env (self) -> QProcessEnvironment:
-        """Build QProcessEnvironment from system env + user env_vars."""
+        """Build QProcessEnvironment from system env + user env_vars.
+        If compiler_path contains a directory component, prepend it to PATH."""
         env = QProcessEnvironment()
         for key in os.environ:
             env.insert(key, os.environ[key])
+        # Prepend compiler bin dir to PATH
+        _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
+        if bin_dir:
+            old_path = env.value('PATH', '')
+            sep = ';' if sys.platform == 'win32' else ':'
+            env.insert('PATH', bin_dir + sep + old_path)
         for key, value in self.settings.env_vars.items():
             expanded = _expand_env_vars(value)
             env.insert(key, expanded)
@@ -2599,13 +2646,18 @@ class MainWindow (QMainWindow):
             exe_path = exe_path.replace('/', '\\')
         work_dir = os.path.dirname(exe_path)
         bat_path = _ensure_cmd_file()
+        _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
         os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
         os.environ['CR_PAUSE'] = 'pause'
+        if bin_dir:
+            os.environ['CR_PATH_PREFIX'] = bin_dir
         ok = QProcess.startDetached(
             'cmd',
             ['/c', 'start', '', '/D', work_dir, bat_path])
         del os.environ['CR_COMMAND']
         del os.environ['CR_PAUSE']
+        if 'CR_PATH_PREFIX' in os.environ:
+            del os.environ['CR_PATH_PREFIX']
         if not ok:
             _output_clear(tab.output_doc)
             _output_append(tab.output_doc,
@@ -3107,10 +3159,22 @@ class MainWindow (QMainWindow):
             tab.scroll_pos = self.editor.verticalScrollBar().value()
             tab.input_cursor = self.input_panel.textCursor()
             tab.input_scroll = self.input_panel.verticalScrollBar().value()
-        geo = self.geometry()
+        # Use normalGeometry to avoid saving maximized/fullscreen coordinates
+        geo = self.normalGeometry() if self.isMaximized() \
+              else self.geometry()
+        # Clamp to ensure title bar is visible on screen
+        screen = QApplication.primaryScreen()
+        min_y = 0
+        min_x = 0
+        if screen:
+            avail = screen.availableGeometry()
+            min_y = avail.y()
+            min_x = avail.x()
+        sx = max(geo.x(), min_x)
+        sy = max(geo.y(), min_y)
         state = {
             'geometry': {
-                'x': geo.x(), 'y': geo.y(),
+                'x': sx, 'y': sy,
                 'w': geo.width(), 'h': geo.height()},
             'h_splitter': self.main_splitter.sizes(),
             'v_splitter': self.v_splitter.sizes(),
@@ -3146,11 +3210,27 @@ class MainWindow (QMainWindow):
                 state = json.load(f)
         except (IOError, OSError, json.JSONDecodeError):
             return -1
-        # Restore geometry
+        # Restore geometry (ensure title bar is visible)
         geo = state.get('geometry', {})
         if geo:
-            self.setGeometry(geo.get('x', 100), geo.get('y', 100),
-                             geo.get('w', 1000), geo.get('h', 650))
+            x = geo.get('x', 100)
+            y = geo.get('y', 100)
+            w = geo.get('w', 1000)
+            h = geo.get('h', 650)
+            # Ensure title bar is visible on screen
+            screen = QApplication.primaryScreen()
+            if screen:
+                avail = screen.availableGeometry()
+                # Clamp y so title bar is at least partially visible
+                y = max(y, avail.y())
+                # Clamp x so window left edge is visible
+                x = max(x, avail.x())
+                # Clamp so window doesn't extend beyond right/bottom
+                x = min(x, avail.x() + avail.width() - w)
+                y = min(y, avail.y() + avail.height() - h)
+                # Final safety: ensure y >= avail.y()
+                y = max(y, avail.y())
+            self.setGeometry(x, y, w, h)
         # Restore splitter sizes
         h_sizes = state.get('h_splitter', [500, 500])
         v_sizes = state.get('v_splitter', [325, 325])
