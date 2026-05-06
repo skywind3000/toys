@@ -2555,10 +2555,10 @@ class MainWindow (QMainWindow):
 
     def _maybe_scroll_output (self, tab:TabData):
         """Mark tab for deferred scroll if output panel is at bottom."""
-        if tab is self.tab_manager.get_current() \
-                and self._is_output_at_bottom():
-            tab._need_scroll = True
-            if not self._scroll_output_timer.isActive():
+        if tab is self.tab_manager.get_current():
+            if self._is_output_at_bottom():
+                tab._need_scroll = True
+            if tab._need_scroll and not self._scroll_output_timer.isActive():
                 self._scroll_output_timer.start(50)
 
     def _is_output_at_bottom (self) -> bool:
@@ -2697,6 +2697,9 @@ class MainWindow (QMainWindow):
         tab = self._flow_tab
         if not tab:
             return
+        # Check at_bottom BEFORE any content changes
+        at_bottom = tab is self.tab_manager.get_current() \
+            and self._is_output_at_bottom()
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
             tab._need_scroll = True
@@ -2720,7 +2723,10 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Timeout after {} seconds'.format(
                     self.settings.run_timeout))
-            self._maybe_scroll_output(tab)
+            if at_bottom:
+                tab._need_scroll = True
+                if not self._scroll_output_timer.isActive():
+                    self._scroll_output_timer.start(50)
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
@@ -2741,7 +2747,10 @@ class MainWindow (QMainWindow):
                     'Program crashed: {}'.format(detail))
             else:
                 self.status_message.setText('Process stopped')
-            self._maybe_scroll_output(tab)
+            if at_bottom:
+                tab._need_scroll = True
+                if not self._scroll_output_timer.isActive():
+                    self._scroll_output_timer.start(50)
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
@@ -2755,7 +2764,10 @@ class MainWindow (QMainWindow):
             if detail:
                 msg = 'Runtime Error: {}'.format(detail)
             self.status_message.setText(msg)
-            self._maybe_scroll_output(tab)
+            if at_bottom:
+                tab._need_scroll = True
+                if not self._scroll_output_timer.isActive():
+                    self._scroll_output_timer.start(50)
         else:
             mem_str = ''
             if peak_memory > 0:
@@ -2769,7 +2781,10 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Program exited with code 0 in {:.3}s{}'.format(
                     elapsed, mem_str))
-            self._maybe_scroll_output(tab)
+            if at_bottom:
+                tab._need_scroll = True
+                if not self._scroll_output_timer.isActive():
+                    self._scroll_output_timer.start(50)
 
     #===== Tab Management =====
 
