@@ -2976,15 +2976,17 @@ class MainWindow (QMainWindow):
                     'Program crashed: {} (exit code {})\n'.format(
                         detail, exit_code),
                     QColor(Qt.red))
-                self.status_message.setText(
-                    'Program crashed: {}'.format(detail))
             else:
                 _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
                 _output_append(tab.output_doc,
                                'Process stopped in {:.3}s\n'.format(elapsed),
                                QColor(128, 128, 128))
-                self.status_message.setText('Process stopped')
             self._set_flow_state(_FLOW_IDLE)
+            if detail:
+                self.status_message.setText(
+                    'Program crashed: {}'.format(detail))
+            else:
+                self.status_message.setText('Process stopped')
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
@@ -3505,7 +3507,9 @@ class MainWindow (QMainWindow):
             action.triggered.connect(self._on_recent_file)
             self.menu_recent.addAction(action)
         if not self._recent_files:
-            self.menu_recent.addAction('(Empty)')
+            action = QAction('(Empty)', self)
+            action.setEnabled(False)
+            self.menu_recent.addAction(action)
 
     def _on_recent_file (self):
         """Open a file from Recent Files menu."""
