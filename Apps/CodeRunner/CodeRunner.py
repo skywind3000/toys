@@ -2518,17 +2518,22 @@ class MainWindow (QMainWindow):
 
     def _make_process_env (self) -> QProcessEnvironment:
         """Build QProcessEnvironment from system env + user env_vars.
-        If compiler_path contains a directory component, prepend it to PATH."""
+        If compiler_path contains a directory component, prepend it to PATH.
+
+        Order matters: user env_vars (which may override PATH via $PATH)
+        are applied first, then bin_dir is prepended so it always takes
+        effect regardless of user overrides."""
         env = QProcessEnvironment.systemEnvironment()
-        # Prepend compiler bin dir to PATH
+        # Apply user env vars first (may override PATH with $PATH expansion)
+        for key, value in self.settings.env_vars.items():
+            expanded = _expand_env_vars(value)
+            env.insert(key, expanded)
+        # Prepend compiler bin dir to PATH after env vars so it always works
         _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
         if bin_dir:
             old_path = env.value('PATH', '')
             sep = ';' if sys.platform == 'win32' else ':'
             env.insert('PATH', bin_dir + sep + old_path)
-        for key, value in self.settings.env_vars.items():
-            expanded = _expand_env_vars(value)
-            env.insert(key, expanded)
         return env
 
     def _clear_and_start_compile (self, tab:TabData):
@@ -2918,9 +2923,11 @@ class MainWindow (QMainWindow):
                 if result < 0:
                     return False
 
-        # Kill process only after user confirms close
+        # Kill process and fully clean up to prevent stale finished signals
+        # from corrupting a subsequent compile/run operation
         if self._flow_state != _FLOW_IDLE and self._flow_tab is tab:
             self.proc_mgr.kill_process()
+            self.proc_mgr._cleanup()
             self._set_flow_state(_FLOW_IDLE)
 
         # Cancel batch highlighting before removing
@@ -3254,8 +3261,9 @@ class MainWindow (QMainWindow):
                 # Clamp so window doesn't extend beyond right/bottom
                 x = min(x, avail.x() + avail.width() - w)
                 y = min(y, avail.y() + avail.height() - h)
-                # Final safety: ensure y >= avail.y()
+                # Final safety: ensure both edges are visible
                 y = max(y, avail.y())
+                x = max(x, avail.x())
             self.setGeometry(x, y, w, h)
         # Restore splitter sizes
         h_sizes = state.get('h_splitter', [500, 500])
