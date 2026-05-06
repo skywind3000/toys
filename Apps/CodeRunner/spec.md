@@ -194,7 +194,7 @@ _SETTINGS_DEFAULTS = {
 
 **改写模式**：Insert 键切换 overwrite_mode，输入字符时先删除光标右侧一个字符再插入。状态栏显示 INS/OVR。Paste 操作不受改写模式影响。
 
-**Zoom**：Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小（最小 6pt）。仅改 CodeEditor，不影响 IO 面板；会话级不持久化。字号存入 TabData.zoom_font_size。
+**Zoom**：Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小（最小 6pt）。仅改 CodeEditor，不影响 IO 面板；会话级不持久化。字号存入 TabData.zoom_font_size。Settings 中修改编辑器字号后所有标签的 zoom 偏移重置为 0，显示字号回到 Settings 基准值。
 
 ### 3.2 CppHighlighter
 

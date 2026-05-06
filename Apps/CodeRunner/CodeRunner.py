@@ -1848,7 +1848,14 @@ class SettingsDialog (QDialog):
 
         # Apply to original settings and save
         old.apply_from(c)
-        old.save()
+        result = old.save()
+        if result < 0:
+            QMessageBox.warning(
+                self, 'Save Error',
+                'Failed to save settings to disk.\n'
+                'Changes will be lost on restart.')
+            self.accept()
+            return
         self.accept()
 
 
@@ -2190,6 +2197,9 @@ class MainWindow (QMainWindow):
             if not t.is_new and t.file_path and \
                     os.path.normpath(t.file_path) == path:
                 self._switch_to_tab(i)
+                # Refresh Recent Files order even when already open
+                if add_recent:
+                    self._add_recent_file(path)
                 return True
         try:
             content, encoding = _read_file(path)
@@ -2281,13 +2291,25 @@ class MainWindow (QMainWindow):
         self.editor.setFontSize(zoom_size)
 
     def _action_undo (self):
-        self.editor.undo()
+        focus = QApplication.focusWidget()
+        if focus and isinstance(focus, QTextEdit):
+            focus.undo()
+        else:
+            self.editor.undo()
 
     def _action_redo (self):
-        self.editor.redo()
+        focus = QApplication.focusWidget()
+        if focus and isinstance(focus, QTextEdit):
+            focus.redo()
+        else:
+            self.editor.redo()
 
     def _action_cut (self):
-        self.editor.cut()
+        focus = QApplication.focusWidget()
+        if focus and isinstance(focus, QTextEdit) and not focus.isReadOnly():
+            focus.cut()
+        else:
+            self.editor.cut()
 
     def _action_copy (self):
         focus = QApplication.focusWidget()
@@ -2297,7 +2319,11 @@ class MainWindow (QMainWindow):
             self.editor.copy()
 
     def _action_paste (self):
-        self.editor.paste()
+        focus = QApplication.focusWidget()
+        if focus and isinstance(focus, QTextEdit) and not focus.isReadOnly():
+            focus.paste()
+        else:
+            self.editor.paste()
 
     def _action_find (self):
         # TODO: implement FindDialog
@@ -2575,17 +2601,38 @@ class MainWindow (QMainWindow):
         work_dir = os.path.dirname(exe_path)
         bat_path = _ensure_cmd_file()
         _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
-        os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
-        os.environ['CR_PAUSE'] = 'pause'
-        if bin_dir:
-            os.environ['CR_PATH_PREFIX'] = bin_dir
-        ok = QProcess.startDetached(
-            'cmd',
-            ['/c', 'start', '', '/D', work_dir, bat_path])
-        del os.environ['CR_COMMAND']
-        del os.environ['CR_PAUSE']
-        if 'CR_PATH_PREFIX' in os.environ:
-            del os.environ['CR_PATH_PREFIX']
+        # Compute all expanded env values before modifying os.environ
+        expanded_env = {}
+        for key, value in self.settings.env_vars.items():
+            expanded_env[key] = _expand_env_vars(value)
+        # Save original env values for restoration
+        saved_env = {}
+        try:
+            # Set CR_* vars for the cmd script
+            saved_env['CR_COMMAND'] = os.environ.get('CR_COMMAND')
+            os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
+            saved_env['CR_PAUSE'] = os.environ.get('CR_PAUSE')
+            os.environ['CR_PAUSE'] = 'pause'
+            if bin_dir:
+                saved_env['CR_PATH_PREFIX'] = os.environ.get(
+                    'CR_PATH_PREFIX')
+                os.environ['CR_PATH_PREFIX'] = bin_dir
+            # Set user env vars for the terminal process
+            for key, value in expanded_env.items():
+                if key.startswith('CR_'):
+                    continue  # Don't overwrite CR_* vars
+                saved_env[key] = os.environ.get(key)
+                os.environ[key] = value
+            ok = QProcess.startDetached(
+                'cmd',
+                ['/c', 'start', '', '/D', work_dir, bat_path])
+        finally:
+            # Restore original env values
+            for key, orig in saved_env.items():
+                if orig is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = orig
         return ok
 
     def _count_compile_errors (self, stderr_text:str) -> int:
@@ -2966,6 +3013,8 @@ class MainWindow (QMainWindow):
         else:
             new_index = min(index, len(tm.tabs) - 1)
             self._switch_to_tab(new_index)
+        # Deferred save so cursor restore completes first
+        QTimer.singleShot(0, self._save_window_state)
         return True
 
     #===== Status & Title =====
@@ -3153,6 +3202,9 @@ class MainWindow (QMainWindow):
                 if choice == 'cancel':
                     event.ignore()
                     return
+                elif choice == 'discard':
+                    tab.is_dirty = False
+                    tab.editor_doc.setModified(False)
                 elif choice == 'save':
                     result = self._save_tab_data(tab)
                     if result < 0:
@@ -3217,6 +3269,9 @@ class MainWindow (QMainWindow):
             'recent_files': self._recent_files[:10],
         }
         for t in self.tab_manager.tabs:
+            # Skip discarded new tabs (user chose "Discard" in close dialog)
+            if t.is_new and not t.is_dirty:
+                continue
             entry = {}
             if t.is_new:
                 entry['is_new'] = True
@@ -3254,6 +3309,9 @@ class MainWindow (QMainWindow):
             screen = QApplication.primaryScreen()
             if screen:
                 avail = screen.availableGeometry()
+                # Clamp size so window fits on screen
+                w = min(w, avail.width())
+                h = min(h, avail.height())
                 # Clamp y so title bar is at least partially visible
                 y = max(y, avail.y())
                 # Clamp x so window left edge is visible
