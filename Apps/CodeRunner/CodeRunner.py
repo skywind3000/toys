@@ -744,8 +744,11 @@ class TabManager:
     def add_tab (self, tab:TabData) -> int:
         """Add tab to list, assign untitled number if needed. Returns index."""
         if tab.is_new:
-            self.untitled_counter += 1
-            tab.untitled_number = self.untitled_counter
+            if tab.untitled_number <= 0:
+                self.untitled_counter += 1
+                tab.untitled_number = self.untitled_counter
+            elif tab.untitled_number > self.untitled_counter:
+                self.untitled_counter = tab.untitled_number
         self.tabs.append(tab)
         return len(self.tabs) - 1
 
@@ -919,7 +922,7 @@ class ProcessManager (QObject):
             text = self._enc_mgr.decode_stderr(data)
             self._stderr_buffer += text
 
-    def _on_compile_finished (self, exit_code:int, _exit_status):
+    def _on_compile_finished (self, exit_code:int, exit_status):
         if self._finished_emitted:
             return
         self._finished_emitted = True
@@ -930,8 +933,10 @@ class ProcessManager (QObject):
             self._stderr_buffer += self._enc_mgr.decode_stderr(
                 bytes(remaining))
         stderr_text = self._stderr_buffer
+        killed = exit_status != QProcess.NormalExit
+        reason = 'killed' if killed else 'normal'
         self._cleanup()
-        self.compile_finished.emit(exit_code, stderr_text, 'normal')
+        self.compile_finished.emit(exit_code, stderr_text, reason)
 
     def _on_compile_timeout (self):
         if self._finished_emitted:
@@ -2546,12 +2551,16 @@ class MainWindow (QMainWindow):
                            QColor(Qt.red))
 
     def _count_compile_errors (self, stderr_text:str) -> int:
-        """Count the number of compile error lines in stderr output."""
+        """Count the number of compile error lines in stderr output.
+        Returns 0 if stderr is empty, actual error count if > 0,
+        or 1 as fallback if stderr has content but no ': error:' lines."""
         count = 0
         for line in stderr_text.splitlines():
             if ': error:' in line:
                 count += 1
-        return max(1, count) if stderr_text.strip() else 0
+        if count > 0:
+            return count
+        return 1 if stderr_text.strip() else 0
 
     def _maybe_scroll_output (self, tab:TabData):
         """Mark tab for deferred scroll if output panel is at bottom."""
@@ -2867,11 +2876,6 @@ class MainWindow (QMainWindow):
             return False
         tab = tm.tabs[index]
 
-        # If closing the tab that has an active process, kill it first
-        if self._flow_state != _FLOW_IDLE and self._flow_tab is tab:
-            self.proc_mgr.kill_process()
-            self._set_flow_state(_FLOW_IDLE)
-
         if tab.is_dirty:
             choice = self._confirm_close_tab(tab)
             if choice == 'cancel':
@@ -2880,6 +2884,11 @@ class MainWindow (QMainWindow):
                 result = self._save_tab_data(tab)
                 if result < 0:
                     return False
+
+        # Kill process only after user confirms close
+        if self._flow_state != _FLOW_IDLE and self._flow_tab is tab:
+            self.proc_mgr.kill_process()
+            self._set_flow_state(_FLOW_IDLE)
 
         # Cancel batch highlighting before removing
         tab.highlighter.cancel_batch_highlight()
@@ -3096,10 +3105,6 @@ class MainWindow (QMainWindow):
     #===== Window State & Lifecycle =====
 
     def closeEvent (self, event):
-        # Kill any running process before closing
-        if self.proc_mgr.busy:
-            self.proc_mgr.kill_process()
-
         for tab in list(self.tab_manager.tabs):
             if tab.is_dirty:
                 choice = self._confirm_close_tab(tab)
@@ -3111,6 +3116,10 @@ class MainWindow (QMainWindow):
                     if result < 0:
                         event.ignore()
                         return
+
+        # Kill any running process only after confirming all dirty tabs
+        if self.proc_mgr.busy:
+            self.proc_mgr.kill_process()
 
         # Save window state only after confirming all dirty tabs
         self._save_window_state()
@@ -3238,9 +3247,6 @@ class MainWindow (QMainWindow):
                     entry.get('input_text', ''))
                 tab.is_dirty = True
                 tab.editor_doc.setModified(True)
-                # Ensure untitled counter is at least this number
-                if tab.untitled_number >= self.tab_manager.untitled_counter:
-                    self.tab_manager.untitled_counter = tab.untitled_number
             else:
                 file_path = entry.get('file_path', '')
                 if not file_path:
