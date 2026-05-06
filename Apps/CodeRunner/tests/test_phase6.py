@@ -260,6 +260,9 @@ class TestMainWindowState (unittest.TestCase):
 
     def test_recent_files_init (self):
         """MainWindow starts with empty recent files list."""
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         s = Settings()
         _init_font_defaults(s)
         win = MainWindow(s)

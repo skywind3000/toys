@@ -406,7 +406,7 @@ class TestMainWindowCompile (unittest.TestCase):
                 file_path=path, is_new=False,
                 encoding='UTF-8', content='test')
             cmd = self.window._build_compile_command(tab)
-            self.assertEqual(cmd[0], 'g++')
+            self.assertEqual(cmd[0], 'gcc')
             self.assertIn('-fexec-charset', cmd[0] + ' ' + ' '.join(cmd))
             self.assertIn('-finput-charset=UTF-8',
                           ' '.join(cmd))

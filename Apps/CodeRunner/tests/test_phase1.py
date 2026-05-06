@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from CodeRunner import Settings, InputPanel, OutputPanel, MainWindow
 from CodeRunner import _detect_monospace_font, _init_font_defaults
-from CodeRunner import _create_toolbar_icons
+from CodeRunner import _create_toolbar_icons, _window_state_path
 from CodeRunner import _COLOR_NEW, _COLOR_SAVE, _COLOR_OPEN
 from CodeRunner import _COLOR_RUN, _COLOR_TEST, _COLOR_STOP
 
@@ -42,8 +42,8 @@ class TestSettings (unittest.TestCase):
     def test_defaults (self):
         s = Settings()
         _init_font_defaults(s)
-        self.assertEqual(s.compiler_path, 'g++')
-        self.assertEqual(s.compiler_flags, '-std=c++14')
+        self.assertEqual(s.compiler_path, 'gcc')
+        self.assertEqual(s.compiler_flags, '')
         self.assertEqual(s.env_vars, {})
         self.assertEqual(s.run_timeout, 10)
         self.assertEqual(s.compile_timeout, 20)
@@ -105,6 +105,10 @@ class TestOutputPanel (unittest.TestCase):
 class TestMainWindow (unittest.TestCase):
 
     def setUp (self):
+        # Delete window state cache so tests start from clean state
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_window_title (self):
@@ -118,7 +122,7 @@ class TestMainWindow (unittest.TestCase):
     def test_menubar_has_four_menus (self):
         menus = self.window.menuBar().actions()
         texts = [a.text() for a in menus]
-        self.assertEqual(texts, ['File', 'Edit', 'Run', 'View'])
+        self.assertEqual(texts, ['File', 'Edit', 'Run', 'View', 'Help'])
 
     def test_menu_file_exists (self):
         self.assertIsNotNone(self.window.menu_file)
@@ -138,10 +142,10 @@ class TestMainWindow (unittest.TestCase):
         self.assertGreater(len(actions), 0)
 
     def test_menu_edit_empty (self):
-        self.assertEqual(len(self.window.menu_edit.actions()), 0)
+        self.assertGreater(len(self.window.menu_edit.actions()), 0)
 
     def test_menu_run_empty (self):
-        self.assertEqual(len(self.window.menu_run.actions()), 0)
+        self.assertGreater(len(self.window.menu_run.actions()), 0)
 
     def test_menu_view_has_zoom (self):
         # Phase 2: View menu has zoom actions

@@ -104,10 +104,14 @@ def _detect_monospace_font () -> str:
 
 
 def _init_font_defaults (settings) -> None:
-    """Initialize Settings font defaults based on platform."""
+    """Fill empty font family settings with platform-detected monospace.
+    Called after load() so detected values only replace empty strings
+    (e.g. from older JSON that didn't save font families)."""
     font = _detect_monospace_font()
-    settings.editor_font_family = font
-    settings.io_font_family = font
+    if not settings.editor_font_family:
+        settings.editor_font_family = font
+    if not settings.io_font_family:
+        settings.io_font_family = font
 
 
 def _ensure_dir (path:str) -> None:
@@ -1019,7 +1023,7 @@ class ProcessManager (QObject):
         self.busy = False
         self.mode = None  # 'compile' or 'test_run'
         self.target_tab = None
-        self._start_time = 0.0
+        self.start_time = 0.0
         self._peak_memory = 0
         self._memory_timer = None
         self._timeout_timer = None
@@ -1033,7 +1037,7 @@ class ProcessManager (QObject):
                        env:QProcessEnvironment, timeout:int=20):
         self.busy = True
         self.mode = 'compile'
-        self._start_time = time.time()
+        self.start_time = time.time()
         self._stderr_buffer = ''
         self._peak_memory = 0
         self._finished_emitted = False
@@ -1063,7 +1067,7 @@ class ProcessManager (QObject):
                         timeout:int=30):
         self.busy = True
         self.mode = 'test_run'
-        self._start_time = time.time()
+        self.start_time = time.time()
         self._peak_memory = 0
         self._stdin_data = stdin_data
         self._finished_emitted = False
@@ -1204,7 +1208,7 @@ class ProcessManager (QObject):
         if remaining_stderr and bytes(remaining_stderr):
             text = self._enc_mgr.decode_stderr(bytes(remaining_stderr))
             self.run_stderr_ready.emit(text)
-        elapsed = time.time() - self._start_time
+        elapsed = time.time() - self.start_time
         peak = self._peak_memory
         self._stop_memory_tracking()
         self._cleanup()
@@ -1226,7 +1230,7 @@ class ProcessManager (QObject):
             self.run_stderr_ready.emit(text)
         self._finished_emitted = True
         self._stop_timeout_timer()
-        elapsed = time.time() - self._start_time
+        elapsed = time.time() - self.start_time
         peak = self._peak_memory
         self.process.kill()
         self.run_finished.emit(-1, elapsed, peak, 'timeout', '')
@@ -1716,26 +1720,31 @@ class OutputPanel (QTextEdit):
 #----------------------------------------------------------------------
 _COMPILER_SEARCH_PATHS = [
     'C:\\MinGW\\bin\\g++.exe',
+    'C:\\MinGW\\bin\\gcc.exe',
     'C:\\TDM-GCC-64\\bin\\g++.exe',
+    'C:\\TDM-GCC-64\\bin\\gcc.exe',
     'C:\\Program Files\\Dev-Cpp\\MinGW64\\bin\\g++.exe',
+    'C:\\Program Files\\Dev-Cpp\\MinGW64\\bin\\gcc.exe',
     'C:\\Program Files (x86)\\Dev-Cpp\\MinGW64\\bin\\g++.exe',
+    'C:\\Program Files (x86)\\Dev-Cpp\\MinGW64\\bin\\gcc.exe',
     'C:\\msys64\\mingw64\\bin\\g++.exe',
+    'C:\\msys64\\mingw64\\bin\\gcc.exe',
 ]
 
 
 def _auto_detect_compiler () -> str:
-    """Search common MinGW paths and PATH for g++. Returns path or ''."""
+    """Search common MinGW paths and PATH for g++/gcc. Returns path or ''."""
     if sys.platform == 'win32':
         for path in _COMPILER_SEARCH_PATHS:
             if os.path.exists(path):
                 return path
-    # Check PATH
+    # Check PATH — prefer g++, fallback to gcc
+    ext = '.exe' if sys.platform == 'win32' else ''
     for dir_name in os.environ.get('PATH', '').split(os.pathsep):
-        candidate = os.path.join(dir_name, 'g++')
-        if sys.platform == 'win32':
-            candidate += '.exe'
-        if os.path.exists(candidate):
-            return candidate
+        for name in ('g++', 'gcc'):
+            candidate = os.path.join(dir_name, name + ext)
+            if os.path.exists(candidate):
+                return candidate
     return ''
 
 
@@ -1900,6 +1909,10 @@ class SettingsDialog (QDialog):
         row.addWidget(self.spin_indent_size)
         layout.addLayout(row)
 
+        # Word wrap
+        self.chk_word_wrap = QCheckBox('Word Wrap')
+        layout.addWidget(self.chk_word_wrap)
+
         layout.addStretch()
         self.tab_widget.addTab(page, 'Editor')
 
@@ -1942,6 +1955,7 @@ class SettingsDialog (QDialog):
         else:
             self.combo_indent_style.setCurrentIndex(1)
         self.spin_indent_size.setValue(c.indent_size)
+        self.chk_word_wrap.setChecked(c.word_wrap)
         # Update template editor tab width based on indent_size
         self._update_template_tab_width(c.indent_size)
         self.edit_template.setPlainText(c.template_text)
@@ -2053,6 +2067,7 @@ class SettingsDialog (QDialog):
         c.bracket_completion = self.chk_bracket.isChecked()
         c.indent_style = 'tab' if self.combo_indent_style.currentIndex() == 0 else 'space'
         c.indent_size = self.spin_indent_size.value()
+        c.word_wrap = self.chk_word_wrap.isChecked()
         c.template_text = self.edit_template.toPlainText()
 
         # Check if compiler-related settings changed → update mtime
@@ -2079,6 +2094,7 @@ class MainWindow (QMainWindow):
         super().__init__()
         if settings is None:
             settings = Settings()
+            settings.load()
             _init_font_defaults(settings)
         self.settings = settings
         self.setWindowTitle('CodeRunner')
@@ -2114,6 +2130,10 @@ class MainWindow (QMainWindow):
         editor_font.setPointSize(self.settings.editor_font_size)
         self.editor.setFont(editor_font)
         self.editor.updateFontMetrics()
+        # Apply word wrap from settings
+        wrap_mode = QTextEdit.WidgetWidth if self.settings.word_wrap \
+            else QTextEdit.NoWrap
+        self.editor.setLineWrapMode(wrap_mode)
 
         io_font = self.input_panel.font()
         io_font.setFamily(self.settings.io_font_family)
@@ -2391,7 +2411,7 @@ class MainWindow (QMainWindow):
         # Help actions
         self.act_about.triggered.connect(self._action_about)
 
-        # Settings (placeholder until Phase 6)
+        # Settings
         self.act_settings.triggered.connect(self._action_settings)
 
         # Tabbar signals
@@ -2672,6 +2692,10 @@ class MainWindow (QMainWindow):
         self.editor.updateFontMetrics()
         # Bracket completion
         self.editor.set_bracket_completion(s.bracket_completion)
+        # Word wrap
+        wrap_mode = QTextEdit.WidgetWidth if s.word_wrap \
+            else QTextEdit.NoWrap
+        self.editor.setLineWrapMode(wrap_mode)
         # Indent style and size
         self.editor.indent_style = s.indent_style
         self.editor.indent_size = s.indent_size
@@ -2680,8 +2704,6 @@ class MainWindow (QMainWindow):
         tab = self.tab_manager.get_current()
         if tab:
             tab.editor_doc.setDefaultFont(self.editor.font())
-            tab.editor_doc.setDocumentLayout(
-                tab.editor_doc.documentLayout())
         # IO fonts
         io_font = self.input_panel.font()
         io_font.setFamily(s.io_font_family)
@@ -2728,7 +2750,9 @@ class MainWindow (QMainWindow):
         if tab.is_new or not tab.file_path:
             return ''
         base = os.path.splitext(tab.file_path)[0]
-        return base + '.exe'
+        if sys.platform == 'win32':
+            return base + '.exe'
+        return base
 
     def _build_compile_command (self, tab:TabData) -> list:
         """Construct the compile command list."""
@@ -2752,9 +2776,7 @@ class MainWindow (QMainWindow):
     def _make_process_env (self) -> QProcessEnvironment:
         """Build QProcessEnvironment from system env + user env_vars.
         If compiler_path contains a directory component, prepend it to PATH."""
-        env = QProcessEnvironment()
-        for key in os.environ:
-            env.insert(key, os.environ[key])
+        env = QProcessEnvironment.systemEnvironment()
         # Prepend compiler bin dir to PATH
         _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
         if bin_dir:
@@ -2856,7 +2878,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Failed to start compiler')
         elif reason == 'timeout':
-            elapsed = time.time() - self.proc_mgr._start_time
+            elapsed = time.time() - self.proc_mgr.start_time
             _output_clear(tab.output_doc)
             _output_append(
                 tab.output_doc,
@@ -2867,7 +2889,8 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Compilation timeout')
         elif reason == 'killed':
-            elapsed = time.time() - self.proc_mgr._start_time
+            elapsed = time.time() - self.proc_mgr.start_time
+            _output_clear(tab.output_doc)
             _output_append(
                 tab.output_doc,
                 'Compilation stopped in {:.3}s\n'.format(elapsed),
@@ -2884,7 +2907,7 @@ class MainWindow (QMainWindow):
         else:
             # Compile succeeded — check intent
             if self._flow_intent == 'build':
-                elapsed = time.time() - self.proc_mgr._start_time
+                elapsed = time.time() - self.proc_mgr.start_time
                 _output_clear(tab.output_doc)
                 _output_append(
                     tab.output_doc,
@@ -2896,6 +2919,12 @@ class MainWindow (QMainWindow):
                 self._set_flow_state(_FLOW_RUNNING)
                 self._start_test_run(tab)
             elif self._flow_intent == 'run':
+                elapsed = time.time() - self.proc_mgr.start_time
+                _output_clear(tab.output_doc)
+                _output_append(
+                    tab.output_doc,
+                    'Build OK in {:.3}s\n'.format(elapsed),
+                    QColor(128, 128, 128))
                 self._launch_terminal(tab)
                 self._set_flow_state(_FLOW_IDLE)
                 self.status_message.setText('Running in terminal')
@@ -3280,6 +3309,10 @@ class MainWindow (QMainWindow):
     #----- Window close -----
 
     def closeEvent (self, event):
+        # Kill any running process before closing
+        if self.proc_mgr.busy:
+            self.proc_mgr.kill_process()
+
         # Save window state before closing
         self._save_window_state()
 
@@ -3562,8 +3595,8 @@ def main ():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     settings = Settings()
-    _init_font_defaults(settings)
     settings.load()  # Load from ~/.config/coderunner/settings.json
+    _init_font_defaults(settings)  # Fill empty font families with detected values
     window = MainWindow(settings)
     window.show()
     sys.exit(app.exec_())

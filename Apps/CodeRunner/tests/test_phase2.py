@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from CodeRunner import (
     Settings, TabData, TabManager, CppHighlighter,
     CodeEditor, InputPanel, OutputPanel, MainWindow,
-    _init_font_defaults, _detect_encoding, _read_file
+    _init_font_defaults, _detect_encoding, _read_file,
+    _window_state_path
 )
 
 
@@ -267,6 +268,9 @@ class TestCodeEditor (unittest.TestCase):
 class TestTabManager (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_initial_state (self):
@@ -368,8 +372,8 @@ class TestSettingsPhase2 (unittest.TestCase):
     def test_defaults (self):
         s = Settings()
         _init_font_defaults(s)
-        self.assertEqual(s.compiler_path, 'g++')
-        self.assertEqual(s.compiler_flags, '-std=c++14')
+        self.assertEqual(s.compiler_path, 'gcc')
+        self.assertEqual(s.compiler_flags, '')
         self.assertEqual(s.env_vars, {})
         self.assertEqual(s.run_timeout, 10)
         self.assertEqual(s.compile_timeout, 20)
@@ -392,6 +396,9 @@ class TestSettingsPhase2 (unittest.TestCase):
 class TestMainWindowTabOps (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_switch_to_tab (self):
@@ -495,6 +502,9 @@ class _MockCloseEvent:
 class TestCloseTabStateFix (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_close_current_tab_preserves_remaining_state (self):
@@ -548,6 +558,9 @@ class TestCloseTabStateFix (unittest.TestCase):
 class TestCloseEventSignalDisconnect (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_close_event_disconnects_all_signals (self):
@@ -578,6 +591,9 @@ class TestCloseEventSignalDisconnect (unittest.TestCase):
 class TestSaveAsDelegation (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_save_as_delegates_to_save (self):

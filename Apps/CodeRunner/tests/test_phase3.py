@@ -34,7 +34,7 @@ from CodeRunner import (
     Settings, _SETTINGS_DEFAULTS, TabData, TabManager,
     CodeEditor, MainWindow, _init_font_defaults,
     _dpi_factor, _ICON_BASE, _create_toolbar_icons,
-    _detect_encoding, _read_file
+    _detect_encoding, _read_file, _window_state_path
 )
 
 
@@ -60,7 +60,7 @@ class TestSettingsInstance (unittest.TestCase):
         s2 = Settings()
         s1.compiler_path = 'clang++'
         self.assertEqual(s1.compiler_path, 'clang++')
-        self.assertEqual(s2.compiler_path, 'g++')
+        self.assertEqual(s2.compiler_path, 'gcc')
 
     def test_copy_creates_independent_instance (self):
         s = Settings()
@@ -73,7 +73,7 @@ class TestSettingsInstance (unittest.TestCase):
         # Modify copy — original unaffected
         s2.compiler_path = 'clang++'
         s2.editor_font_size = 14
-        self.assertEqual(s.compiler_path, 'g++')
+        self.assertEqual(s.compiler_path, 'gcc')
         self.assertEqual(s.editor_font_size, 11)
 
     def test_copy_deep_copies_env_vars (self):
@@ -103,7 +103,7 @@ class TestSettingsInstance (unittest.TestCase):
         self.assertEqual(s.compiler_path, 'clang++')
         self.assertEqual(s.editor_font_size, 14)
         # Non-customized values use custom dict
-        self.assertEqual(s.compiler_flags, '-std=c++14')
+        self.assertEqual(s.compiler_flags, '')
 
     def test_init_font_defaults_modifies_instance (self):
         s = Settings()
@@ -214,6 +214,9 @@ class TestTabManagerPureData (unittest.TestCase):
 class TestMainWindowTabOps (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_switch_to_tab_updates_document (self):
@@ -310,7 +313,7 @@ class TestMainWindowTabOps (unittest.TestCase):
     def test_settings_reference (self):
         w = self.window
         self.assertIsInstance(w.settings, Settings)
-        self.assertEqual(w.settings.compiler_path, 'g++')
+        self.assertTrue(len(w.settings.compiler_path) > 0)
 
 
 #----------------------------------------------------------------------
@@ -401,6 +404,9 @@ class TestDPIFactor (unittest.TestCase):
 class TestMainWindowIntegration (unittest.TestCase):
 
     def setUp (self):
+        wpath = _window_state_path()
+        if os.path.exists(wpath):
+            os.unlink(wpath)
         self.window = MainWindow()
 
     def test_new_tab_uses_settings_template (self):
