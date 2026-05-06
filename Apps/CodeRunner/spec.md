@@ -453,9 +453,9 @@ QMessageBox："Save Changes?" — "File '{filename}' has unsaved changes." — S
 
 **Close Tab**（_handle_close_tab）：dirty 时弹确认对话框 → 断 modificationChanged 信号 → 移除 tabbar → remove_tab → 调整零标签或切换。
 
-**拖放打开**：MainWindow `setAcceptDrops(True)`，dragEnterEvent 检查 MIME URLs 后缀为 .cpp/.c/.cc/.cxx/.h/.hpp，dropEvent 执行 Open 流程。
+**拖放打开**：MainWindow `setAcceptDrops(True)`，dragEnterEvent 检查 MIME URLs 后缀匹配 `_SOURCE_EXTENSIONS`（`.cpp/.c/.cc/.cxx/.h/.hpp/.hh`）。CodeEditor/InputPanel/OutputPanel 的 dragEnterEvent/dragMoveEvent/dropEvent 遇到 URL 拖放时 ignore，让事件传播到 MainWindow 处理；纯文本拖放则交给 QTextEdit 默认行为。Menu Open 和 drag-drop 共用 `_open_file_path()`，重复文件检测逻辑统一生效。
 
-**Recent Files**：File 菜单 Recent Files 子菜单（QMenu），最多 10 条按时间倒序。点击已删除文件弹 QMessageBox "File not found" 并从列表移除。_action_open 和 drag-drop 打开时自动调用 `_add_recent_file()`。
+**Recent Files**：File 菜单 Recent Files 子菜单（QMenu），最多 10 条按时间倒序。点击已删除文件弹 QMessageBox "File not found" 并从列表移除。`_open_file_path(add_recent=True)` 自动调用 `_add_recent_file()`。
 
 ## 8. UI 细节
 
@@ -541,3 +541,5 @@ def main():
 | 2026/05/07 | 模板编辑器自动缩进 | eventFilter 处理 Enter 键，遵从缩进风格设置 |
 | 2026/05/07 | 默认编译器改为 gcc + compiler_flags 留空 | 兼顾 C 和 C++ 学生：gcc 从扩展名自动识别语言模式，-lstdc++ 覆盖 C++ 链接需求，C 学生零配置即可使用 |
 | 2026/05/07 | Qt message handler 过滤无害警告 | 首次运行 Open 文件时 QMenu 在窗口完全可见前 grab mouse 产生 `setMouseGrabEnabled` 警告，属于 Qt Windows 平台已知问题 |
+| 2026/05/07 | Open 与 drag-drop 合并为 `_open_file_path` | dropEvent 的 `continue` 只跳了内层循环导致重复 tab，抽取公共方法后重复检测逻辑统一生效 |
+| 2026/05/07 | 子组件 drag-drop 事件转发 MainWindow | CodeEditor/InputPanel/OutputPanel 默认 QTextEdit 会把文件拖放当文本插入，override drag 事件遇到 URL 时 ignore 让 MainWindow 处理 |

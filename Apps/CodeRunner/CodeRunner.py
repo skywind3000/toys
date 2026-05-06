@@ -567,6 +567,9 @@ def _ensure_cmd_file () -> str:
 
 
 #----------------------------------------------------------------------
+# Accepted source file extensions for Open / drag-drop
+_SOURCE_EXTENSIONS = ('.cpp', '.c', '.cc', '.cxx', '.h', '.hpp', '.hh')
+
 # Settings defaults
 #----------------------------------------------------------------------
 _SETTINGS_DEFAULTS = {
@@ -1273,6 +1276,27 @@ class LineNumberArea (QWidget):
 #----------------------------------------------------------------------
 class CodeEditor (QTextEdit):
 
+    def _is_file_drag (self, event) -> bool:
+        return event.mimeData().hasUrls()
+
+    def dragEnterEvent (self, event):
+        if self._is_file_drag(event):
+            event.ignore()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent (self, event):
+        if self._is_file_drag(event):
+            event.ignore()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent (self, event):
+        if self._is_file_drag(event):
+            event.ignore()
+        else:
+            super().dropEvent(event)
+
     _LINE_NUM_COLOR = QColor(120, 120, 120)
     _LINE_NUM_BG = QColor(235, 235, 235)
 
@@ -1589,6 +1613,24 @@ class CodeEditor (QTextEdit):
 #----------------------------------------------------------------------
 class InputPanel (QTextEdit):
 
+    def dragEnterEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dropEvent(event)
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
@@ -1633,6 +1675,24 @@ def _output_append (doc:QTextDocument, text:str, color:QColor=None):
 # OutputPanel
 #----------------------------------------------------------------------
 class OutputPanel (QTextEdit):
+
+    def dragEnterEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent (self, event):
+        if event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            super().dropEvent(event)
 
     def __init__ (self, parent=None):
         super().__init__(parent)
@@ -2375,28 +2435,23 @@ class MainWindow (QMainWindow):
         self.tabbar.addTab(tab.tab_name())
         self._switch_to_tab(index)
 
-    def _action_open (self):
-        start_dir = self._last_file_dir or os.path.expanduser('~')
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Open File', start_dir,
-            'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
-        if not path:
-            return
-        # Normalize path to avoid mismatch from slashes
+    def _open_file_path (self, path:str, add_recent:bool=True):
+        """Open a file by path. If already open, switch to that tab.
+        Returns True if a tab was opened/switched, False on error."""
         path = os.path.normpath(path)
-        # If file is already open, switch to that tab
         for i, t in enumerate(self.tab_manager.tabs):
             if not t.is_new and t.file_path and \
                     os.path.normpath(t.file_path) == path:
                 self._switch_to_tab(i)
-                return
+                return True
         try:
             content, encoding = _read_file(path)
         except (IOError, OSError) as e:
-            QMessageBox.warning(
-                self, 'Open Error',
-                'Failed to open file: {}'.format(e))
-            return
+            if add_recent:
+                QMessageBox.warning(
+                    self, 'Open Error',
+                    'Failed to open file: {}'.format(e))
+            return False
         tab = TabData(
             file_path=path, is_new=False,
             encoding=encoding, content=content,
@@ -2404,8 +2459,18 @@ class MainWindow (QMainWindow):
         index = self.tab_manager.add_tab(tab)
         self.tabbar.addTab(tab.tab_name())
         self._switch_to_tab(index)
-        self._last_file_dir = os.path.dirname(path)
-        self._add_recent_file(path)
+        if add_recent:
+            self._last_file_dir = os.path.dirname(path)
+            self._add_recent_file(path)
+        return True
+
+    def _action_open (self):
+        start_dir = self._last_file_dir or os.path.expanduser('~')
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Open File', start_dir,
+            'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
+        if path:
+            self._open_file_path(path)
 
     def _action_save (self):
         tab = self.tab_manager.get_current()
@@ -3454,12 +3519,8 @@ class MainWindow (QMainWindow):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
-                if path and (path.endswith('.cpp') or
-                             path.endswith('.c') or
-                             path.endswith('.cc') or
-                             path.endswith('.cxx') or
-                             path.endswith('.h') or
-                             path.endswith('.hpp')):
+                if path and any(path.endswith(ext)
+                                for ext in _SOURCE_EXTENSIONS):
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -3468,26 +3529,9 @@ class MainWindow (QMainWindow):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
-                if path:
-                    path = os.path.normpath(path)
-                    # If file is already open, switch to tab
-                    for i, t in enumerate(self.tab_manager.tabs):
-                        if not t.is_new and t.file_path and \
-                                os.path.normpath(t.file_path) == path:
-                            self._switch_to_tab(i)
-                            continue
-                    try:
-                        content, encoding = _read_file(path)
-                    except (IOError, OSError):
-                        continue
-                    tab = TabData(
-                        file_path=path, is_new=False,
-                        encoding=encoding, content=content,
-                        dirty_callback=self._on_tab_dirty_changed)
-                    index = self.tab_manager.add_tab(tab)
-                    self.tabbar.addTab(tab.tab_name())
-                    self._switch_to_tab(index)
-                    self._add_recent_file(path)
+                if path and any(path.endswith(ext)
+                                for ext in _SOURCE_EXTENSIONS):
+                    self._open_file_path(path, add_recent=True)
         event.acceptProposedAction()
 
 
