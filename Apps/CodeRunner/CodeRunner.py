@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QInputDialog, QDialog, QTabWidget, QLineEdit,
     QSpinBox, QCheckBox, QFontComboBox, QTableWidget,
     QTableWidgetItem, QPushButton, QHBoxLayout,
-    QHeaderView, QPlainTextEdit as QPlainTextEditWidget
+    QHeaderView, QComboBox, QPlainTextEdit as QPlainTextEditWidget
 )
 from PyQt5.QtCore import (
     Qt, QSize, QPointF, QTimer, QRect, QRegularExpression,
@@ -1295,14 +1295,14 @@ class CodeEditor (QTextEdit):
         self._update_line_number_area_width()
 
     def _update_tab_width (self):
-        # Tab width = 4 characters. IMPORTANT: tab width (pixels) depends
-        # on the current font's char width. Whenever font/size changes
+        # Tab width = indent_size characters. IMPORTANT: tab width (pixels)
+        # depends on the current font's char width. Whenever font/size changes
         # (SettingsDialog, zoom), must call updateFontMetrics() to
         # recalculate tab width and sync document.setDefaultFont().
         # Otherwise tab pixel value won't match new font, causing wrong
         # visual width (e.g. 4-char tab appearing as 5 chars).
         self.setTabStopWidth(
-            self.fontMetrics().horizontalAdvance('x') * 4)
+            self.fontMetrics().horizontalAdvance('x') * self.indent_size)
 
     def _line_number_width (self) -> int:
         digits = 1
@@ -1715,6 +1715,9 @@ class SettingsDialog (QDialog):
 
         self.btn_ok.clicked.connect(self.__on_ok)
         self.btn_cancel.clicked.connect(self.reject)
+        # Live update template tab width when indent_size changes
+        self.spin_indent_size.valueChanged.connect(
+            self._update_template_tab_width)
 
     def __build_compiler_page (self):
         page = QWidget()
@@ -1725,6 +1728,9 @@ class SettingsDialog (QDialog):
         row.addWidget(QLabel('Compiler Path:'))
         self.edit_compiler_path = QLineEdit()
         row.addWidget(self.edit_compiler_path)
+        self.btn_browse_compiler = QPushButton('Browse...')
+        self.btn_browse_compiler.clicked.connect(self.__on_browse_compiler)
+        row.addWidget(self.btn_browse_compiler)
         self.btn_auto_detect = QPushButton('Auto Detect')
         self.btn_auto_detect.clicked.connect(self.__on_auto_detect)
         row.addWidget(self.btn_auto_detect)
@@ -1816,6 +1822,23 @@ class SettingsDialog (QDialog):
         self.chk_bracket = QCheckBox('Bracket Completion')
         layout.addWidget(self.chk_bracket)
 
+        # Indent style
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Indent Style:'))
+        self.combo_indent_style = QComboBox()
+        self.combo_indent_style.addItem('Tab')
+        self.combo_indent_style.addItem('Space')
+        row.addWidget(self.combo_indent_style)
+        layout.addLayout(row)
+
+        # Indent size (tab width / spaces per indent level)
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Tab Width:'))
+        self.spin_indent_size = QSpinBox()
+        self.spin_indent_size.setRange(2, 16)
+        row.addWidget(self.spin_indent_size)
+        layout.addLayout(row)
+
         layout.addStretch()
         self.tab_widget.addTab(page, 'Editor')
 
@@ -1825,6 +1848,9 @@ class SettingsDialog (QDialog):
 
         layout.addWidget(QLabel('New File Template:'))
         self.edit_template = QPlainTextEditWidget()
+        self.edit_template.setTabStopWidth(
+            self.edit_template.fontMetrics().horizontalAdvance('x') * 4)
+        self.edit_template.installEventFilter(self)
         layout.addWidget(self.edit_template)
 
         row = QHBoxLayout()
@@ -1850,6 +1876,13 @@ class SettingsDialog (QDialog):
             QFontDatabase().font(c.io_font_family, '', 10))
         self.spin_io_size.setValue(c.io_font_size)
         self.chk_bracket.setChecked(c.bracket_completion)
+        if c.indent_style == 'tab':
+            self.combo_indent_style.setCurrentIndex(0)
+        else:
+            self.combo_indent_style.setCurrentIndex(1)
+        self.spin_indent_size.setValue(c.indent_size)
+        # Update template editor tab width based on indent_size
+        self._update_template_tab_width(c.indent_size)
         self.edit_template.setPlainText(c.template_text)
 
         # Populate env vars table
@@ -1877,6 +1910,56 @@ class SettingsDialog (QDialog):
             QMessageBox.information(
                 self, 'Auto Detect',
                 'No g++ compiler found in common paths or PATH.')
+
+    def __on_browse_compiler (self):
+        start_dir = ''
+        current = self.edit_compiler_path.text().strip()
+        if current and os.path.isabs(current):
+            start_dir = os.path.dirname(current)
+        elif current:
+            base = os.path.dirname(os.path.abspath(__file__))
+            resolved = os.path.abspath(os.path.join(base, current))
+            if os.path.exists(os.path.dirname(resolved)):
+                start_dir = os.path.dirname(resolved)
+        if not start_dir:
+            start_dir = os.environ.get('PROGRAMFILES', 'C:\\')
+        filter_str = 'Executables (*.exe);;All Files (*)'
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Compiler', start_dir, filter_str)
+        if path:
+            self.edit_compiler_path.setText(path)
+
+    def _update_template_tab_width (self, size=None):
+        """Update template editor tab width to match indent_size."""
+        if size is None:
+            size = self.spin_indent_size.value()
+        self.edit_template.setTabStopWidth(
+            self.edit_template.fontMetrics().horizontalAdvance('x') * size)
+
+    def eventFilter (self, obj, event):
+        """Event filter for template editor: auto indent on Enter."""
+        if obj is self.edit_template and event.type() == event.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                cursor = self.edit_template.textCursor()
+                # Get current line's leading whitespace
+                line = cursor.block().text()
+                leading = ''
+                for ch in line:
+                    if ch in (' ', '\t'):
+                        leading += ch
+                    else:
+                        break
+                # Add extra indent if line ends with '{'
+                stripped = line.rstrip()
+                if stripped.endswith('{'):
+                    if self.combo_indent_style.currentIndex() == 0:
+                        leading += '\t'
+                    else:
+                        leading += ' ' * self.spin_indent_size.value()
+                # Insert newline + leading whitespace
+                cursor.insertText('\n' + leading)
+                return True
+        return super().eventFilter(obj, event)
 
     def __on_reset_template (self):
         self.edit_template.setPlainText(_SETTINGS_DEFAULTS['template_text'])
@@ -1907,6 +1990,8 @@ class SettingsDialog (QDialog):
         c.io_font_family = self.combo_io_font.currentFont().family()
         c.io_font_size = self.spin_io_size.value()
         c.bracket_completion = self.chk_bracket.isChecked()
+        c.indent_style = 'tab' if self.combo_indent_style.currentIndex() == 0 else 'space'
+        c.indent_size = self.spin_indent_size.value()
         c.template_text = self.edit_template.toPlainText()
 
         # Check if compiler-related settings changed → update mtime
@@ -1975,7 +2060,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setFont(io_font)
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
-            self.input_panel.fontMetrics().horizontalAdvance('x') * 4)
+            self.input_panel.fontMetrics().horizontalAdvance('x') * self.settings.indent_size)
 
         # Create standalone placeholder docs for zero-tab state
         self.empty_editor_doc = QTextDocument(self)
@@ -2521,6 +2606,10 @@ class MainWindow (QMainWindow):
         self.editor.updateFontMetrics()
         # Bracket completion
         self.editor.set_bracket_completion(s.bracket_completion)
+        # Indent style and size
+        self.editor.indent_style = s.indent_style
+        self.editor.indent_size = s.indent_size
+        self.editor._update_tab_width()
         # Sync document default font for current tab
         tab = self.tab_manager.get_current()
         if tab:
@@ -2534,7 +2623,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setFont(io_font)
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
-            self.input_panel.fontMetrics().horizontalAdvance('x') * 4)
+            self.input_panel.fontMetrics().horizontalAdvance('x') * s.indent_size)
         if tab:
             tab.input_doc.setDefaultFont(self.input_panel.font())
             tab.output_doc.setDefaultFont(self.output_panel.font())
@@ -2591,6 +2680,7 @@ class MainWindow (QMainWindow):
         command.append(source_path)
         command.append('-o')
         command.append(exe_path)
+        command.append('-lstdc++')
         return command
 
     def _make_process_env (self) -> QProcessEnvironment:
@@ -2772,6 +2862,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText('Failed to start program')
         elif reason == 'timeout':
+            _output_append(tab.output_doc, '\n', QColor(Qt.red))
             _output_append(
                 tab.output_doc,
                 'Timeout after {} seconds (ran {:.3}s)\n'.format(
@@ -2784,6 +2875,7 @@ class MainWindow (QMainWindow):
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
+                _output_append(tab.output_doc, '\n', QColor(Qt.red))
                 _output_append(
                     tab.output_doc,
                     'Program crashed: {} (exit code {})\n'.format(
@@ -2792,6 +2884,7 @@ class MainWindow (QMainWindow):
                 self.status_message.setText(
                     'Program crashed: {}'.format(detail))
             else:
+                _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
                 _output_append(tab.output_doc,
                                'Process stopped in {:.3}s\n'.format(elapsed),
                                QColor(128, 128, 128))
@@ -2799,6 +2892,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
+            _output_append(tab.output_doc, '\n', QColor(Qt.red))
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
             if detail:
                 line = 'Runtime Error: {} (exit code {})\n'.format(
@@ -2814,6 +2908,7 @@ class MainWindow (QMainWindow):
             if peak_memory > 0:
                 mem_mb = peak_memory / (1024 * 1024)
                 mem_str = ', {:.1f}MB'.format(mem_mb)
+            _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
             line = 'exit with code {} in {:.3}s{}\n'.format(
                 exit_code, elapsed, mem_str)
             _output_append(tab.output_doc, line, QColor(128, 128, 128))

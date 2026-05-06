@@ -593,6 +593,8 @@ def build_flags(source_encoding):
     return flags
 ```
 
+**编译命令结构**：`_build_compile_command` 生成的完整命令为：`[resolved_compiler] [编码flags] [用户compiler_flags] source -o exe -lstdc++`。末尾固定追加 `-lstdc++` 确保即使误选 gcc 也能链接 C++ 标准库。
+
 **I/O 编码转换**（Test 模式）：
 - InputPanel → stdin：`text.encode(platform_charset)` 转为 bytes 写入 QProcess stdin
 - stdout → OutputPanel：QProcess stdout bytes → `bytes.decode(platform_charset, 'replace')` 转为 str 显示
@@ -650,7 +652,8 @@ def build_flags(source_encoding):
 模态 QDialog，底部 OK / Cancel 按钮。使用 QTabWidget 分三个页：
 
 **Compiler 页**：
-- 编译器路径：QLineEdit + "Auto Detect" 按钮
+- 编译器路径：QLineEdit + "Browse..." 按钮 + "Auto Detect" 按钮
+  - Browse 按钮：弹出 QFileDialog 选择 g++ 可执行文件（过滤器 `*.exe` + `*`），起始目录根据当前输入路径智能选择（绝对路径取其目录，相对路径基于 CodeRunner.py 目录 resolve，空则取 ProgramFiles）
   - Auto Detect 逻辑：依次检查以下路径是否存在 g++/gcc 可执行文件：
     - `C:\MinGW\bin\g++.exe`、`C:\TDM-GCC-64\bin\g++.exe`、`C:\Program Files\Dev-Cpp\MinGW64\bin\g++.exe`
     - `C:\Program Files (x86)\Dev-Cpp\MinGW64\bin\g++.exe`、`C:\msys64\mingw64\bin\g++.exe`
@@ -668,9 +671,11 @@ def build_flags(source_encoding):
 - IO 面板字体：QFontComboBox
 - IO 面板字号：QSpinBox（范围 6-72，默认 11）
 - 括号补全：QCheckBox（默认勾选）
+- 缩进风格：QComboBox（Tab / Space，默认 Tab）
+- Tab 宽度：QSpinBox（范围 2-16，默认 4）。Tab 宽度同时控制 Tab 制表符的视觉宽度（CodeEditor 和 InputPanel 的 tabStopWidth）和空格缩进的步长（indent_size）。模板编辑器也同步使用此设置
 
 **Template 页**：
-- QPlainTextEdit，多行编辑模板文本
+- QPlainTextEdit，多行编辑模板文本，tabStopWidth 实时跟随 Editor 页的 Tab Width 设置（通过 `spin_indent_size.valueChanged` 信号联动）
 - 右侧 "Reset to Default" 按钮，恢复默认 C++ 骨架
 
 OK 按钮点击后：验证数据 → 调用 `settings.apply_from(copy)` 合并更改 → 写入 JSON → 如果 compiler_path、compiler_flags 或 env_vars 变化则更新 compiler_mtime。Cancel 按钮点击后：丢弃 `copy` 临时副本，原 `settings` 不受影响
@@ -781,3 +786,8 @@ def main():
 | Recent Files 子菜单 | 2026/05/06 | File 菜单增加 Recent Files 子菜单（QMenu），最多 10 条按时间倒序。点击已删除文件弹 QMessageBox "File not found" 并从列表移除。`_action_open` 和 drag-drop 打开文件时自动调用 `_add_recent_file()` |
 | 工具链 PATH 自动注入 | 2026/05/07 | 当 `compiler_path` 含路径时（绝对路径或相对路径），自动将编译器所在目录 prepend 到 PATH，确保 g++ 能找到同目录的工具链组件、编译产物能找到 libstdc++-6.dll 等动态库。实现方式：`_resolve_compiler_path()` 函数解析三种路径类型（裸名、绝对路径、相对路径），返回 `(resolved_path, bin_dir)` 元组；`_make_process_env()` 在 `bin_dir` 非空时 prepend 到 PATH 前端；编译和 Test 运行均使用此环境；Run 外部终端通过临时修改 `os.environ['CR_PATH_PREFIX']` 传递 prepend 目录，`coderunner.cmd` 中 `set PATH=%CR_PATH_PREFIX%;%PATH%` 注入。不修改 CodeRunner 主进程 PATH，每个子进程通过 QProcessEnvironment 获得干净独立的 PATH |
 | Drag-drop 打开文件 | 2026/05/06 | MainWindow 设置 `setAcceptDrops(True)`，`dragEnterEvent` 检查 MIME URLs 的后缀为 .cpp/.c/.cc/.cxx/.h/.hpp，`dropEvent` 执行 Open 流程（已有标签则切换，否则新建标签）。已在 `_load_window_state` 恢复的标签不会重复打开 |
+| 运行结果行前换行 | 2026/05/07 | 程序输出不以 `\n` 结尾时（如 `printf("0")`），退出状态行/运行错误/超时/进程停止等信息直接接在输出末尾，显示为 "0exit with code 0..."。改为所有运行结果行（exit with code、Runtime Error、Timeout、Process stopped、Program crashed）前追加 `\n`，确保与程序输出之间有换行分隔 |
+| 编译命令加 -lstdc++ | 2026/05/07 | 编译命令末尾追加 `-lstdc++`，确保即使学生误选 gcc（而非 g++）作为编译器也能正常链接 C++ 标准库。g++ 本身隐含 `-lstdc++`，显式添加不会产生副作用 |
+| Settings 浏览按钮 | 2026/05/07 | Compiler 页增加 "Browse..." 按钮，弹出 QFileDialog 选择 g++ 可执行文件。起始目录智能定位：绝对路径取其目录，相对路径先 resolve 后取目录，空则取 ProgramFiles |
+| Settings 缩进选项 | 2026/05/07 | Editor 页增加缩进风格 QComboBox（Tab/Space）和 Tab Width QSpinBox（2-16）。CodeEditor 和 InputPanel 的 tabStopWidth、CodeEditor 的 indent_style/indent_size 均跟随此设置动态更新 |
+| 模板编辑器自动缩进 | 2026/05/07 | SettingsDialog Template 页的 QPlainTextEdit 安装 eventFilter 处理 Enter 键：复制当前行前导空白到新行，行末 `{` 时增加一级缩进（Tab 模式插入 `\t`，Space 模式插入 `indent_size` 个空格）。Tab 宽度实时跟随 Editor 页 Tab Width 设置 |
