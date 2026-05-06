@@ -225,7 +225,7 @@ def _read_file (path:str) -> tuple:
 #----------------------------------------------------------------------
 # EncodingManager
 #----------------------------------------------------------------------
-class EncodingManager (object):
+class EncodingManager:
     """Encoding detection, compilation flags, and I/O conversion."""
 
     @staticmethod
@@ -842,7 +842,6 @@ class ProcessManager (QObject):
             self._cleanup()
             self._finished_emitted = True
             self.compile_finished.emit(-1, err_msg, 'failed_to_start')
-            return
 
     def start_test_run (self, exe_path:str, work_dir:str,
                         env:QProcessEnvironment, stdin_data:bytes,
@@ -876,7 +875,6 @@ class ProcessManager (QObject):
             self._finished_emitted = True
             self.run_finished.emit(-1, 0, 0, 'failed_to_start',
                                    err_msg)  # error_detail: QProcess error
-            return
 
     def kill_process (self):
         """Kill current process. finished signal will arrive with reason='killed'."""
@@ -1245,7 +1243,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
             return
 
         # Enter key — auto indent
-        if key == Qt.Key_Return or key == Qt.Key_Enter:
+        if key in (Qt.Key_Return, Qt.Key_Enter):
             self._handle_enter_key()
             return
 
@@ -1337,7 +1335,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         if self._bracket_completion_enabled:
             pos = cursor.position()
             doc = self.document()
-            if pos > 0 and pos < doc.characterCount():
+            if 0 < pos < doc.characterCount():
                 char_before = doc.characterAt(pos - 1)
                 char_after = doc.characterAt(pos)
                 if char_before in self._BRACKET_OPEN:
@@ -1465,9 +1463,9 @@ class OutputPanel (FileDragMixin, QTextEdit):
         super().setDocument(doc)
 
     def keyPressEvent (self, event):
-        if event.matches(QKeySequence.Copy) or \
-                (event.key() == Qt.Key_Insert and
-                 event.modifiers() == Qt.ControlModifier):
+        if (event.matches(QKeySequence.Copy)
+                or (event.key() == Qt.Key_Insert
+                    and event.modifiers() == Qt.ControlModifier)):
             self.copy()
             return
         # END key: re-enter auto-scroll mode (mark current tab for scroll)
@@ -1841,9 +1839,9 @@ class SettingsDialog (QDialog):
         # Check if compiler-related settings changed → update mtime
         old = self._original
         compiler_changed = (
-            old.compiler_path != c.compiler_path or
-            old.compiler_flags != c.compiler_flags or
-            old.env_vars != c.env_vars)
+            old.compiler_path != c.compiler_path
+            or old.compiler_flags != c.compiler_flags
+            or old.env_vars != c.env_vars)
         if compiler_changed:
             c.compiler_mtime = time.time()
 
@@ -2450,8 +2448,7 @@ class MainWindow (QMainWindow):
         # If compiler-related settings changed, invalidate all tab mtime
         if hasattr(s, 'compiler_mtime') and s.compiler_mtime > 0:
             for t in self.tab_manager.tabs:
-                if t.compiler_mtime < s.compiler_mtime:
-                    t.compiler_mtime = s.compiler_mtime
+                t.compiler_mtime = max(t.compiler_mtime, s.compiler_mtime)
         # Editor font
         editor_font = self.editor.font()
         editor_font.setFamily(s.editor_font_family)
@@ -2484,8 +2481,9 @@ class MainWindow (QMainWindow):
             tab.input_doc.setDefaultFont(self.input_panel.font())
             tab.output_doc.setDefaultFont(self.output_panel.font())
         # Update IO section labels
-        for section, panel in [(self.input_section, self.input_panel),
-                               (self.output_section, self.output_panel)]:
+        for section, _panel in [
+                (self.input_section, self.input_panel),
+                (self.output_section, self.output_panel)]:
             label = section._section_label
             lbl_font = label.font()
             lbl_font.setFamily(s.io_font_family)
@@ -2890,7 +2888,7 @@ class MainWindow (QMainWindow):
         old_index = tm.current_index
 
         # Save old tab state
-        if old_index >= 0 and old_index < len(tm.tabs):
+        if 0 <= old_index < len(tm.tabs):
             old_tab = tm.tabs[old_index]
             old_tab.cursor = self.editor.textCursor()
             old_tab.scroll_pos = self.editor.verticalScrollBar().value()
@@ -3127,7 +3125,7 @@ class MainWindow (QMainWindow):
     def _on_tabbar_current_changed (self, index:int):
         if self._tab_switching:
             return
-        if index >= 0 and index < len(self.tab_manager.tabs):
+        if 0 <= index < len(self.tab_manager.tabs):
             self._switch_to_tab(index)
 
     def _on_tab_close_requested (self, index:int):
@@ -3248,8 +3246,8 @@ class MainWindow (QMainWindow):
             tab.input_cursor = self.input_panel.textCursor()
             tab.input_scroll = self.input_panel.verticalScrollBar().value()
         # Use normalGeometry to avoid saving maximized/fullscreen coordinates
-        geo = self.normalGeometry() if self.isMaximized() \
-              else self.geometry()
+        geo = (self.normalGeometry() if self.isMaximized()
+               else self.geometry())
         # Clamp to ensure title bar is visible on screen
         screen = QApplication.primaryScreen()
         min_y = 0
@@ -3374,7 +3372,7 @@ class MainWindow (QMainWindow):
             tab.compiler_mtime = self.settings.compiler_mtime
         # Restore active tab
         active = state.get('active_tab', -1)
-        if active >= 0 and active < len(self.tab_manager.tabs):
+        if 0 <= active < len(self.tab_manager.tabs):
             self._switch_to_tab(active)
         elif len(self.tab_manager.tabs) > 0:
             self._switch_to_tab(0)
