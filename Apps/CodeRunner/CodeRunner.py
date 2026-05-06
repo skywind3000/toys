@@ -378,7 +378,7 @@ class Settings:
 
     def __init__ (self, defaults:dict=None):
         src = defaults or _SETTINGS_DEFAULTS
-        for key, value in src.items():
+        for key, value in copy.deepcopy(src).items():
             setattr(self, key, value)
 
     def copy (self):
@@ -910,6 +910,7 @@ class ProcessManager (QObject):
             self.process = None
         self.busy = False
         self.mode = None
+        self.target_tab = None
         self._stdin_data = None
 
     def _stop_timeout_timer (self):
@@ -2175,6 +2176,7 @@ class MainWindow (QMainWindow):
             is_new=True, encoding='UTF-8',
             content=self.settings.template_text,
             dirty_callback=self._on_tab_dirty_changed)
+        tab.compiler_mtime = self.settings.compiler_mtime
         # Position cursor inside main() body (after first '{')
         cursor = QTextCursor(tab.editor_doc)
         search = tab.editor_doc.find('{', cursor)
@@ -2213,6 +2215,7 @@ class MainWindow (QMainWindow):
             file_path=path, is_new=False,
             encoding=encoding, content=content,
             dirty_callback=self._on_tab_dirty_changed)
+        tab.compiler_mtime = self.settings.compiler_mtime
         index = self.tab_manager.add_tab(tab)
         self.tabbar.addTab(tab.tab_name())
         self._switch_to_tab(index)
@@ -3368,6 +3371,7 @@ class MainWindow (QMainWindow):
                     entry.get('input_text', ''))
             self.tab_manager.add_tab(tab)
             self.tabbar.addTab(tab.tab_name())
+            tab.compiler_mtime = self.settings.compiler_mtime
         # Restore active tab
         active = state.get('active_tab', -1)
         if active >= 0 and active < len(self.tab_manager.tabs):
