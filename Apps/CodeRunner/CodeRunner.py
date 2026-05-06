@@ -652,8 +652,11 @@ class CppHighlighter (QSyntaxHighlighter):
         editor.setUpdatesEnabled(True)
         if block.isValid():
             self._batch_block_number += count
-            self._batch_timer = QTimer.singleShot(
-                0, self.__process_highlight_batch)
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.__process_highlight_batch)
+            timer.start(0)
+            self._batch_timer = timer
         else:
             self._batch_timer = None
             self._batch_editor = None
@@ -662,6 +665,7 @@ class CppHighlighter (QSyntaxHighlighter):
         """Cancel any in-progress batch highlighting."""
         if self._batch_timer is not None:
             self._batch_timer.stop()
+            self._batch_timer.timeout.disconnect(self.__process_highlight_batch)
             self._batch_timer = None
         self._batch_editor = None
         self._deferred = True
@@ -782,8 +786,9 @@ class ProcessManager (QObject):
     compile_finished = pyqtSignal(int, str, str)  # exit_code, stderr, reason
     run_stdout_ready = pyqtSignal(str)
     run_stderr_ready = pyqtSignal(str)
-    run_finished = pyqtSignal(int, float, int, str, str)  # exit_code, elapsed, peak, reason, stderr_text
+    run_finished = pyqtSignal(int, float, int, str, str)  # exit_code, elapsed, peak, reason, error_detail
     # reason: 'normal' / 'timeout' / 'killed' / 'failed_to_start'
+    # error_detail: only populated for 'failed_to_start' (QProcess error string)
 
     def __init__ (self, parent=None, settings=None):
         super().__init__(parent)
@@ -862,7 +867,7 @@ class ProcessManager (QObject):
             self._cleanup()
             self._finished_emitted = True
             self.run_finished.emit(-1, 0, 0, 'failed_to_start',
-                                   err_msg)
+                                   err_msg)  # error_detail: QProcess error
             return
 
     def kill_process (self):
@@ -981,7 +986,7 @@ class ProcessManager (QObject):
         peak = self._peak_memory
         self._stop_memory_tracking()
         self._cleanup()
-        self.run_finished.emit(exit_code, elapsed, peak, reason, '')
+        self.run_finished.emit(exit_code, elapsed, peak, reason, '')  # error_detail: unused
 
     def _on_run_timeout (self):
         if self._finished_emitted:
@@ -1002,7 +1007,7 @@ class ProcessManager (QObject):
         elapsed = time.time() - self.start_time
         peak = self._peak_memory
         self.process.kill()
-        self.run_finished.emit(-1, elapsed, peak, 'timeout', '')
+        self.run_finished.emit(-1, elapsed, peak, 'timeout', '')  # error_detail: unused
 
     #----- Memory tracking -----
 
@@ -1394,8 +1399,6 @@ class InputPanel (FileDragMixin, QTextEdit):
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
-        self.setTabStopWidth(
-            self.fontMetrics().horizontalAdvance('x') * 4)
 
     def setDocument (self, doc):
         doc.setDefaultFont(self.font())
@@ -1439,10 +1442,17 @@ class OutputPanel (FileDragMixin, QTextEdit):
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
+        self._auto_scroll = True
 
     def setDocument (self, doc):
         doc.setDefaultFont(self.font())
         super().setDocument(doc)
+
+    def scroll_to_bottom (self):
+        """Scroll output view to the bottom."""
+        if self._auto_scroll:
+            self.verticalScrollBar().setValue(
+                self.verticalScrollBar().maximum())
 
     def keyPressEvent (self, event):
         if event.matches(QKeySequence.Copy) or \
@@ -2530,6 +2540,11 @@ class MainWindow (QMainWindow):
                 count += 1
         return max(1, count) if stderr_text.strip() else 0
 
+    def _maybe_scroll_output (self, tab:TabData):
+        """Scroll output panel to bottom if tab is currently displayed."""
+        if tab is self.tab_manager.get_current():
+            self.output_panel.scroll_to_bottom()
+
     #----- ProcessManager signal handlers -----
 
     def _on_compile_finished (self, exit_code:int, stderr_text:str,
@@ -2557,6 +2572,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText(
                 'Failed to start compiler')
+            self._maybe_scroll_output(tab)
         elif reason == 'timeout':
             elapsed = time.time() - self.proc_mgr.start_time
             _output_clear(tab.output_doc)
@@ -2568,6 +2584,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText(
                 'Compilation timeout')
+            self._maybe_scroll_output(tab)
         elif reason == 'killed':
             elapsed = time.time() - self.proc_mgr.start_time
             _output_clear(tab.output_doc)
@@ -2577,6 +2594,7 @@ class MainWindow (QMainWindow):
                 QColor(128, 128, 128))
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText('Compilation stopped')
+            self._maybe_scroll_output(tab)
         elif exit_code != 0:
             _output_clear(tab.output_doc)
             _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
@@ -2584,6 +2602,7 @@ class MainWindow (QMainWindow):
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText(
                 'Build failed with {} error(s)'.format(n))
+            self._maybe_scroll_output(tab)
         else:
             # Compile succeeded — check intent
             if self._flow_intent == 'build':
@@ -2595,6 +2614,7 @@ class MainWindow (QMainWindow):
                     QColor(128, 128, 128))
                 self._set_flow_state(_FLOW_IDLE)
                 self.status_message.setText('Build successful')
+                self._maybe_scroll_output(tab)
             elif self._flow_intent == 'test':
                 self._set_flow_state(_FLOW_RUNNING)
                 self._start_test_run(tab)
@@ -2608,19 +2628,24 @@ class MainWindow (QMainWindow):
                 self._launch_terminal(tab)
                 self._set_flow_state(_FLOW_IDLE)
                 self.status_message.setText('Running in terminal')
+                self._maybe_scroll_output(tab)
 
     def _on_run_stdout_ready (self, text:str):
         tab = self.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text)
+            if tab is self.tab_manager.get_current():
+                self.output_panel.scroll_to_bottom()
 
     def _on_run_stderr_ready (self, text:str):
         tab = self.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
+            if tab is self.tab_manager.get_current():
+                self.output_panel.scroll_to_bottom()
 
     def _on_run_finished (self, exit_code:int, elapsed:float,
-                          peak_memory:int, reason:str, stderr_text:str):
+                          peak_memory:int, reason:str, error_detail:str):
         if self._flow_state != _FLOW_RUNNING:
             return
         tab = self._flow_tab
@@ -2632,11 +2657,11 @@ class MainWindow (QMainWindow):
                            'Failed to start program\n',
                            QColor(Qt.red))
             _output_append(tab.output_doc,
-                           'Error: {}\n'.format(stderr_text),
+                           'Error: {}\n'.format(error_detail),
                            QColor(Qt.red))
             self._set_flow_state(_FLOW_IDLE)
             self.status_message.setText('Failed to start program')
-        elif reason == 'timeout':
+            self._maybe_scroll_output(tab)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
             _output_append(
                 tab.output_doc,
@@ -2647,7 +2672,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Timeout after {} seconds'.format(
                     self.settings.run_timeout))
-        elif reason == 'killed':
+            self._maybe_scroll_output(tab)
             detail = _describe_exit_code(exit_code)
             if detail:
                 _output_append(tab.output_doc, '\n', QColor(Qt.red))
@@ -2667,7 +2692,7 @@ class MainWindow (QMainWindow):
                     'Program crashed: {}'.format(detail))
             else:
                 self.status_message.setText('Process stopped')
-        elif exit_code != 0:
+            self._maybe_scroll_output(tab)
             detail = _describe_exit_code(exit_code)
             _output_append(tab.output_doc, '\n', QColor(Qt.red))
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
@@ -2680,7 +2705,7 @@ class MainWindow (QMainWindow):
             if detail:
                 msg = 'Runtime Error: {}'.format(detail)
             self.status_message.setText(msg)
-        else:
+            self._maybe_scroll_output(tab)
             mem_str = ''
             if peak_memory > 0:
                 mem_mb = peak_memory / (1024 * 1024)
@@ -2693,6 +2718,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText(
                 'Program exited with code 0 in {:.3}s{}'.format(
                     elapsed, mem_str))
+            self._maybe_scroll_output(tab)
 
     #===== Tab Management =====
 
@@ -2768,6 +2794,11 @@ class MainWindow (QMainWindow):
         if index < 0 or index >= len(tm.tabs):
             return False
         tab = tm.tabs[index]
+
+        # If closing the tab that has an active process, kill it first
+        if self._flow_state != _FLOW_IDLE and self._flow_tab is tab:
+            self.proc_mgr.kill_process()
+            self._set_flow_state(_FLOW_IDLE)
 
         if tab.is_dirty:
             choice = self._confirm_close_tab(tab)
@@ -2996,9 +3027,6 @@ class MainWindow (QMainWindow):
         if self.proc_mgr.busy:
             self.proc_mgr.kill_process()
 
-        # Save window state before closing
-        self._save_window_state()
-
         for tab in list(self.tab_manager.tabs):
             if tab.is_dirty:
                 choice = self._confirm_close_tab(tab)
@@ -3010,6 +3038,9 @@ class MainWindow (QMainWindow):
                     if result < 0:
                         event.ignore()
                         return
+
+        # Save window state only after confirming all dirty tabs
+        self._save_window_state()
         # Cancel all batch highlighting timers before Qt destruction
         for tab in self.tab_manager.tabs:
             tab.highlighter.cancel_batch_highlight()
@@ -3204,32 +3235,11 @@ class MainWindow (QMainWindow):
             QMessageBox.warning(
                 self, 'File Not Found',
                 'File not found: {}'.format(path))
-            # Remove from recent list
             if path in self._recent_files:
                 self._recent_files.remove(path)
                 self._update_recent_menu()
             return
-        # If file is already open, switch to that tab
-        for i, t in enumerate(self.tab_manager.tabs):
-            if not t.is_new and t.file_path and \
-                    os.path.normpath(t.file_path) == os.path.normpath(path):
-                self._switch_to_tab(i)
-                return
-        try:
-            content, encoding = _read_file(path)
-        except (IOError, OSError) as e:
-            QMessageBox.warning(
-                self, 'Open Error',
-                'Failed to open file: {}'.format(e))
-            return
-        tab = TabData(
-            file_path=path, is_new=False,
-            encoding=encoding, content=content,
-            dirty_callback=self._on_tab_dirty_changed)
-        index = self.tab_manager.add_tab(tab)
-        self.tabbar.addTab(tab.tab_name())
-        self._switch_to_tab(index)
-        self._add_recent_file(path)
+        self._open_file_path(path, add_recent=True)
 
     #===== Drag-Drop =====
 
