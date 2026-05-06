@@ -223,6 +223,8 @@ _SETTINGS_DEFAULTS = {
 
 继承 QTextEdit，外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。只读，支持多色富文本。
 
+**自动滚动**：仅当滚动条已在底部时才自动跟随新输出。用户翻看历史输出时不被强制拉回底部。按 END 键可回到底部跟踪模式。滚动通过 per-tab 的 `_need_scroll` 标志和 50ms 共享 QTimer 批量执行，避免逐行滚动影响性能。每次 `_output_clear` 后视为"在底部"，新内容开始后默认自动跟踪。`_is_output_at_bottom()` 判断滚动条距离底部不超过 3px 即视为在底部。
+
 **颜色规范**：
 
 | 内容类型 | 颜色 |

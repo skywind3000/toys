@@ -454,3 +454,103 @@ class TestMainWindowCompile (unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+#----------------------------------------------------------------------
+# Output auto-scroll tests
+#----------------------------------------------------------------------
+class TestOutputScroll (unittest.TestCase):
+
+    def test_need_scroll_initial (self):
+        """TabData._need_scroll defaults to True (new tab = at bottom)."""
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        self.assertTrue(tab._need_scroll)
+
+    def test_output_clear_resets_need_scroll (self):
+        """After _output_clear, _need_scroll should be set to True."""
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        tab._need_scroll = False
+        _output_clear(tab.output_doc)
+        tab._need_scroll = True
+        self.assertTrue(tab._need_scroll)
+
+    def test_is_output_at_bottom_empty (self):
+        """Empty document: scrollbar at bottom by definition."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        # Empty doc → maximum == value → at bottom
+        self.assertTrue(window._is_output_at_bottom())
+
+    def test_is_output_at_bottom_not_at_bottom (self):
+        """Filled document, scrollbar at top: not at bottom."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        # Fill output with many lines
+        text = '\n'.join(['Line {}'.format(i) for i in range(100)])
+        _output_append(tab.output_doc, text)
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        # Scroll to top
+        window.output_panel.verticalScrollBar().setValue(0)
+        self.assertFalse(window._is_output_at_bottom())
+
+    def test_is_output_at_bottom_at_bottom (self):
+        """Filled document, scrolled to max: at bottom."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        text = '\n'.join(['Line {}'.format(i) for i in range(100)])
+        _output_append(tab.output_doc, text)
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        # Scroll to bottom
+        sb = window.output_panel.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        self.assertTrue(window._is_output_at_bottom())
+
+    def test_maybe_scroll_sets_flag_when_at_bottom (self):
+        """_maybe_scroll_output sets _need_scroll when panel is at bottom."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        tab._need_scroll = False
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        # Empty doc = at bottom
+        window._maybe_scroll_output(tab)
+        self.assertTrue(tab._need_scroll)
+
+    def test_maybe_scroll_skips_when_not_at_bottom (self):
+        """_maybe_scroll_output does not set flag when not at bottom."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        text = '\n'.join(['Line {}'.format(i) for i in range(100)])
+        _output_append(tab.output_doc, text)
+        tab._need_scroll = False
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        # Scroll to top
+        window.output_panel.verticalScrollBar().setValue(0)
+        window._maybe_scroll_output(tab)
+        self.assertFalse(tab._need_scroll)
+
+    def test_scroll_timer_callback (self):
+        """_on_scroll_output_timer scrolls and clears flag."""
+        window = MainWindow(Settings())
+        tab = TabData(is_new=True, content='', dirty_callback=None)
+        text = '\n'.join(['Line {}'.format(i) for i in range(50)])
+        _output_append(tab.output_doc, text)
+        index = window.tab_manager.add_tab(tab)
+        window.tabbar.addTab(tab.tab_name())
+        window._switch_to_tab(index)
+        tab._need_scroll = True
+        window._on_scroll_output_timer()
+        # After callback, scroll should be at bottom
+        sb = window.output_panel.verticalScrollBar()
+        self.assertTrue(sb.maximum() - sb.value() <= 3)
+        self.assertFalse(tab._need_scroll)
