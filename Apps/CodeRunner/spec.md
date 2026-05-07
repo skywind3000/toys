@@ -198,6 +198,7 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 - **MainArea**：QSplitter 水平分割 → 左侧 CodeEditor | 右侧 QSplitter 垂直分割 → InputSection + OutputSection
 - **单一 Widget 组**：每个标签页持有三个独立 QTextDocument（editor_doc / input_doc / output_doc），切换标签时通过 `setDocument()` 交换文档，Widget 不销毁重建。Splitter 位置全局共享
 - **状态栏**：左侧 `status_message` QLabel（显示状态机默认文本或具体结果覆盖）；右侧 `status_info` _ClickableLabel（显示光标位置/编码/编辑模式，点击弹出编码菜单）
+- **UI 语言**：英文（所有界面文字、菜单、对话框、消息均使用英文）
 - **主题**：Fusion，Toolbar 七个按钮使用 QPainter 自绘彩色图标（详见第 8 节）
 - **初始化分阶段**：MainWindow.__init__ 拆为 `__init_settings` → `__init_core_state` → `__init_widgets` → `__init_ui` → `__init_connections` → `__init_final` 六个子方法
 - **widget 状态保存**：`_save_widget_state(tab)` 统一保存 cursor/scroll 到 TabData，消除三处重复
