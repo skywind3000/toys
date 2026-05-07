@@ -200,7 +200,7 @@ _SETTINGS_DEFAULTS = {
 
 **Comment/Uncomment (Ctrl+/)**：keyPressEvent 处理。无选区时操作当前行；有选区时操作所有被选中的行。Toggle 逻辑：检查所有操作行是否已以 `//` 开头（忽略行首空白，空行视为未注释），若全部已注释则移除 `//` 及紧随的所有空格，否则对每行首个非空白字符前插入 `// `（含空格）。
 
-**Indent/Unindent**：keyPressEvent 处理。有选区时 Tab → 选中行每行行首加 `\t`（indent_style='tab'）或 indent_size 个空格（indent_style='space'）；Shift+Tab → 选中行每行行首移除一个 `\t` 或 indent_size 个空格。无选区时 Tab 插入 `\t`（原有行为不变），Shift+Tab 无特殊行为。菜单快捷键：Indent = Ctrl+]，Unindent = Ctrl+[。
+**Indent/Unindent**：keyPressEvent 处理。有选区时 Tab/Ctrl+] → 选中行每行行首加 `\t`（indent_style='tab'）或 indent_size 个空格（indent_style='space'）；Shift+Tab/Ctrl+[ → 选中行每行行首移除一个 `\t` 或 indent_size 个空格。无选区时 Tab 插入 `\t`（原有行为不变），Ctrl+] 缩进当前行，Shift+Tab/Ctrl+[ 反缩进当前行。选区锚点使用块相对坐标，indent/unindent 后选区保持在原逻辑位置（如从行首选中则缩进后仍从行首选中）。菜单快捷键：Indent = Ctrl+]，Unindent = Ctrl+[。
 
 **Duplicate Line (Ctrl+D)**：keyPressEvent 处理。无选区 → 选中当前 block 全文，copy 后 insert 到下一行；有选区 → 复制选区文本 insert 到选区末尾之后。不操作剪贴板。
 
@@ -208,7 +208,7 @@ _SETTINGS_DEFAULTS = {
 
 **Move Line Up/Down (Alt+Up/Alt+Down)**：keyPressEvent 处理。无选区 → 当前 block 与上方/下方 block 互换，光标跟随移动；有选区 → 选中 block 范围与上方/下方 block 互换，选区范围调整。
 
-**当前行高亮**：使用 QTextEdit.ExtraSelection，浅色背景（`QColor(245, 245, 220)` 浅黄），cursorPositionChanged 信号触发更新。每次光标移动时清空旧 ExtraSelection 再添加新的。只在 CodeEditor 中启用，不影响 InputPanel/OutputPanel。
+**当前行高亮**：使用 QTextEdit.ExtraSelection，浅色背景（`QColor(245, 245, 220)` 浅黄），`FullWidthSelection` 属性设为 True，高亮条覆盖整行宽度（不受行内容长度影响，短行也会铺满编辑区宽度）。cursorPositionChanged 信号触发更新。
 
 **括号匹配高亮**：使用 QTextEdit.ExtraSelection。光标位于括号字符（`(){}[]`）旁时，通过 `QTextDocument.characterAt()` 定位匹配括号位置，两个括号同时添加背景色高亮（`QColor(180, 220, 255)` 浅蓝）。仅在非注释/非字符串上下文中生效。cursorPositionChanged 信号触发更新，与当前行高亮合并处理。
 

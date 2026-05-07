@@ -1347,20 +1347,14 @@ class CodeEditor (FileDragMixin, QTextEdit):
             self._handle_move_line_down()
             return
 
-        # Tab — indent selection or insert tab
+        # Tab — indent current line or selection
         if key == Qt.Key_Tab:
-            cursor = self.textCursor()
-            if cursor.hasSelection():
-                self._handle_indent_selection()
-            else:
-                cursor.insertText('\t')
+            self._handle_indent()
             return
 
-        # Shift+Tab — unindent selection
+        # Shift+Tab — unindent current line or selection
         if key == Qt.Key_Backtab:
-            cursor = self.textCursor()
-            if cursor.hasSelection():
-                self._handle_unindent_selection()
+            self._handle_unindent()
             return
 
         # Enter key — auto indent
@@ -1469,8 +1463,54 @@ class CodeEditor (FileDragMixin, QTextEdit):
             block = block.next()
         cursor.endEditBlock()
 
+    def _handle_indent (self):
+        """Indent: with selection → indent all selected lines;
+        without selection → insert tab character."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._handle_indent_selection()
+        else:
+            cursor.insertText('\t')
+
+    def _handle_unindent (self):
+        """Unindent: with selection → unindent all selected lines;
+        without selection → unindent current line."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self._handle_unindent_selection()
+        else:
+            self._handle_unindent_current_line()
+
+    def _handle_unindent_current_line (self):
+        """Unindent the current line (no selection)."""
+        doc = self.document()
+        cursor = self.textCursor()
+        block = cursor.block()
+        text = block.text()
+        remove_len = 0
+        if text.startswith('\t'):
+            remove_len = 1
+        elif text.startswith(' ' * self.indent_size):
+            remove_len = self.indent_size
+        elif text.startswith(' '):
+            count = 0
+            for ch in text:
+                if ch == ' ' and count < self.indent_size:
+                    count += 1
+                else:
+                    break
+            remove_len = count
+        if remove_len > 0:
+            c = QTextCursor(doc)
+            c.setPosition(block.position())
+            c.setPosition(block.position() + remove_len,
+                          QTextCursor.KeepAnchor)
+            c.removeSelectedText()
+
     def _handle_indent_selection (self):
-        """Indent all selected lines by one level."""
+        """Indent all selected lines by one level.
+        Selection anchors stay at their logical positions (relative
+        to line content start, not absolute char position)."""
         doc = self.document()
         cursor = self.textCursor()
         start_block = doc.findBlock(cursor.selectionStart())
@@ -1480,41 +1520,55 @@ class CodeEditor (FileDragMixin, QTextEdit):
         indent_char = '\t' if self.indent_style == 'tab' else \
             ' ' * self.indent_size
         added_len = len(indent_char)
-        sel_start = cursor.selectionStart()
-        sel_end = cursor.selectionEnd()
-        num_lines = end_block.blockNumber() - start_block.blockNumber() + 1
+        # Record selection in block-relative coords
+        start_block_num = start_block.blockNumber()
+        end_block_num = end_block.blockNumber()
+        # anchor = selectionStart, cursor_pos = selectionEnd
+        anchor_block_num = doc.findBlock(
+            cursor.anchor()).blockNumber()
+        anchor_col = cursor.anchor() - \
+            doc.findBlock(cursor.anchor()).position()
+        pos_col = cursor.position() - \
+            doc.findBlock(cursor.position()).position()
         cursor.beginEditBlock()
-        block_num = start_block.blockNumber()
-        end_num = end_block.blockNumber()
-        for i in range(block_num, end_num + 1):
+        for i in range(start_block_num, end_block_num + 1):
             block = doc.findBlockByNumber(i)
             c = QTextCursor(doc)
             c.setPosition(block.position())
             c.insertText(indent_char)
         cursor.endEditBlock()
-        # Restore selection adjusted for inserted chars per line
+        # Restore selection using block-relative coords
         new_cursor = QTextCursor(doc)
-        new_cursor.setPosition(sel_start + added_len)
-        new_cursor.setPosition(
-            sel_end + added_len * num_lines,
-            QTextCursor.KeepAnchor)
+        anchor_block = doc.findBlockByNumber(anchor_block_num)
+        pos_block = doc.findBlockByNumber(end_block_num)
+        new_anchor = anchor_block.position() + anchor_col + added_len
+        new_pos = pos_block.position() + pos_col + added_len
+        new_cursor.setPosition(new_anchor)
+        new_cursor.setPosition(new_pos, QTextCursor.KeepAnchor)
         self.setTextCursor(new_cursor)
 
     def _handle_unindent_selection (self):
-        """Unindent all selected lines by one level."""
+        """Unindent all selected lines by one level.
+        Selection anchors stay at their logical positions."""
         doc = self.document()
         cursor = self.textCursor()
         start_block = doc.findBlock(cursor.selectionStart())
         end_block = doc.findBlock(cursor.selectionEnd())
         if cursor.selectionEnd() == end_block.position():
             end_block = end_block.previous()
-        block_num = start_block.blockNumber()
-        end_num = end_block.blockNumber()
-        sel_start = cursor.selectionStart()
-        sel_end = cursor.selectionEnd()
-        removed_per_line = []
+        # Record selection in block-relative coords
+        start_block_num = start_block.blockNumber()
+        end_block_num = end_block.blockNumber()
+        anchor_block_num = doc.findBlock(
+            cursor.anchor()).blockNumber()
+        anchor_col = cursor.anchor() - \
+            doc.findBlock(cursor.anchor()).position()
+        pos_col = cursor.position() - \
+            doc.findBlock(cursor.position()).position()
+        # Track removed chars per line
+        removed_per_line = {}
         cursor.beginEditBlock()
-        for i in range(block_num, end_num + 1):
+        for i in range(start_block_num, end_block_num + 1):
             block = doc.findBlockByNumber(i)
             text = block.text()
             remove_len = 0
@@ -1530,7 +1584,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
                     else:
                         break
                 remove_len = count
-            removed_per_line.append(remove_len)
+            removed_per_line[i] = remove_len
             if remove_len > 0:
                 c = QTextCursor(doc)
                 c.setPosition(block.position())
@@ -1539,14 +1593,19 @@ class CodeEditor (FileDragMixin, QTextEdit):
                     QTextCursor.KeepAnchor)
                 c.removeSelectedText()
         cursor.endEditBlock()
-        # Restore selection adjusted for removed chars
-        removed_total = sum(removed_per_line)
-        first_removed = removed_per_line[0] if removed_per_line else 0
+        # Restore selection using block-relative coords,
+        # adjusted for removed indent on each line
         new_cursor = QTextCursor(doc)
+        anchor_block = doc.findBlockByNumber(anchor_block_num)
+        pos_block = doc.findBlockByNumber(end_block_num)
+        anchor_removed = removed_per_line.get(anchor_block_num, 0)
+        pos_removed = removed_per_line.get(end_block_num, 0)
+        new_anchor_col = max(0, anchor_col - anchor_removed)
+        new_pos_col = max(0, pos_col - pos_removed)
         new_cursor.setPosition(
-            max(0, sel_start - first_removed))
+            anchor_block.position() + new_anchor_col)
         new_cursor.setPosition(
-            max(0, sel_end - removed_total),
+            pos_block.position() + new_pos_col,
             QTextCursor.KeepAnchor)
         self.setTextCursor(new_cursor)
 
@@ -1900,13 +1959,21 @@ class CodeEditor (FileDragMixin, QTextEdit):
     def _update_extra_selections (self):
         """Update current line highlight and bracket match highlight."""
         selections = []
-        # Current line highlight
+        # Current line highlight — spans full viewport width
+        # Use block-level cursor with FullWidthSelection so that
+        # short lines still highlight the entire row.
         cursor = self.textCursor()
+        block = cursor.block()
         line_sel = QTextEdit.ExtraSelection()
         line_sel.format.setBackground(QBrush(self._CURRENT_LINE_COLOR))
         line_sel.format.setProperty(QTextCharFormat.FullWidthSelection, True)
-        line_sel.cursor = cursor
-        line_sel.cursor.select(QTextCursor.LineUnderCursor)
+        # Anchor at block start, cursor at block end — this way
+        # FullWidthSelection paints the whole row regardless of text length
+        block_cursor = QTextCursor(block)
+        block_cursor.movePosition(QTextCursor.StartOfBlock)
+        block_cursor.movePosition(QTextCursor.EndOfBlock,
+                                  QTextCursor.KeepAnchor)
+        line_sel.cursor = block_cursor
         selections.append(line_sel)
         # Bracket match highlight
         match_sel = self._find_bracket_match_selections()
@@ -3242,14 +3309,10 @@ class MainWindow (QMainWindow):
         self.editor._handle_comment_uncomment()
 
     def _action_indent (self):
-        cursor = self.editor.textCursor()
-        if cursor.hasSelection():
-            self.editor._handle_indent_selection()
+        self.editor._handle_indent()
 
     def _action_unindent (self):
-        cursor = self.editor.textCursor()
-        if cursor.hasSelection():
-            self.editor._handle_unindent_selection()
+        self.editor._handle_unindent()
 
     def _action_duplicate (self):
         self.editor._handle_duplicate_line()
