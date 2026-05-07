@@ -15,6 +15,7 @@ import copy
 import math
 import time
 import json
+import shlex
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
     QTextEdit, QLabel, QWidget, QAction, QMenu,
@@ -389,9 +390,13 @@ class Settings:
         return Settings(copy.deepcopy(self.__dict__))
 
     def apply_from (self, other):
-        """Merge all attributes from other into this instance."""
+        """Merge all attributes from other into this instance.
+        Deep-copy mutable values to prevent shared reference issues."""
         for key, value in other.__dict__.items():
-            setattr(self, key, value)
+            if isinstance(value, (dict, list, set)):
+                setattr(self, key, copy.deepcopy(value))
+            else:
+                setattr(self, key, value)
 
     def to_dict (self) -> dict:
         """Serialize Settings to a dict suitable for JSON."""
@@ -986,6 +991,8 @@ class ProcessManager (QObject):
     #----- Compile handlers -----
 
     def _on_compile_stderr_ready (self):
+        if self.process is None:
+            return
         raw = self.process.readAllStandardError()
         data = bytes(raw)
         if data:
@@ -1046,6 +1053,8 @@ class ProcessManager (QObject):
             self._start_memory_tracking(self.process.processId())
 
     def _on_run_stdout_ready (self):
+        if self.process is None:
+            return
         raw = self.process.readAllStandardOutput()
         data = bytes(raw)
         if data:
@@ -1053,6 +1062,8 @@ class ProcessManager (QObject):
             self.run_stdout_ready.emit(text)
 
     def _on_run_stderr_ready (self):
+        if self.process is None:
+            return
         raw = self.process.readAllStandardError()
         data = bytes(raw)
         if data:
@@ -1254,7 +1265,11 @@ class FlowController (QObject):
         command = [resolved]
         command.extend(flags)
         if self.settings.compiler_flags:
-            command.extend(self.settings.compiler_flags.split())
+            try:
+                command.extend(shlex.split(self.settings.compiler_flags))
+            except ValueError:
+                # shlex can fail on unmatched quotes; fall back to plain split
+                command.extend(self.settings.compiler_flags.split())
         source_path = tab.file_path
         if sys.platform == 'win32':
             source_path = source_path.replace('/', '\\')
@@ -1717,13 +1732,16 @@ class CodeEditor (FileDragMixin, QTextEdit):
             self._notify_overwrite_changed()
             return
 
-        # Tab — indent selection or insert tab
+        # Tab — indent selection or insert tab/spaces
         if key == Qt.Key_Tab:
             cursor = self.textCursor()
             if cursor.hasSelection():
                 self._handle_indent_selection()
             else:
-                cursor.insertText('\t')
+                if self.indent_style == 'tab':
+                    cursor.insertText('\t')
+                else:
+                    cursor.insertText(' ' * self.indent_size)
             return
 
         # Shift+Tab — unindent selection or current line
@@ -3994,11 +4012,28 @@ class MainWindow (QMainWindow):
                 if result < 0:
                     return False
 
-        # Kill process and fully clean up to prevent stale finished signals
-        # from corrupting a subsequent compile/run operation
+        # Kill process and drain remaining output before cleanup
+        # to prevent queued stdout/stderr signals from being dropped
         if self.flow_ctrl.state != _FLOW_IDLE and self.flow_ctrl.tab is tab:
-            self.flow_ctrl.proc_mgr.kill_process()
-            self.flow_ctrl.proc_mgr._cleanup()
+            proc_mgr = self.flow_ctrl.proc_mgr
+            proc_mgr.kill_process()
+            # Drain any buffered output before cleanup nulls target_tab
+            if proc_mgr.process and proc_mgr.process.state() != QProcess.NotRunning:
+                proc_mgr.process.waitForFinished(500)
+            if proc_mgr.process:
+                remaining = proc_mgr.process.readAllStandardOutput()
+                if remaining and bytes(remaining):
+                    text = proc_mgr._enc_mgr.decode_stdout(bytes(remaining))
+                    _output_append(tab.output_doc, text)
+                remaining = proc_mgr.process.readAllStandardError()
+                if remaining and bytes(remaining):
+                    if proc_mgr.mode == 'compile':
+                        proc_mgr._stderr_buffer += proc_mgr._enc_mgr.decode_stderr(
+                            bytes(remaining))
+                    else:
+                        text = proc_mgr._enc_mgr.decode_stderr(bytes(remaining))
+                        _output_append(tab.output_doc, text, QColor(128, 128, 128))
+            proc_mgr._cleanup()
             self.flow_ctrl.set_state(_FLOW_IDLE)
 
         # Cancel batch highlighting before removing
@@ -4196,10 +4231,12 @@ class MainWindow (QMainWindow):
         return self._save_tab_data(tab)
 
     def _save_tab_data (self, tab:TabData) -> int:
-        """Save tab to disk. Returns 0 success, -1 cancel, -2 error."""
-        # Strip trailing whitespace in document first so doc == disk
-        _strip_trailing_whitespace_in_doc(tab.editor_doc)
-        content = tab.editor_doc.toPlainText()
+        """Save tab to disk. Returns 0 success, -1 cancel, -2 error.
+        Two-phase: prepare content on temp text, only commit to document
+        after successful write, so failure/cancel leaves doc unchanged."""
+        # Phase 1: prepare content (strip trailing whitespace on plain text)
+        content = _strip_trailing_whitespace(tab.editor_doc.toPlainText())
+        # Phase 2: write to disk
         if tab.is_new:
             start_dir = self._start_dir()
             path, _ = QFileDialog.getSaveFileName(
@@ -4227,6 +4264,8 @@ class MainWindow (QMainWindow):
                 QMessageBox.warning(self, 'Save Error', str(e))
                 return -2
 
+        # Phase 3: commit to document (only after write succeeded)
+        _strip_trailing_whitespace_in_doc(tab.editor_doc)
         tab.editor_doc.setModified(False)
         # modificationChanged signal already updates this tab's name
         self.status_message.setText(

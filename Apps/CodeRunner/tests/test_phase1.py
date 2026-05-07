@@ -73,6 +73,27 @@ class TestSettings (unittest.TestCase):
         self.assertEqual(lines[4], '\treturn 0;')
         self.assertEqual(lines[5], '}')
 
+    def test_apply_from_deepcopies_mutable (self):
+        """apply_from should deep-copy dicts/lists to prevent shared refs."""
+        s1 = Settings()
+        _init_font_defaults(s1)
+        s1.env_vars = {'PATH': '/usr/bin'}
+        s2 = Settings()
+        _init_font_defaults(s2)
+        s2.apply_from(s1)
+        # Modifying s1's env_vars should not affect s2
+        s1.env_vars['PATH'] = '/other'
+        self.assertEqual(s2.env_vars.get('PATH'), '/usr/bin')
+
+    def test_copy_independence (self):
+        """copy() should produce a fully independent instance."""
+        s1 = Settings()
+        _init_font_defaults(s1)
+        s1.env_vars = {'KEY': 'val'}
+        s2 = s1.copy()
+        s2.env_vars['KEY'] = 'changed'
+        self.assertEqual(s1.env_vars.get('KEY'), 'val')
+
 
 #----------------------------------------------------------------------
 # InputPanel

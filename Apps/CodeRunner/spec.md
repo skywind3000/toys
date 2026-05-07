@@ -336,7 +336,7 @@ _SETTINGS_DEFAULTS = {
 
 **关键设计要点**：
 - MainWindow 持有唯一 `self.settings` 实例，所有代码通过 `self.settings.xxx` 访问
-- SettingsDialog 操作 `settings.copy()` 临时副本，OK 时 `apply_from(copy)` 提交，Cancel 丢弃副本
+- SettingsDialog 操作 `settings.copy()` 临时副本，OK 时 `apply_from(copy)` 提交（deep-copy 可变对象防止共享引用），Cancel 丢弃副本
 - 修改 compiler_path/flags/env_vars 时记录 `compiler_mtime = time.time()`，`_apply_settings()` 将所有 TabData 的 compiler_mtime 更新为 settings.compiler_mtime（若旧值更小）
 - env_vars 的值中 `$VAR_NAME` 语法在运行时通过 `_expand_env_vars()` 展开为实际环境变量值
 - editor_font_family / io_font_family 默认值按平台自动检测 monospace 字体（Windows: Consolas→Courier New→monospace；macOS: Menlo→SF Mono→monospace；Linux: DejaVu Sans Mono→Ubuntu Mono→monospace）
@@ -401,7 +401,7 @@ _SETTINGS_DEFAULTS = {
 
 **行号显示**：左侧 LineNumberArea 作为子 Widget，宽度按最大行号位数动态调整。`_paint_line_numbers` 通过 `_estimate_first_visible_block()` 估算首个可见 block，仅迭代可见区域（7500+ 行文件滚动到底部仅迭代约 50 个 block）。
 
-**Tab 制表符**：插入 `\t`，不转换为空格。Tab 宽度 = `fontMetrics().horizontalAdvance('x') * indent_size`，indent_size 默认 4，可在 Settings 中配置。
+**Tab 制表符**：indent_style='tab' 时插入 `\t`，indent_style='space' 时插入 `indent_size` 个空格。Tab 宽度 = `fontMetrics().horizontalAdvance('x') * indent_size`，indent_size 默认 4，可在 Settings 中配置。
 
 **字体变更联动**：更换字体或字号时，必须调用 `updateFontMetrics()` 重新计算 Tab 宽度，并同步 `document.setDefaultFont(editor.font())`，否则 Tab 显示宽度错误。CodeEditor 有专门的 `setFontSize(point_size)` 方法设置字号并刷新 metrics，Zoom 功能通过此方法实现。
 
@@ -549,6 +549,8 @@ class ProcessManager(QObject):
 
 **防止二次 emit**：`_finished_emitted` 标志位。`finished` 信号和 `errorOccurred` 信号可能竞态（进程快速崩溃），_finished_emitted 确保只 emit 一次。
 
+**stdout/stderr handler None 保护**：`_on_compile_stderr_ready` / `_on_run_stdout_ready` / `_on_run_stderr_ready` 入口检查 `self.process is None`，防止 `_cleanup()` 后排队信号到达导致 AttributeError。
+
 **异步错误处理**：使用 `errorOccurred` 信号（PyQt5 < 5.10 用 `error` 信号兼容）处理 FailedToStart，替代 `waitForStarted(5000)` 阻塞调用。`_on_compile_error` / `_on_run_error` 在 `_finished_emitted=False` 时处理 FailedToStart：停止 timeout timer → `_cleanup()` → emit finished 信号。
 
 **_on_run_started**：Test 运行进程 `started` 信号触发，写入 stdin 数据 + `closeWriteChannel()`。确保进程已启动后才写入 stdin。
@@ -654,6 +656,7 @@ RUNNING +killed(无描述)        → IDLE（灰色 "Process stopped in Xs"）
 
 - `resolved_compiler`：通过 `_resolve_compiler_path` 解析 compiler_path（裸名→原值，绝对路径→原值+取bin_dir，相对路径→基于 __file__ resolve 成绝对路径+取bin_dir）
 - 编码 flags 由 EncodingManager.build_flags 生成（详见第 5 节）
+- 用户 `compiler_flags` 使用 `shlex.split()` 解析为 argv 列表，支持带引号参数和带空格路径；shlex 解析失败时 fallback 到 `split()`
 - `-lstdc++` 末尾固定追加，确保误选 gcc 时也能链接 C++ 标准库
 - Windows 下 source.cpp 和 exe 路径使用反斜杠
 
@@ -801,11 +804,11 @@ OK 时：验证 → apply_from(copy) → save JSON → compiler_path/flags/env_v
 
 **FileDialog 起始路径**：`_start_dir()` 方法返回有效的起始目录 — 使用 `_last_file_dir`（从 window.json 恢复）若其仍存在于磁盘，否则回退到 `~/`。Open/Save As/Save（新文件）均使用 `_start_dir()` 作为对话框起始路径，成功选择文件后更新 `_last_file_dir`。
 
-**Save**：`_save_tab_data(tab)` — 新文件弹 QFileDialog 选路径，保存后 is_new→False, is_dirty→False。已保存文件直接写入，使用 TabData.encoding 编码。保存前自动清理行尾空白：`_strip_trailing_whitespace_in_doc(tab.editor_doc)` 在文档中原地 cursor 操作清理（一个 undo step），使文档内容与磁盘一致后再写磁盘和标记 `setModified(False)`，维护"脏=不一致"语义。编码转换失败（如 GBK 无法编码的字符）时捕获 UnicodeEncodeError 弹警告，不崩溃。保存成功后 status_message 显示 "Saved: filename"。Save As 失败时 rollback file_path/is_new。
+**Save**：`_save_tab_data(tab)` — 两阶段事务性保存。Phase 1：在纯文本副本上做行尾空白清理（`_strip_trailing_whitespace`），准备磁盘内容，此时文档未修改；Phase 2：写磁盘（新文件弹 QFileDialog 选路径，已保存文件直接写入），使用 TabData.encoding 编码，写失败或用户取消时文档内容不变；Phase 3（仅在写盘成功后）：在文档原地 `_strip_trailing_whitespace_in_doc` 使文档与磁盘一致，然后 `setModified(False)` 维护"脏=不一致"语义。编码转换失败时捕获 UnicodeEncodeError 弹警告，不崩溃。保存成功后 status_message 显示 "Saved: filename"。Save As 失败时 rollback file_path/is_new。
 
 **Save As**：`_action_save_as` — 始终弹 QFileDialog，保存后更新 file_path、last_file_dir、recent_files。失败时 rollback。
 
-**Close Tab**（`_handle_close_tab`）：dirty 时弹 `_confirm_close_tab` → 断 `modificationChanged` 信号 → 取消 batch highlighting → 如果该标签正在运行进程（FlowController.tab is this tab），kill_process + _cleanup + set_state(IDLE) → 如果当前标签不是被关闭标签，保存当前标签的 widget state（防止状态丢失）→ 移除 tabbar → remove_tab → 调整零标签或切换 → deferred save window state。
+**Close Tab**（`_handle_close_tab`）：dirty 时弹 `_confirm_close_tab` → 断 `modificationChanged` 信号 → 取消 batch highlighting → 如果该标签正在运行进程（FlowController.tab is this tab），kill_process + waitForFinished(500ms) 排空管道中剩余 stdout/stderr 写入 tab.output_doc + _cleanup + set_state(IDLE) → 如果当前标签不是被关闭标签，保存当前标签的 widget state（防止状态丢失）→ 移除 tabbar → remove_tab → 调整零标签或切换 → deferred save window state。
 
 **拖放打开**：MainWindow `setAcceptDrops(True)`，`dragEnterEvent` 检查 MIME URLs 后缀匹配 `_SOURCE_EXTENSIONS`（`.cpp/.c/.cc/.cxx/.h/.hpp/.hh`）。`dropEvent` 对每个匹配 URL 调用 `_open_file_path(path, add_recent=True)`。CodeEditor/InputPanel/OutputPanel（FileDragMixin）的 drag 事件遇到 URL 时 ignore，让事件传播到 MainWindow；纯文本拖放交给 QTextEdit 默认行为。
 
@@ -913,15 +916,19 @@ def main():
 | 编码标签可点击 | `_ClickableLabel` + PointingHandCursor |
 | Ctrl+/ 注释/取消注释 | 最高频调试操作 |
 | Tab/Shift+Tab 选区缩进 | 有选区时缩进/反缩进；菜单快捷键 Ctrl+]/Ctrl+[ |
+| 无选区 Tab 遵循 indent_style | indent_style='tab' 插入 `\t`，indent_style='space' 插入 indent_size 个空格 |
 | Ctrl+D 复制行 | 不替换剪贴板 |
 | 当前行高亮 | ExtraSelections 浅黄背景 |
 | 括号匹配高亮 | ExtraSelections 背景色，非注释/字符串上下文 |
 | 括号补全上下文感知 | `_is_bracket_in_comment_or_string` 检查 |
 | #include <> 和 /* */ 自动补全 | 扩展括号补全逻辑 |
 | 行尾空白自动清理 | `_strip_trailing_whitespace_in_doc` cursor 操作原地清理 |
+| 保存流程两阶段事务 | 先在纯文本副本上 strip+写盘，成功后才原地修改文档，失败/取消时文档不变 |
 | 编辑器右键菜单 | contextMenuEvent，动作与 Edit 菜单共享 QAction |
 | Reopen with Encoding dirty 检查 | `_confirm_reopen_encoding` 弹 Save/Discard/Cancel |
-| 行尾裁剪回写文档 | `_strip_trailing_whitespace_in_doc` 使文档内容与磁盘一致后再写 |
+| 行尾裁剪回写文档 | `_strip_trailing_whitespace_in_doc` 仅在写盘成功后执行，维护事务边界 |
+| compiler_flags shlex 解析 | `shlex.split()` 支持带引号参数和空格路径，失败时 fallback 到 `split()` |
+| Settings.apply_from deepcopy | 可变对象（dict/list/set）做 deepcopy，防止共享引用 |
 | Run 终端 CR_SET_PATH/CR_ENV_SETUP | bat 脚本用占位符，os.environ 只临时设 4 个 CR_ 前缀变量 |
 | waitForStarted 改为异步 | 移除阻塞调用，用 errorOccurred 信号处理 FailedToStart |
 | psutil.Process 缓存复用 | _start_memory_tracking 缓存 Process 对象 |
@@ -935,6 +942,7 @@ def main():
 | CodeEditor.setFontSize | Zoom 功能专用字号设置方法 |
 | CodeEditor._notify_overwrite_changed | overwrite 模式切换时更新光标宽度（宽光标 vs 1px） |
 | closeEvent 进程清理 | 关闭窗口时 kill + cleanup 运行中进程 |
-| _handle_close_tab 进程清理 | 关闭正在运行的标签时 kill + cleanup |
+| _handle_close_tab 进程清理 | 关闭正在运行的标签时 kill + waitForFinished 排空管道 + 写入剩余输出 + cleanup |
+| ProcessManager stdout/stderr None 保护 | handler 入口检查 self.process is None，防止 cleanup 后排队信号 AttributeError |
 | About 对话框 | Help 菜单 About 项，显示作者和时间 |
 | MainWindow 冗余 IDLE 检查 | _action_build/run/test 在调 FlowController 前先检查 IDLE 状态，FlowController 入口方法也检查，双重保护 |

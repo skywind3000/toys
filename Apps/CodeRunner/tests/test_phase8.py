@@ -98,12 +98,12 @@ class TestCommentUncomment (unittest.TestCase):
         self.assertEqual('hello', text.strip())
 
     def test_comment_empty_line (self):
-        """Comment a whitespace-only line adds //."""
+        """Whitespace-only line is skipped by comment/uncomment."""
         editor = self._make_editor_with_content('   ')
         editor._handle_comment_uncomment()
         text = editor.document().toPlainText()
-        # Whitespace-only line gets //
-        self.assertIn('//', text)
+        # Whitespace-only lines are not touched
+        self.assertNotIn('//', text)
 
     def test_toggle_cycle (self):
         """Comment then uncomment returns to original."""

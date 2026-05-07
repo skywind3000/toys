@@ -454,6 +454,42 @@ class TestMainWindowCompile (unittest.TestCase):
         count = self.window.flow_ctrl.count_compile_errors(stderr)
         self.assertEqual(count, 1)  # min 1 if stderr non-empty
 
+    def test_build_compile_command_with_quoted_flags (self):
+        """shlex.split properly handles quoted args and spaces in paths."""
+        self.settings.compiler_flags = '-std=c++14 -O2 -I"C:\\Program Files\\SDK"'
+        with tempfile.NamedTemporaryFile(
+                suffix='.cpp', delete=False, mode='w') as f:
+            f.write('int main() { return 0; }')
+            path = f.name
+        try:
+            tab = TabData(
+                file_path=path, is_new=False,
+                encoding='UTF-8', content='test')
+            cmd = self.window.flow_ctrl.build_compile_command(tab)
+            # shlex strips quotes; the path stays as one arg with spaces
+            self.assertIn('-IC:\\Program Files\\SDK', cmd)
+            # Should NOT be split into separate '-IC:\\Program' and 'Files\\SDK'
+            self.assertNotIn('-IC:\\Program', cmd)
+        finally:
+            os.unlink(path)
+
+    def test_build_compile_command_flags_simple (self):
+        """Simple flags split correctly via shlex."""
+        self.settings.compiler_flags = '-std=c++14 -O2'
+        with tempfile.NamedTemporaryFile(
+                suffix='.cpp', delete=False, mode='w') as f:
+            f.write('int main() { return 0; }')
+            path = f.name
+        try:
+            tab = TabData(
+                file_path=path, is_new=False,
+                encoding='UTF-8', content='test')
+            cmd = self.window.flow_ctrl.build_compile_command(tab)
+            self.assertIn('-std=c++14', cmd)
+            self.assertIn('-O2', cmd)
+        finally:
+            os.unlink(path)
+
 
 if __name__ == '__main__':
     unittest.main()

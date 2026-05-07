@@ -648,6 +648,24 @@ class TestSaveAsDelegation (unittest.TestCase):
         self.assertEqual(tab.file_path, old_path)
         self.assertEqual(tab.is_new, old_is_new)
 
+    def test_save_cancel_preserves_document (self):
+        """Canceling Save should not modify document content."""
+        w = self.window
+        tab = TabData(is_new=True, encoding='UTF-8',
+                      content='hello   \n',
+                      dirty_callback=w._on_tab_dirty_changed)
+        w.tab_manager.add_tab(tab)
+        w.tabbar.addTab(tab.tab_name())
+        w._switch_to_tab(0)
+        original_text = tab.editor_doc.toPlainText()
+        # User cancels Save As dialog
+        with patch('CodeRunner.QFileDialog.getSaveFileName',
+                   return_value=('', '')):
+            result = w._save_tab_data(tab)
+        self.assertEqual(result, -1)
+        # Document content must be unchanged after cancel
+        self.assertEqual(tab.editor_doc.toPlainText(), original_text)
+
 
 if __name__ == '__main__':
     unittest.main()
