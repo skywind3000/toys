@@ -17,7 +17,7 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 
 | 类 | 基类 | 职责 |
 |----|------|------|
-| MainWindow | QMainWindow | 主窗口，协调所有组件 |
+| MainWindow | QMainWindow | 主窗口，协调所有组件，处理 UI 操作 |
 | CodeEditor | QTextEdit | 代码编辑器（因 PyQt5 QPlainTextEdit.setDocument() 不工作而改用 QTextEdit，setAcceptRichText=False）|
 | LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮 |
@@ -26,6 +26,7 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 | TabData | object | 单个标签页的全部状态数据 |
 | TabManager | object | 纯数据管理器，无 UI 操作，不持有 main_window 引用 |
 | ProcessManager | QObject | 编译/运行进程管理（QProcess），busy/mode 由状态机驱动 |
+| FlowController | QObject | 编译/运行状态机，管理状态转移和输出内容，通过 signal 委托 MainWindow 做 UI 更新 |
 | EncodingManager | object | 编码检测、编译标志生成、I/O 编码转换 |
 | Settings | object | 配置数据，实例化设计，支持 copy()/apply_from() |
 | SettingsDialog | QDialog | 设置面板（三页 Tab）|
@@ -295,9 +296,47 @@ class ProcessManager(QObject):
 
 **QProcess 配置**：SeparateChannels；编译进程只读 stderr；运行进程分别读 stdout/stderr；Test 模式写入 stdin 后 closeWriteChannel()。
 
-### 4.2 状态机
+### 4.2 FlowController
 
-MainWindow 使用显式状态机：`_flow_state`（IDLE/COMPILING/RUNNING）、`_flow_intent`（build/test/run）、`_flow_tab`。
+FlowController 是独立的 QObject，持有编译/运行状态机的全部逻辑。MainWindow 只负责 UI 跟进（status bar、QMessageBox、scroll timer、launch_terminal），状态判断和转移由 FlowController 完成。
+
+```python
+class FlowController(QObject):
+    state: str           # IDLE/COMPILING/RUNNING
+    intent: str          # build/test/run
+    tab: TabData         # 发起流程的标签页
+    proc_mgr: ProcessManager  # 内部持有的进程管理器
+
+    signals:
+        state_changed(str)        # 状态名 → MainWindow 更新 status bar 默认文本
+        status_message(str)       # 具体结果消息 → MainWindow 覆盖 status bar
+        busy_message_requested()  # → MainWindow 弹 busy QMessageBox
+        scroll_requested(TabData) # → MainWindow 启动 scroll timer
+        terminal_requested(TabData) # → MainWindow 执行 launch_terminal
+```
+
+**核心方法**：
+
+| 方法 | 说明 |
+|------|------|
+| start_build(tab) | 入口：检查 busy → set_state(COMPILING,intent=build) + clear_and_start_compile |
+| start_test(tab) | 入口：检查 busy → need_recompile 则 COMPILING(intent=test)，否则 RUNNING + start_test_run |
+| start_run(tab) | 入口：检查 busy → need_recompile 则 COMPILING(intent=run)，否则 emit terminal_requested |
+| kill_if_busy() | 如果 COMPILING/RUNNING → proc_mgr.kill_process() |
+| set_state(state, tab, intent) | 状态转移 + emit state_changed |
+| need_recompile(tab) | 判断是否需重编译 |
+| get_exe_path(tab) | 获取 exe 路径 |
+| build_compile_command(tab) | 构造编译命令 |
+| make_process_env() | 构建 QProcessEnvironment |
+| clear_and_start_compile(tab) | 清空输出 + 启动编译 |
+| start_test_run(tab) | 启动 Test 运行 |
+| count_compile_errors(stderr) | 统计编译错误数 |
+| on_compile_finished(...) | 编译完成回调：状态转移 + 写 output_doc + emit signal |
+| on_run_finished(...) | 运行完成回调：状态转移 + 写 output_doc + emit signal |
+
+**信号分工**：FlowController 直接操作 `tab.output_doc`（QTextDocument 是纯数据），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本（如 "Build successful"、"Compilation timeout"）覆盖 status bar。`on_run_stdout_ready/on_run_stderr_ready` 仍由 MainWindow 直接处理（只需 _output_append + scroll timer，两行代码不值得迁出再 signal 回来）。
+
+**状态机**：FlowController 使用显式状态机：`state`（IDLE/COMPILING/RUNNING）、`intent`（build/test/run）、`tab`。
 
 | 状态 | status bar | 按钮响应 |
 |------|------------|----------|
@@ -336,7 +375,7 @@ RUNNING +killed(无描述)        → IDLE（灰色 "Process stopped"）
 
 ### 4.3 编译命令
 
-`_build_compile_command` 生成的完整命令：
+`FlowController.build_compile_command` 生成的完整命令：
 
 ```
 [resolved_compiler] [编码flags] [用户compiler_flags] source.cpp -o source.exe -lstdc++
@@ -351,7 +390,7 @@ RUNNING +killed(无描述)        → IDLE（灰色 "Process stopped"）
 compiler_path 含路径组件时，自动将编译器所在目录 prepend 到 PATH：
 
 - `_resolve_compiler_path(compiler_path)` 返回 `(resolved_path, bin_dir)`，bin_dir 为空字符串时（裸名）不修改 PATH
-- `_make_process_env()` 在 bin_dir 非空时 prepend 到 PATH 前端（Windows 用 `;` 分隔，其他平台用 `:`）
+- `FlowController.make_process_env()` 在 bin_dir 非空时 prepend 到 PATH 前端（Windows 用 `;` 分隔，其他平台用 `:`）
 - 编译进程和 Test 运行进程均通过此 QProcessEnvironment 获得正确的 PATH
 - 不修改 CodeRunner 主进程 PATH，每个子进程获得干净独立的 PATH
 
@@ -595,3 +634,4 @@ def main():
 | 2026/05/07 | waitForStarted 改为异步 | 移除 `waitForStarted(5000)` 阻塞调用，改用 `errorOccurred` 信号异步处理 `FailedToStart`，避免 UI 冻结 |
 | 2026/05/07 | 括号补全上下文感知 | `_handle_bracket_open` 调用 `_is_bracket_in_comment_or_string` 检查光标位置，在字符串/注释内跳过自动补全，返回 bool 表示是否已处理 |
 | 2026/05/07 | psutil.Process 缓存复用 | `_start_memory_tracking` 创建 Process 对象缓存到 `_tracked_process`，`_poll_memory` 直接使用缓存而非每 100ms 重新创建 |
+| 2026/05/07 | FlowController 拆出 MainWindow | 编译/运行状态机从 MainWindow 中抽成独立 FlowController 类，MainWindow 只做 UI 跟进，为后续迭代腾出空间 |

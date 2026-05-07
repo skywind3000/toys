@@ -356,7 +356,7 @@ class TestProcessEnvPathPrepend (unittest.TestCase):
         _init_font_defaults(s)
         s.compiler_path = 'g++'
         win = MainWindow(s)
-        env = win._make_process_env()
+        env = win.flow_ctrl.make_process_env()
         path_value = env.value('PATH', '')
         # PATH should not have any extra prepend
         self.assertNotEqual(path_value, '')
@@ -367,7 +367,7 @@ class TestProcessEnvPathPrepend (unittest.TestCase):
         _init_font_defaults(s)
         s.compiler_path = 'C:\\MinGW\\bin\\g++.exe'
         win = MainWindow(s)
-        env = win._make_process_env()
+        env = win.flow_ctrl.make_process_env()
         path_value = env.value('PATH', '')
         sep = ';' if sys.platform == 'win32' else ':'
         self.assertTrue(path_value.startswith('C:\\MinGW\\bin' + sep),
@@ -379,7 +379,7 @@ class TestProcessEnvPathPrepend (unittest.TestCase):
         _init_font_defaults(s)
         s.compiler_path = './g++'
         win = MainWindow(s)
-        env = win._make_process_env()
+        env = win.flow_ctrl.make_process_env()
         path_value = env.value('PATH', '')
         _, bin_dir = _resolve_compiler_path('./g++')
         sep = ';' if sys.platform == 'win32' else ':'

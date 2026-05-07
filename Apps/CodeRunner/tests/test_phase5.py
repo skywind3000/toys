@@ -350,26 +350,25 @@ class TestMainWindowCompile (unittest.TestCase):
         self.window = MainWindow(self.settings)
 
     def test_initial_flow_state (self):
-        self.assertEqual(self.window._flow_state, _FLOW_IDLE)
-        self.assertIsNone(self.window._flow_intent)
-        self.assertIsNone(self.window._flow_tab)
+        self.assertEqual(self.window.flow_ctrl.state, _FLOW_IDLE)
+        self.assertIsNone(self.window.flow_ctrl.intent)
+        self.assertIsNone(self.window.flow_ctrl.tab)
         self.assertEqual(self.window.status_message.text(), 'Ready')
 
     def test_set_flow_state (self):
-        self.window._set_flow_state(_FLOW_COMPILING)
-        self.assertEqual(self.window._flow_state, _FLOW_COMPILING)
+        self.window.flow_ctrl.set_state(_FLOW_COMPILING)
+        self.assertEqual(self.window.flow_ctrl.state, _FLOW_COMPILING)
         self.assertEqual(self.window.status_message.text(), 'Compiling...')
-        self.window._set_flow_state(_FLOW_RUNNING)
-        self.assertEqual(self.window._flow_state, _FLOW_RUNNING)
+        self.window.flow_ctrl.set_state(_FLOW_RUNNING)
+        self.assertEqual(self.window.flow_ctrl.state, _FLOW_RUNNING)
         self.assertEqual(self.window.status_message.text(), 'Running...')
-        self.window._set_flow_state(_FLOW_IDLE)
-        self.assertEqual(self.window._flow_state, _FLOW_IDLE)
+        self.window.flow_ctrl.set_state(_FLOW_IDLE)
+        self.assertEqual(self.window.flow_ctrl.state, _FLOW_IDLE)
         self.assertEqual(self.window.status_message.text(), 'Ready')
 
     def test_need_recompile_new_file (self):
         tab = TabData(is_new=True, encoding='UTF-8', content='test')
-        # New file always needs recompile (no exe exists)
-        result = self.window._need_recompile(tab)
+        result = self.window.flow_ctrl.need_recompile(tab)
         # is_new files have no exe path, should return True
         self.assertTrue(result)
 
@@ -383,7 +382,7 @@ class TestMainWindowCompile (unittest.TestCase):
             tab = TabData(
                 file_path=path, is_new=False,
                 encoding='UTF-8', content='test')
-            result = self.window._need_recompile(tab)
+            result = self.window.flow_ctrl.need_recompile(tab)
             self.assertTrue(result)  # exe doesn't exist
         finally:
             os.unlink(path)
@@ -392,12 +391,12 @@ class TestMainWindowCompile (unittest.TestCase):
         tab = TabData(
             file_path='C:/Users/test/hello.cpp',
             is_new=False, encoding='UTF-8', content='')
-        exe = self.window._get_exe_path(tab)
+        exe = self.window.flow_ctrl.get_exe_path(tab)
         self.assertEqual(exe, 'C:/Users/test/hello.exe')
 
     def test_get_exe_path_new_file (self):
         tab = TabData(is_new=True, encoding='UTF-8', content='')
-        exe = self.window._get_exe_path(tab)
+        exe = self.window.flow_ctrl.get_exe_path(tab)
         self.assertEqual(exe, '')
 
     def test_build_compile_command (self):
@@ -409,7 +408,7 @@ class TestMainWindowCompile (unittest.TestCase):
             tab = TabData(
                 file_path=path, is_new=False,
                 encoding='UTF-8', content='test')
-            cmd = self.window._build_compile_command(tab)
+            cmd = self.window.flow_ctrl.build_compile_command(tab)
             self.assertEqual(cmd[0], 'gcc')
             self.assertIn('-fexec-charset', cmd[0] + ' ' + ' '.join(cmd))
             self.assertIn('-finput-charset=UTF-8',
@@ -420,12 +419,12 @@ class TestMainWindowCompile (unittest.TestCase):
             os.unlink(path)
 
     def test_make_process_env (self):
-        env = self.window._make_process_env()
+        env = self.window.flow_ctrl.make_process_env()
         self.assertTrue(env.contains('PATH'))
 
     def test_make_process_env_with_user_vars (self):
         self.settings.env_vars = {'MY_VAR': 'my_value'}
-        env = self.window._make_process_env()
+        env = self.window.flow_ctrl.make_process_env()
         self.assertTrue(env.contains('MY_VAR'))
         self.assertEqual(env.value('MY_VAR'), 'my_value')
 
@@ -433,7 +432,7 @@ class TestMainWindowCompile (unittest.TestCase):
         self.settings.env_vars = {
             'PATH': '$PATH;/custom/bin'
         }
-        env = self.window._make_process_env()
+        env = self.window.flow_ctrl.make_process_env()
         path_val = env.value('PATH')
         self.assertIn('/custom/bin', path_val)
         # Should contain original PATH
@@ -443,16 +442,16 @@ class TestMainWindowCompile (unittest.TestCase):
 
     def test_count_compile_errors (self):
         stderr = 'test.cpp:5: error: expected ;\ntest.cpp:8: error: undeclared'
-        count = self.window._count_compile_errors(stderr)
+        count = self.window.flow_ctrl.count_compile_errors(stderr)
         self.assertEqual(count, 2)
 
     def test_count_compile_errors_empty (self):
-        count = self.window._count_compile_errors('')
+        count = self.window.flow_ctrl.count_compile_errors('')
         self.assertEqual(count, 0)
 
     def test_count_compile_errors_no_error_lines (self):
         stderr = 'test.cpp:3: warning: unused variable'
-        count = self.window._count_compile_errors(stderr)
+        count = self.window.flow_ctrl.count_compile_errors(stderr)
         self.assertEqual(count, 1)  # min 1 if stderr non-empty
 
 

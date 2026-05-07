@@ -1139,6 +1139,363 @@ class ProcessManager (QObject):
 
 
 #----------------------------------------------------------------------
+# FlowController — compile/run state machine
+#----------------------------------------------------------------------
+class FlowController (QObject):
+    """Compile/run state machine. Manages state transitions and output
+    content. UI presentation (status bar, scroll, dialogs) is delegated
+    to MainWindow via signals."""
+
+    state_changed = pyqtSignal(str)        # idle/compiling/running → default status text
+    status_message = pyqtSignal(str)       # specific result message → override status text
+    busy_message_requested = pyqtSignal()  # 弹 busy 提示
+    scroll_requested = pyqtSignal(object)  # tab → 启动 scroll timer
+    terminal_requested = pyqtSignal(object)  # tab → MainWindow 执行 launch_terminal
+
+    def __init__ (self, settings, enc_mgr):
+        super().__init__()
+        self.settings = settings
+        self.enc_mgr = enc_mgr
+        self.proc_mgr = ProcessManager(parent=None, settings=settings)
+        self.state = _FLOW_IDLE
+        self.intent = None   # 'build'/'test'/'run'
+        self.tab = None      # TabData that initiated the flow
+
+        # Connect ProcessManager signals to self
+        self.proc_mgr.compile_finished.connect(self.on_compile_finished)
+        self.proc_mgr.run_finished.connect(self.on_run_finished)
+
+    #----- Entry methods (called by MainWindow._action_*) -----
+
+    def start_build (self, tab):
+        if self.state != _FLOW_IDLE:
+            self.busy_message_requested.emit()
+            return
+        if tab is None:
+            return
+        self.set_state(_FLOW_COMPILING, tab=tab, intent='build')
+        self.clear_and_start_compile(tab)
+
+    def start_test (self, tab):
+        if self.state != _FLOW_IDLE:
+            self.busy_message_requested.emit()
+            return
+        if tab is None:
+            return
+        if self.need_recompile(tab):
+            self.set_state(_FLOW_COMPILING, tab=tab, intent='test')
+            self.clear_and_start_compile(tab)
+        else:
+            self.set_state(_FLOW_RUNNING, tab=tab)
+            self.start_test_run(tab)
+
+    def start_run (self, tab):
+        if self.state != _FLOW_IDLE:
+            self.busy_message_requested.emit()
+            return
+        if tab is None:
+            return
+        if self.need_recompile(tab):
+            self.set_state(_FLOW_COMPILING, tab=tab, intent='run')
+            self.clear_and_start_compile(tab)
+        else:
+            # No recompile needed — launch terminal directly
+            self.set_state(_FLOW_IDLE)
+            self.terminal_requested.emit(tab)
+
+    def kill_if_busy (self):
+        if self.state in (_FLOW_COMPILING, _FLOW_RUNNING):
+            self.proc_mgr.kill_process()
+
+    #----- State management -----
+
+    def set_state (self, state, tab=None, intent=None):
+        """Set flow state and emit signal for MainWindow to update
+        status bar with default text (Ready/Compiling.../Running...)."""
+        self.state = state
+        if tab is not None:
+            self.tab = tab
+        if intent is not None:
+            self.intent = intent
+        self.state_changed.emit(state)
+
+    #----- Compile/Run helpers -----
+
+    def need_recompile (self, tab):
+        """Check if recompilation is needed."""
+        exe_path = self.get_exe_path(tab)
+        if not exe_path or not os.path.exists(exe_path):
+            return True
+        try:
+            source_mtime = os.path.getmtime(tab.file_path)
+            exe_mtime = os.path.getmtime(exe_path)
+        except OSError:
+            return True
+        if exe_mtime < source_mtime:
+            return True
+        if exe_mtime < tab.compiler_mtime:
+            return True
+        return False
+
+    def get_exe_path (self, tab):
+        """Get exe path corresponding to the source file."""
+        if tab.is_new or not tab.file_path:
+            return ''
+        base = os.path.splitext(tab.file_path)[0]
+        if sys.platform == 'win32':
+            return base + '.exe'
+        return base
+
+    def build_compile_command (self, tab):
+        """Construct the compile command list."""
+        exe_path = self.get_exe_path(tab)
+        flags = self.enc_mgr.build_flags(tab.encoding)
+        resolved, _ = _resolve_compiler_path(self.settings.compiler_path)
+        command = [resolved]
+        command.extend(flags)
+        if self.settings.compiler_flags:
+            command.extend(self.settings.compiler_flags.split())
+        source_path = tab.file_path
+        if sys.platform == 'win32':
+            source_path = source_path.replace('/', '\\')
+            exe_path = exe_path.replace('/', '\\')
+        command.append(source_path)
+        command.append('-o')
+        command.append(exe_path)
+        command.append('-lstdc++')
+        return command
+
+    def make_process_env (self):
+        """Build QProcessEnvironment from system env + user env_vars."""
+        env = QProcessEnvironment.systemEnvironment()
+        for key, value in self.settings.env_vars.items():
+            expanded = _expand_env_vars(value)
+            env.insert(key, expanded)
+        _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
+        if bin_dir:
+            old_path = env.value('PATH', '')
+            sep = ';' if sys.platform == 'win32' else ':'
+            env.insert('PATH', bin_dir + sep + old_path)
+        return env
+
+    def clear_and_start_compile (self, tab):
+        """Clear output and start compilation."""
+        _output_clear(tab.output_doc)
+        tab._need_scroll = True
+        _output_append(tab.output_doc, 'Compiling...\n',
+                       QColor(128, 128, 128))
+        command = self.build_compile_command(tab)
+        work_dir = os.path.dirname(tab.file_path)
+        if sys.platform == 'win32':
+            work_dir = work_dir.replace('/', '\\')
+        env = self.make_process_env()
+        self.proc_mgr.target_tab = tab
+        self.proc_mgr.start_compile(
+            command, work_dir, env, self.settings.compile_timeout)
+        self.scroll_requested.emit(tab)
+
+    def start_test_run (self, tab):
+        """Start test run with stdin from InputPanel."""
+        exe_path = self.get_exe_path(tab)
+        if sys.platform == 'win32':
+            exe_path = exe_path.replace('/', '\\')
+        work_dir = os.path.dirname(exe_path)
+        stdin_text = tab.input_doc.toPlainText()
+        stdin_data = self.enc_mgr.encode_stdin(stdin_text)
+        env = self.make_process_env()
+        _output_clear(tab.output_doc)
+        tab._need_scroll = True
+        self.proc_mgr.target_tab = tab
+        self.proc_mgr.start_test_run(
+            exe_path, work_dir, env, stdin_data,
+            self.settings.run_timeout)
+
+    def count_compile_errors (self, stderr_text):
+        """Count the number of compile error lines in stderr output."""
+        count = 0
+        for line in stderr_text.splitlines():
+            if ': error:' in line:
+                count += 1
+        if count > 0:
+            return count
+        return 1 if stderr_text.strip() else 0
+
+    #----- ProcessManager signal handlers -----
+
+    def on_compile_finished (self, exit_code, stderr_text, reason):
+        if self.state != _FLOW_COMPILING:
+            return
+        tab = self.tab
+        if not tab:
+            self.set_state(_FLOW_IDLE)
+            return
+        if reason == 'failed_to_start':
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            compiler = self.settings.compiler_path
+            _output_append(
+                tab.output_doc,
+                'Failed to start compiler \'{}\'\n'.format(compiler),
+                QColor(Qt.red))
+            _output_append(
+                tab.output_doc,
+                'Error: {}\n'.format(stderr_text),
+                QColor(Qt.red))
+            _output_append(
+                tab.output_doc,
+                'Please check Settings to set the correct compiler path.\n',
+                QColor(128, 128, 128))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit('Failed to start compiler')
+        elif reason == 'timeout':
+            elapsed = time.time() - self.proc_mgr.start_time
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            _output_append(
+                tab.output_doc,
+                'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
+                    self.settings.compile_timeout, elapsed),
+                QColor(Qt.red))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit('Compilation timeout')
+        elif reason == 'killed':
+            elapsed = time.time() - self.proc_mgr.start_time
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            _output_append(
+                tab.output_doc,
+                'Compilation stopped in {:.3}s\n'.format(elapsed),
+                QColor(128, 128, 128))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit('Compilation stopped')
+        elif exit_code != 0:
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
+            n = self.count_compile_errors(stderr_text)
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit(
+                'Build failed with {} error(s)'.format(n))
+        else:
+            # Compile succeeded — check intent
+            if self.intent == 'build':
+                elapsed = time.time() - self.proc_mgr.start_time
+                _output_clear(tab.output_doc)
+                tab._need_scroll = True
+                _output_append(
+                    tab.output_doc,
+                    'Build OK in {:.3}s\n'.format(elapsed),
+                    QColor(128, 128, 128))
+                self.set_state(_FLOW_IDLE)
+                self.scroll_requested.emit(tab)
+                self.status_message.emit('Build successful')
+            elif self.intent == 'test':
+                self.set_state(_FLOW_RUNNING)
+                self.start_test_run(tab)
+            elif self.intent == 'run':
+                elapsed = time.time() - self.proc_mgr.start_time
+                _output_clear(tab.output_doc)
+                tab._need_scroll = True
+                _output_append(
+                    tab.output_doc,
+                    'Build OK in {:.3}s\n'.format(elapsed),
+                    QColor(128, 128, 128))
+                self.set_state(_FLOW_IDLE)
+                self.scroll_requested.emit(tab)
+                self.terminal_requested.emit(tab)
+            else:
+                # Unknown intent — reset to idle as a safeguard
+                self.set_state(_FLOW_IDLE)
+                self.status_message.emit('Ready')
+
+    def on_run_finished (self, exit_code, elapsed, peak_memory,
+                         reason, error_detail):
+        if self.state != _FLOW_RUNNING:
+            return
+        tab = self.tab
+        if not tab:
+            self.set_state(_FLOW_IDLE)
+            return
+        if reason == 'failed_to_start':
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            _output_append(tab.output_doc,
+                           'Failed to start program\n',
+                           QColor(Qt.red))
+            _output_append(tab.output_doc,
+                           'Error: {}\n'.format(error_detail),
+                           QColor(Qt.red))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit('Failed to start program')
+        elif reason == 'timeout':
+            _output_append(tab.output_doc, '\n', QColor(Qt.red))
+            _output_append(
+                tab.output_doc,
+                'Timeout after {} seconds (ran {:.3}s)\n'.format(
+                    self.settings.run_timeout, elapsed),
+                QColor(Qt.red))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit(
+                'Timeout after {} seconds'.format(
+                    self.settings.run_timeout))
+        elif reason == 'killed':
+            detail = _describe_exit_code(exit_code)
+            if detail:
+                _output_append(tab.output_doc, '\n', QColor(Qt.red))
+                _output_append(
+                    tab.output_doc,
+                    'Program crashed: {} (exit code {})\n'.format(
+                        detail, exit_code),
+                    QColor(Qt.red))
+            else:
+                _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
+                _output_append(tab.output_doc,
+                               'Process stopped in {:.3}s\n'.format(elapsed),
+                               QColor(128, 128, 128))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            if detail:
+                self.status_message.emit(
+                    'Program crashed: {}'.format(detail))
+            else:
+                self.status_message.emit('Process stopped')
+        elif exit_code != 0:
+            detail = _describe_exit_code(exit_code)
+            _output_append(tab.output_doc, '\n', QColor(Qt.red))
+            line = 'Runtime Error (exit code {})\n'.format(exit_code)
+            if detail:
+                line = 'Runtime Error: {} (exit code {})\n'.format(
+                    detail, exit_code)
+            _output_append(tab.output_doc, line, QColor(Qt.red))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            msg = 'Runtime Error (exit code {})'.format(exit_code)
+            if detail:
+                msg = 'Runtime Error: {}'.format(detail)
+            self.status_message.emit(msg)
+        else:
+            mem_str = ''
+            if peak_memory > 0:
+                mem_mb = peak_memory / (1024 * 1024)
+                mem_str = ', {:.1f}MB'.format(mem_mb)
+            _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
+            line = 'exit with code {} in {:.3}s{}\n'.format(
+                exit_code, elapsed, mem_str)
+            _output_append(tab.output_doc, line, QColor(128, 128, 128))
+            self.set_state(_FLOW_IDLE)
+            self.scroll_requested.emit(tab)
+            self.status_message.emit(
+                'Program exited with code 0 in {:.3}s{}'.format(
+                    elapsed, mem_str))
+
+
+#----------------------------------------------------------------------
 # FileDragMixin — forward file drag-drop events to MainWindow
 #----------------------------------------------------------------------
 class FileDragMixin:
@@ -2869,10 +3226,7 @@ class MainWindow (QMainWindow):
 
         # Process management and flow state
         self.enc_mgr = EncodingManager()
-        self.proc_mgr = ProcessManager(parent=self, settings=self.settings)
-        self._flow_state = _FLOW_IDLE
-        self._flow_intent = None  # 'build', 'test', 'run'
-        self._flow_tab = None     # TabData that initiated the flow
+        self.flow_ctrl = FlowController(self.settings, self.enc_mgr)
 
         # Find/Replace dialogs (created lazily, preserved across show/hide)
         self._find_dialog = None
@@ -2889,7 +3243,7 @@ class MainWindow (QMainWindow):
         self.__build_statusbar()
 
         # Set initial status bar text
-        self._set_flow_state(_FLOW_IDLE)
+        self._update_status_from_state(_FLOW_IDLE)
 
         # Output auto-scroll timer (shared, 50ms, batched)
         self._scroll_output_timer = QTimer(self)
@@ -2899,6 +3253,13 @@ class MainWindow (QMainWindow):
 
         # Connect signals
         self.__connect_signals()
+
+        # Connect FlowController signals to MainWindow
+        self.flow_ctrl.state_changed.connect(self._update_status_from_state)
+        self.flow_ctrl.status_message.connect(self._update_status_message)
+        self.flow_ctrl.busy_message_requested.connect(self._show_busy_message)
+        self.flow_ctrl.scroll_requested.connect(self._on_flow_scroll_requested)
+        self.flow_ctrl.terminal_requested.connect(self._on_terminal_requested)
 
         # Alt shortcuts for tab switching
         self.__setup_tab_switch_shortcuts()
@@ -3100,15 +3461,12 @@ class MainWindow (QMainWindow):
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
-        # ProcessManager signals
-        self.proc_mgr.compile_finished.connect(
-            self._on_compile_finished)
-        self.proc_mgr.run_stdout_ready.connect(
+        # ProcessManager stdout/stderr signals (compile_finished/run_finished
+        # are handled by FlowController internally)
+        self.flow_ctrl.proc_mgr.run_stdout_ready.connect(
             self._on_run_stdout_ready)
-        self.proc_mgr.run_stderr_ready.connect(
+        self.flow_ctrl.proc_mgr.run_stderr_ready.connect(
             self._on_run_stderr_ready)
-        self.proc_mgr.run_finished.connect(
-            self._on_run_finished)
 
         # Output panel scroll — detect user scroll-up to deactivate auto-scroll
         self.output_panel.verticalScrollBar().valueChanged.connect(
@@ -3347,70 +3705,40 @@ class MainWindow (QMainWindow):
         self.editor._handle_move_line_down()
 
     def _action_build (self):
-        if self._flow_state != _FLOW_IDLE:
-            QMessageBox.information(
-                self, 'Busy',
-                'A process is currently running. '
-                'Please wait or press Stop before starting a new operation.')
+        if self.flow_ctrl.state != _FLOW_IDLE:
+            self.flow_ctrl.busy_message_requested.emit()
             return
         tab = self.tab_manager.get_current()
         if not tab:
             return
         if self._save_if_dirty(tab) < 0:
             return
-        self._set_flow_state(_FLOW_COMPILING, tab=tab, intent='build')
-        self._clear_and_start_compile(tab)
+        self.flow_ctrl.start_build(tab)
 
     def _action_run (self):
-        if self._flow_state != _FLOW_IDLE:
-            QMessageBox.information(
-                self, 'Busy',
-                'A process is currently running. '
-                'Please wait or press Stop before starting a new operation.')
+        if self.flow_ctrl.state != _FLOW_IDLE:
+            self.flow_ctrl.busy_message_requested.emit()
             return
         tab = self.tab_manager.get_current()
         if not tab:
             return
         if self._save_if_dirty(tab) < 0:
             return
-        if self._need_recompile(tab):
-            self._set_flow_state(_FLOW_COMPILING, tab=tab, intent='run')
-            self._clear_and_start_compile(tab)
-        else:
-            ok = self._launch_terminal(tab)
-            if ok:
-                self.status_message.setText('Running in terminal')
-            else:
-                _output_clear(tab.output_doc)
-                tab._need_scroll = True
-                _output_append(tab.output_doc,
-                               'Failed to launch terminal\n',
-                               QColor(Qt.red))
-                self.status_message.setText('Failed to launch terminal')
-                self._maybe_scroll_output(tab)
+        self.flow_ctrl.start_run(tab)
 
     def _action_test (self):
-        if self._flow_state != _FLOW_IDLE:
-            QMessageBox.information(
-                self, 'Busy',
-                'A process is currently running. '
-                'Please wait or press Stop before starting a new operation.')
+        if self.flow_ctrl.state != _FLOW_IDLE:
+            self.flow_ctrl.busy_message_requested.emit()
             return
         tab = self.tab_manager.get_current()
         if not tab:
             return
         if self._save_if_dirty(tab) < 0:
             return
-        if self._need_recompile(tab):
-            self._set_flow_state(_FLOW_COMPILING, tab=tab, intent='test')
-            self._clear_and_start_compile(tab)
-        else:
-            self._set_flow_state(_FLOW_RUNNING, tab=tab)
-            self._start_test_run(tab)
+        self.flow_ctrl.start_test(tab)
 
     def _action_stop (self):
-        if self._flow_state in (_FLOW_COMPILING, _FLOW_RUNNING):
-            self.proc_mgr.kill_process()
+        self.flow_ctrl.kill_if_busy()
 
     def _action_about (self):
         QMessageBox.about(
@@ -3418,21 +3746,46 @@ class MainWindow (QMainWindow):
             'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
                 time.strftime('%Y/%m/%d %H:%M:%S')))
 
-    #===== Settings =====
+    #===== Flow state signal handlers =====
 
-    def _set_flow_state (self, state, tab=None, intent=None):
-        """Set flow state and update status bar accordingly."""
-        self._flow_state = state
-        if tab is not None:
-            self._flow_tab = tab
-        if intent is not None:
-            self._flow_intent = intent
+    def _update_status_from_state (self, state):
+        """Update status bar with default text for the given flow state."""
         if state == _FLOW_IDLE:
             self.status_message.setText('Ready')
         elif state == _FLOW_COMPILING:
             self.status_message.setText('Compiling...')
         elif state == _FLOW_RUNNING:
             self.status_message.setText('Running...')
+
+    def _update_status_message (self, msg):
+        """Override status bar with a specific result message."""
+        self.status_message.setText(msg)
+
+    def _show_busy_message (self):
+        QMessageBox.information(
+            self, 'Busy',
+            'A process is currently running. '
+            'Please wait or press Stop before starting a new operation.')
+
+    def _on_flow_scroll_requested (self, tab):
+        """FlowController requests auto-scroll for a tab's output."""
+        self._maybe_scroll_output(tab)
+
+    def _on_terminal_requested (self, tab):
+        """FlowController requests launching an external terminal."""
+        ok = self._launch_terminal(tab)
+        if ok:
+            self.status_message.setText('Running in terminal')
+        else:
+            _output_clear(tab.output_doc)
+            tab._need_scroll = True
+            _output_append(tab.output_doc,
+                           'Failed to launch terminal\n',
+                           QColor(Qt.red))
+            self.status_message.setText('Failed to launch terminal')
+            self._maybe_scroll_output(tab)
+
+    #===== Settings =====
 
     def _action_settings (self):
         old_font_size = self.settings.editor_font_size
@@ -3497,106 +3850,9 @@ class MainWindow (QMainWindow):
                 zoom_size = max(6, s.editor_font_size)
                 self.editor.setFontSize(zoom_size)
 
-    #===== Compile/Run Flow =====
-
-    def _need_recompile (self, tab:TabData) -> bool:
-        """Check if recompilation is needed."""
-        exe_path = self._get_exe_path(tab)
-        if not exe_path or not os.path.exists(exe_path):
-            return True
-        try:
-            source_mtime = os.path.getmtime(tab.file_path)
-            exe_mtime = os.path.getmtime(exe_path)
-        except OSError:
-            return True
-        if exe_mtime < source_mtime:
-            return True
-        if exe_mtime < tab.compiler_mtime:
-            return True
-        return False
-
-    def _get_exe_path (self, tab:TabData) -> str:
-        """Get exe path corresponding to the source file."""
-        if tab.is_new or not tab.file_path:
-            return ''
-        base = os.path.splitext(tab.file_path)[0]
-        if sys.platform == 'win32':
-            return base + '.exe'
-        return base
-
-    def _build_compile_command (self, tab:TabData) -> list:
-        """Construct the compile command list."""
-        exe_path = self._get_exe_path(tab)
-        flags = self.enc_mgr.build_flags(tab.encoding)
-        resolved, _ = _resolve_compiler_path(self.settings.compiler_path)
-        command = [resolved]
-        command.extend(flags)
-        if self.settings.compiler_flags:
-            command.extend(self.settings.compiler_flags.split())
-        source_path = tab.file_path
-        if sys.platform == 'win32':
-            source_path = source_path.replace('/', '\\')
-            exe_path = exe_path.replace('/', '\\')
-        command.append(source_path)
-        command.append('-o')
-        command.append(exe_path)
-        command.append('-lstdc++')
-        return command
-
-    def _make_process_env (self) -> QProcessEnvironment:
-        """Build QProcessEnvironment from system env + user env_vars.
-        If compiler_path contains a directory component, prepend it to PATH.
-
-        Order matters: user env_vars (which may override PATH via $PATH)
-        are applied first, then bin_dir is prepended so it always takes
-        effect regardless of user overrides."""
-        env = QProcessEnvironment.systemEnvironment()
-        # Apply user env vars first (may override PATH with $PATH expansion)
-        for key, value in self.settings.env_vars.items():
-            expanded = _expand_env_vars(value)
-            env.insert(key, expanded)
-        # Prepend compiler bin dir to PATH after env vars so it always works
-        _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
-        if bin_dir:
-            old_path = env.value('PATH', '')
-            sep = ';' if sys.platform == 'win32' else ':'
-            env.insert('PATH', bin_dir + sep + old_path)
-        return env
-
-    def _clear_and_start_compile (self, tab:TabData):
-        """Clear output and start compilation."""
-        _output_clear(tab.output_doc)
-        tab._need_scroll = True
-        _output_append(tab.output_doc, 'Compiling...\n',
-                       QColor(128, 128, 128))
-        command = self._build_compile_command(tab)
-        work_dir = os.path.dirname(tab.file_path)
-        if sys.platform == 'win32':
-            work_dir = work_dir.replace('/', '\\')
-        env = self._make_process_env()
-        self.proc_mgr.target_tab = tab
-        self.proc_mgr.start_compile(
-            command, work_dir, env, self.settings.compile_timeout)
-
-    def _start_test_run (self, tab:TabData):
-        """Start test run with stdin from InputPanel."""
-        exe_path = self._get_exe_path(tab)
-        if sys.platform == 'win32':
-            exe_path = exe_path.replace('/', '\\')
-        work_dir = os.path.dirname(exe_path)
-        stdin_text = tab.input_doc.toPlainText()
-        stdin_data = self.enc_mgr.encode_stdin(stdin_text)
-        env = self._make_process_env()
-        _output_clear(tab.output_doc)
-        tab._need_scroll = True
-        self.proc_mgr.target_tab = tab
-        self.proc_mgr.start_test_run(
-            exe_path, work_dir, env, stdin_data,
-            self.settings.run_timeout)
-
     def _launch_terminal (self, tab:TabData) -> bool:
         """Launch exe in external terminal window. Returns True on success."""
-        exe_path = self._get_exe_path(tab)
+        exe_path = self.flow_ctrl.get_exe_path(tab)
         if sys.platform == 'win32':
             exe_path = exe_path.replace('/', '\\')
         work_dir = os.path.dirname(exe_path)
@@ -3642,18 +3898,6 @@ class MainWindow (QMainWindow):
                     os.environ[key] = orig
         return ok
 
-    def _count_compile_errors (self, stderr_text:str) -> int:
-        """Count the number of compile error lines in stderr output.
-        Returns 0 if stderr is empty, actual error count if > 0,
-        or 1 as fallback if stderr has content but no ': error:' lines."""
-        count = 0
-        for line in stderr_text.splitlines():
-            if ': error:' in line:
-                count += 1
-        if count > 0:
-            return count
-        return 1 if stderr_text.strip() else 0
-
     def _maybe_scroll_output (self, tab:TabData):
         """Start scroll timer if auto-scroll is active for this tab.
         _need_scroll stays True until user scrolls up — don't reset it here."""
@@ -3690,110 +3934,8 @@ class MainWindow (QMainWindow):
         else:
             self._scroll_output_timer.stop()
 
-    #----- ProcessManager signal handlers -----
-
-    def _on_compile_finished (self, exit_code:int, stderr_text:str,
-                              reason:str):
-        if self._flow_state != _FLOW_COMPILING:
-            return
-        tab = self._flow_tab
-        if not tab:
-            self._set_flow_state(_FLOW_IDLE)
-            return
-        if reason == 'failed_to_start':
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            compiler = self.settings.compiler_path
-            _output_append(
-                tab.output_doc,
-                'Failed to start compiler \'{}\'\n'.format(compiler),
-                QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Error: {}\n'.format(stderr_text),
-                QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Please check Settings to set the correct compiler path.\n',
-                QColor(128, 128, 128))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText(
-                'Failed to start compiler')
-            self._maybe_scroll_output(tab)
-        elif reason == 'timeout':
-            elapsed = time.time() - self.proc_mgr.start_time
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            _output_append(
-                tab.output_doc,
-                'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
-                    self.settings.compile_timeout, elapsed),
-                QColor(Qt.red))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText(
-                'Compilation timeout')
-            self._maybe_scroll_output(tab)
-        elif reason == 'killed':
-            elapsed = time.time() - self.proc_mgr.start_time
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            _output_append(
-                tab.output_doc,
-                'Compilation stopped in {:.3}s\n'.format(elapsed),
-                QColor(128, 128, 128))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText('Compilation stopped')
-            self._maybe_scroll_output(tab)
-        elif exit_code != 0:
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
-            n = self._count_compile_errors(stderr_text)
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText(
-                'Build failed with {} error(s)'.format(n))
-            self._maybe_scroll_output(tab)
-        else:
-            # Compile succeeded — check intent
-            if self._flow_intent == 'build':
-                elapsed = time.time() - self.proc_mgr.start_time
-                _output_clear(tab.output_doc)
-                tab._need_scroll = True
-                _output_append(
-                    tab.output_doc,
-                    'Build OK in {:.3}s\n'.format(elapsed),
-                    QColor(128, 128, 128))
-                self._set_flow_state(_FLOW_IDLE)
-                self.status_message.setText('Build successful')
-                self._maybe_scroll_output(tab)
-            elif self._flow_intent == 'test':
-                self._set_flow_state(_FLOW_RUNNING)
-                self._start_test_run(tab)
-            elif self._flow_intent == 'run':
-                elapsed = time.time() - self.proc_mgr.start_time
-                _output_clear(tab.output_doc)
-                tab._need_scroll = True
-                _output_append(
-                    tab.output_doc,
-                    'Build OK in {:.3}s\n'.format(elapsed),
-                    QColor(128, 128, 128))
-                ok = self._launch_terminal(tab)
-                self._set_flow_state(_FLOW_IDLE)
-                if ok:
-                    self.status_message.setText('Running in terminal')
-                else:
-                    _output_append(tab.output_doc,
-                                   'Failed to launch terminal\n',
-                                   QColor(Qt.red))
-                    self.status_message.setText('Failed to launch terminal')
-                self._maybe_scroll_output(tab)
-            else:
-                # Unknown intent — reset to idle as a safeguard
-                self._set_flow_state(_FLOW_IDLE)
-                self.status_message.setText('Ready')
-
     def _on_run_stdout_ready (self, text:str):
-        tab = self.proc_mgr.target_tab
+        tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text)
             if tab is self.tab_manager.get_current() and tab._need_scroll:
@@ -3801,94 +3943,12 @@ class MainWindow (QMainWindow):
                     self._scroll_output_timer.start(50)
 
     def _on_run_stderr_ready (self, text:str):
-        tab = self.proc_mgr.target_tab
+        tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
             if tab is self.tab_manager.get_current() and tab._need_scroll:
                 if not self._scroll_output_timer.isActive():
                     self._scroll_output_timer.start(50)
-
-    def _on_run_finished (self, exit_code:int, elapsed:float,
-                          peak_memory:int, reason:str, error_detail:str):
-        if self._flow_state != _FLOW_RUNNING:
-            return
-        tab = self._flow_tab
-        if not tab:
-            self._set_flow_state(_FLOW_IDLE)
-            return
-        if reason == 'failed_to_start':
-            _output_clear(tab.output_doc)
-            tab._need_scroll = True
-            _output_append(tab.output_doc,
-                           'Failed to start program\n',
-                           QColor(Qt.red))
-            _output_append(tab.output_doc,
-                           'Error: {}\n'.format(error_detail),
-                           QColor(Qt.red))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText('Failed to start program')
-            self._maybe_scroll_output(tab)
-        elif reason == 'timeout':
-            _output_append(tab.output_doc, '\n', QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Timeout after {} seconds (ran {:.3}s)\n'.format(
-                    self.settings.run_timeout, elapsed),
-                QColor(Qt.red))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText(
-                'Timeout after {} seconds'.format(
-                    self.settings.run_timeout))
-            self._maybe_scroll_output(tab)
-        elif reason == 'killed':
-            detail = _describe_exit_code(exit_code)
-            if detail:
-                _output_append(tab.output_doc, '\n', QColor(Qt.red))
-                _output_append(
-                    tab.output_doc,
-                    'Program crashed: {} (exit code {})\n'.format(
-                        detail, exit_code),
-                    QColor(Qt.red))
-            else:
-                _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
-                _output_append(tab.output_doc,
-                               'Process stopped in {:.3}s\n'.format(elapsed),
-                               QColor(128, 128, 128))
-            self._set_flow_state(_FLOW_IDLE)
-            if detail:
-                self.status_message.setText(
-                    'Program crashed: {}'.format(detail))
-            else:
-                self.status_message.setText('Process stopped')
-            self._maybe_scroll_output(tab)
-        elif exit_code != 0:
-            detail = _describe_exit_code(exit_code)
-            _output_append(tab.output_doc, '\n', QColor(Qt.red))
-            line = 'Runtime Error (exit code {})\n'.format(exit_code)
-            if detail:
-                line = 'Runtime Error: {} (exit code {})\n'.format(
-                    detail, exit_code)
-            _output_append(tab.output_doc, line, QColor(Qt.red))
-            self._set_flow_state(_FLOW_IDLE)
-            msg = 'Runtime Error (exit code {})'.format(exit_code)
-            if detail:
-                msg = 'Runtime Error: {}'.format(detail)
-            self.status_message.setText(msg)
-            self._maybe_scroll_output(tab)
-        else:
-            mem_str = ''
-            if peak_memory > 0:
-                mem_mb = peak_memory / (1024 * 1024)
-                mem_str = ', {:.1f}MB'.format(mem_mb)
-            _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
-            line = 'exit with code {} in {:.3}s{}\n'.format(
-                exit_code, elapsed, mem_str)
-            _output_append(tab.output_doc, line, QColor(128, 128, 128))
-            self._set_flow_state(_FLOW_IDLE)
-            self.status_message.setText(
-                'Program exited with code 0 in {:.3}s{}'.format(
-                    elapsed, mem_str))
-            self._maybe_scroll_output(tab)
 
     #===== Tab Management =====
 
@@ -3985,10 +4045,10 @@ class MainWindow (QMainWindow):
 
         # Kill process and fully clean up to prevent stale finished signals
         # from corrupting a subsequent compile/run operation
-        if self._flow_state != _FLOW_IDLE and self._flow_tab is tab:
-            self.proc_mgr.kill_process()
-            self.proc_mgr._cleanup()
-            self._set_flow_state(_FLOW_IDLE)
+        if self.flow_ctrl.state != _FLOW_IDLE and self.flow_ctrl.tab is tab:
+            self.flow_ctrl.proc_mgr.kill_process()
+            self.flow_ctrl.proc_mgr._cleanup()
+            self.flow_ctrl.set_state(_FLOW_IDLE)
 
         # Cancel batch highlighting before removing
         tab.highlighter.cancel_batch_highlight()
@@ -4355,9 +4415,9 @@ class MainWindow (QMainWindow):
                         return
 
         # Clean up any running process only after confirming all dirty tabs
-        if self.proc_mgr.busy:
-            self.proc_mgr.kill_process()
-            self.proc_mgr._cleanup()
+        if self.flow_ctrl.proc_mgr.busy:
+            self.flow_ctrl.proc_mgr.kill_process()
+            self.flow_ctrl.proc_mgr._cleanup()
 
         # Save window state only after confirming all dirty tabs
         self._save_window_state()
