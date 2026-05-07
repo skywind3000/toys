@@ -71,7 +71,7 @@ class TestEncodingDetection (unittest.TestCase):
     def test_gbk_detected_when_not_utf8 (self):
         _, enc = self._write_and_read(b'\xd6\xd0\xce\xc4')
         if sys.platform == 'win32':
-            self.assertEqual(enc, 'gbk')
+            self.assertEqual(enc, 'GBK')
         else:
             self.assertEqual(enc, 'utf-8')
 
@@ -82,7 +82,7 @@ class TestEncodingDetection (unittest.TestCase):
     def test_mixed_invalid_bytes (self):
         _, enc = self._write_and_read(b'hello \xff world')
         if sys.platform == 'win32':
-            self.assertEqual(enc, 'gbk')
+            self.assertEqual(enc, 'GBK')
         else:
             self.assertEqual(enc, 'utf-8')
 

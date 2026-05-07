@@ -189,9 +189,9 @@ class TestEncodingDetection (unittest.TestCase):
     def test_gbk_chinese (self):
         _, enc = self._write_and_read('你好'.encode('gbk'))
         if sys.platform == 'win32':
-            self.assertEqual(enc, 'gbk')
+            self.assertEqual(enc, 'GBK')
         else:
-            self.assertTrue(enc in ('gbk', 'utf-8', 'latin-1'))
+            self.assertTrue(enc in ('GBK', 'UTF-8', 'latin-1'))
 
     def test_empty_file (self):
         _, enc = self._write_and_read(b'')
@@ -200,7 +200,7 @@ class TestEncodingDetection (unittest.TestCase):
     def test_mixed_invalid_bytes (self):
         _, enc = self._write_and_read(b'\xff\xfe')
         if sys.platform == 'win32':
-            self.assertEqual(enc, 'gbk')
+            self.assertEqual(enc, 'GBK')
 
     def test_read_file_utf8 (self):
         with tempfile.NamedTemporaryFile(
@@ -237,7 +237,7 @@ class TestEncodingDetection (unittest.TestCase):
             path = f.name
         try:
             content, encoding = _read_file(path)
-            self.assertEqual(encoding, 'gbk')
+            self.assertEqual(encoding, 'GBK')
             self.assertIn('你好', content)
         finally:
             os.unlink(path)

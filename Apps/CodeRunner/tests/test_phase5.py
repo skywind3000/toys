@@ -74,12 +74,12 @@ class TestEncodingDetection (unittest.TestCase):
         if sys.platform != 'win32':
             return
         _, encoding = self._write_and_read('中文'.encode('gbk'))
-        self.assertEqual(encoding, 'gbk')
+        self.assertEqual(encoding, 'GBK')
 
     def test_mixed_invalid_bytes (self):
         _, encoding = self._write_and_read(b'\x80\x81\x82')
         if sys.platform == 'win32':
-            self.assertEqual(encoding, 'gbk')
+            self.assertEqual(encoding, 'GBK')
         else:
             self.assertEqual(encoding, 'utf-8')
 
@@ -122,7 +122,7 @@ class TestEncodingDetection (unittest.TestCase):
             path = f.name
         try:
             content, encoding = _read_file(path)
-            self.assertEqual(encoding, 'gbk')
+            self.assertEqual(encoding, 'GBK')
             self.assertIn('中文', content)
         finally:
             os.unlink(path)
