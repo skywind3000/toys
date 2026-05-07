@@ -1521,6 +1521,14 @@ class FileDragMixin:
             super().dropEvent(event)
 
 
+class _IOPanelBase (FileDragMixin, QTextEdit):
+    """Base class for InputPanel and OutputPanel — shared setDocument."""
+
+    def setDocument (self, doc):
+        doc.setDefaultFont(self.font())
+        super().setDocument(doc)
+
+
 #----------------------------------------------------------------------
 # _ClickableLabel — status bar label that pops encoding menu on click
 #----------------------------------------------------------------------
@@ -2451,15 +2459,11 @@ class CodeEditor (FileDragMixin, QTextEdit):
 #----------------------------------------------------------------------
 # InputPanel
 #----------------------------------------------------------------------
-class InputPanel (FileDragMixin, QTextEdit):
+class InputPanel (_IOPanelBase):
 
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setAcceptRichText(False)
-
-    def setDocument (self, doc):
-        doc.setDefaultFont(self.font())
-        super().setDocument(doc)
 
     def keyPressEvent (self, event):
         if event.key() == Qt.Key_Tab:
@@ -2521,15 +2525,11 @@ def _strip_trailing_whitespace (text:str) -> str:
 #----------------------------------------------------------------------
 # OutputPanel
 #----------------------------------------------------------------------
-class OutputPanel (FileDragMixin, QTextEdit):
+class OutputPanel (_IOPanelBase):
 
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
-
-    def setDocument (self, doc):
-        doc.setDefaultFont(self.font())
-        super().setDocument(doc)
 
     def keyPressEvent (self, event):
         if (event.matches(QKeySequence.Copy)
@@ -3134,6 +3134,14 @@ class MainWindow (QMainWindow):
 
     def __init__ (self, settings=None):
         super().__init__()
+        self.__init_settings(settings)
+        self.__init_core_state()
+        self.__init_widgets()
+        self.__init_ui()
+        self.__init_connections()
+        self.__init_final()
+
+    def __init_settings (self, settings):
         if settings is None:
             settings = Settings()
             settings.load()
@@ -3141,7 +3149,6 @@ class MainWindow (QMainWindow):
         self.settings = settings
         self.setWindowTitle('CodeRunner')
         self.resize(1000, 650)
-
         # Center window on screen
         screen = QApplication.primaryScreen()
         if screen:
@@ -3149,15 +3156,22 @@ class MainWindow (QMainWindow):
             x = (geo.width() - self.width()) // 2 + geo.x()
             y = (geo.height() - self.height()) // 2 + geo.y()
             self.move(x, y)
-
-        # DPI factor for scaled drawing
         self._dpi = _dpi_factor()
-
-        # Create icons
         self.icons = _create_toolbar_icons()
         self.setWindowIcon(self.icons['run'])
 
-        # Create editor and IO panels
+    def __init_core_state (self):
+        self.tab_manager = TabManager()
+        self._tab_switching = False
+        self._last_file_dir = ''
+        self._deferred_restore_tab = -1
+        self._recent_files = []
+        self.enc_mgr = EncodingManager()
+        self.flow_ctrl = FlowController(self.settings, self.enc_mgr)
+        self._find_dialog = None
+        self._replace_dialog = None
+
+    def __init_widgets (self):
         self.editor = CodeEditor()
         self.editor.indent_style = self.settings.indent_style
         self.editor.indent_size = self.settings.indent_size
@@ -3165,18 +3179,15 @@ class MainWindow (QMainWindow):
             self.settings.bracket_completion)
         self.input_panel = InputPanel()
         self.output_panel = OutputPanel()
-
-        # Apply Settings fonts to widgets
+        # Apply Settings fonts
         editor_font = self.editor.font()
         editor_font.setFamily(self.settings.editor_font_family)
         editor_font.setPointSize(self.settings.editor_font_size)
         self.editor.setFont(editor_font)
         self.editor.updateFontMetrics()
-        # Apply word wrap from settings
         wrap_mode = QTextEdit.WidgetWidth if self.settings.word_wrap \
             else QTextEdit.NoWrap
         self.editor.setLineWrapMode(wrap_mode)
-
         io_font = self.input_panel.font()
         io_font.setFamily(self.settings.io_font_family)
         io_font.setPointSize(self.settings.io_font_size)
@@ -3184,8 +3195,7 @@ class MainWindow (QMainWindow):
         self.output_panel.setFont(io_font)
         self.input_panel.setTabStopWidth(
             self.input_panel.fontMetrics().horizontalAdvance('x') * self.settings.indent_size)
-
-        # Create standalone placeholder docs for zero-tab state
+        # Placeholder docs for zero-tab state
         self.empty_editor_doc = QTextDocument(self)
         self.empty_input_doc = QTextDocument(self)
         self.empty_output_doc = QTextDocument(self)
@@ -3193,57 +3203,30 @@ class MainWindow (QMainWindow):
         self.input_panel.setDocument(self.empty_input_doc)
         self.output_panel.setDocument(self.empty_output_doc)
 
-        # Tab management (pure data — no UI coupling)
-        self.tab_manager = TabManager()
-        self._tab_switching = False
-        self._last_file_dir = ''
-        self._deferred_restore_tab = -1
-        self._recent_files = []
-
-        # Process management and flow state
-        self.enc_mgr = EncodingManager()
-        self.flow_ctrl = FlowController(self.settings, self.enc_mgr)
-
-        # Find/Replace dialogs (created lazily, preserved across show/hide)
-        self._find_dialog = None
-        self._replace_dialog = None
-
-        # Create actions first (needed by menubar and toolbar)
+    def __init_ui (self):
         self.__create_actions()
-
-        # Build UI in correct order
         self.__build_menubar()
         self.__build_toolbar()
         self.__build_mainarea()
         self.__build_tabbar_and_layout()
         self.__build_statusbar()
-
-        # Set initial status bar text
         self._update_status_from_state(_FLOW_IDLE)
 
-        # Output auto-scroll timer (shared, 50ms, batched)
+    def __init_connections (self):
         self._scroll_output_timer = QTimer(self)
         self._scroll_output_timer.setSingleShot(False)
         self._scroll_output_timer.timeout.connect(
             self._on_scroll_output_timer)
-
-        # Connect signals
         self.__connect_signals()
-
-        # Connect FlowController signals to MainWindow
         self.flow_ctrl.state_changed.connect(self._update_status_from_state)
         self.flow_ctrl.status_message.connect(self._update_status_message)
         self.flow_ctrl.busy_message_requested.connect(self._show_busy_message)
         self.flow_ctrl.scroll_requested.connect(self._on_flow_scroll_requested)
         self.flow_ctrl.terminal_requested.connect(self._on_terminal_requested)
-
-        # Alt shortcuts for tab switching
         self.__setup_tab_switch_shortcuts()
 
-        # Enable drag-drop for .cpp/.c files
+    def __init_final (self):
         self.setAcceptDrops(True)
-
-        # Start in zero-tab state, then restore window state
         self._enter_zero_tab_state()
         self._load_window_state()
 
@@ -3459,6 +3442,8 @@ class MainWindow (QMainWindow):
 
     #===== Action Handlers =====
 
+    #--- File & Tab Lifecycle Actions ---
+
     def _action_new (self):
         tab = TabData(
             is_new=True, encoding='UTF-8',
@@ -3568,6 +3553,8 @@ class MainWindow (QMainWindow):
         if self.tab_manager.current_index < 0:
             return
         self._handle_close_tab(self.tab_manager.current_index)
+
+    #--- Edit & View Actions ---
 
     def _action_zoom_in (self):
         tab = self.tab_manager.get_current()
@@ -3907,6 +3894,14 @@ class MainWindow (QMainWindow):
 
     #===== Tab Management =====
 
+    def _save_widget_state (self, tab:TabData):
+        """Save current widget state (cursor, scroll) into tab data."""
+        tab.cursor = self.editor.textCursor()
+        tab.scroll_pos = self.editor.verticalScrollBar().value()
+        tab.input_cursor = self.input_panel.textCursor()
+        tab.input_scroll = self.input_panel.verticalScrollBar().value()
+        tab.output_scroll = self.output_panel.verticalScrollBar().value()
+
     def _switch_to_tab (self, index:int):
         """Switch to tab: save old state, swap documents, restore new state."""
         tm = self.tab_manager
@@ -3917,11 +3912,7 @@ class MainWindow (QMainWindow):
         # Save old tab state
         if 0 <= old_index < len(tm.tabs):
             old_tab = tm.tabs[old_index]
-            old_tab.cursor = self.editor.textCursor()
-            old_tab.scroll_pos = self.editor.verticalScrollBar().value()
-            old_tab.input_cursor = self.input_panel.textCursor()
-            old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
-            old_tab.output_scroll = self.output_panel.verticalScrollBar().value()
+            self._save_widget_state(old_tab)
             # Cancel batch highlighting on old tab to avoid editor flicker
             if old_tab.highlighter._batch_timer is not None:
                 old_tab.highlighter.cancel_batch_highlight()
@@ -4018,12 +4009,7 @@ class MainWindow (QMainWindow):
         # Save current tab's widget state if it's not the one being closed
         if tm.current_index >= 0 and tm.current_index != index \
            and tm.current_index < len(tm.tabs):
-            old_tab = tm.tabs[tm.current_index]
-            old_tab.cursor = self.editor.textCursor()
-            old_tab.scroll_pos = self.editor.verticalScrollBar().value()
-            old_tab.input_cursor = self.input_panel.textCursor()
-            old_tab.input_scroll = self.input_panel.verticalScrollBar().value()
-            old_tab.output_scroll = self.output_panel.verticalScrollBar().value()
+            self._save_widget_state(tm.tabs[tm.current_index])
 
         # Mark no active tab so switch won't try to save old state
         tm.current_index = -1
@@ -4046,6 +4032,8 @@ class MainWindow (QMainWindow):
         return True
 
     #===== Status & Title =====
+
+    #--- Status display ---
 
     def _update_status_info (self, tab:TabData):
         cursor = self.editor.textCursor()
@@ -4073,6 +4061,8 @@ class MainWindow (QMainWindow):
             action2.setData(enc)
             action2.triggered.connect(self._on_save_with_encoding)
         menu.exec_(pos_widget.mapToGlobal(pos_widget.rect().bottomLeft()))
+
+    #--- Encoding lifecycle (reopen/save with encoding) ---
 
     def _on_reopen_with_encoding (self, encoding:str=None):
         """Reopen current file with chosen encoding."""
@@ -4190,7 +4180,7 @@ class MainWindow (QMainWindow):
             self.setWindowTitle(
                 '{} ({}) - CodeRunner'.format(name, dir_path))
 
-    #===== File Operations =====
+    #===== File Save & Confirm Dialogs =====
 
     def _save_if_dirty (self, tab:TabData) -> int:
         """Save tab if it has unsaved changes. Returns 0 success/clean,
@@ -4276,7 +4266,7 @@ class MainWindow (QMainWindow):
             return 'discard'
         return 'cancel'
 
-    #----- Signal handlers -----
+    #----- Signal handlers (tab lifecycle) -----
 
     def _on_tabbar_current_changed (self, index:int):
         if self._tab_switching:
@@ -4398,10 +4388,7 @@ class MainWindow (QMainWindow):
         # Save current tab's widget state
         tab = self.tab_manager.get_current()
         if tab:
-            tab.cursor = self.editor.textCursor()
-            tab.scroll_pos = self.editor.verticalScrollBar().value()
-            tab.input_cursor = self.input_panel.textCursor()
-            tab.input_scroll = self.input_panel.verticalScrollBar().value()
+            self._save_widget_state(tab)
         # Use normalGeometry to avoid saving maximized/fullscreen coordinates
         geo = (self.normalGeometry() if self.isMaximized()
                else self.geometry())
@@ -4584,7 +4571,7 @@ class MainWindow (QMainWindow):
             return
         self._open_file_path(path, add_recent=True)
 
-    #===== Drag-Drop =====
+    #===== Drag-Drop (file open via drop) =====
 
     def dragEnterEvent (self, event):
         if event.mimeData().hasUrls():

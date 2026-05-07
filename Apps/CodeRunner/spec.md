@@ -12,17 +12,20 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 - **单一 Widget 组**：每个标签页持有三个独立 QTextDocument（editor_doc / input_doc / output_doc），切换标签时通过 `setDocument()` 交换文档，Widget 不销毁重建。Splitter 位置全局共享
 - **状态栏**：左侧 QLabel 仅显示状态机当前状态；右侧 QLabel 显示光标位置/编码/编辑模式
 - **主题**：Fusion，Toolbar 七个按钮使用 QPainter 自绘彩色图标（详见第 8 节）
+- **初始化分阶段**：MainWindow.__init__ 拆为 `__init_settings` → `__init_core_state` → `__init_widgets` → `__init_ui` → `__init_connections` → `__init_final` 六个子方法
+- **widget 状态保存**：`_save_widget_state(tab)` 统一保存 cursor/scroll 到 TabData，消除三处重复
 
 ### 类列表
 
 | 类 | 基类 | 职责 |
 |----|------|------|
 | MainWindow | QMainWindow | 主窗口，协调所有组件，处理 UI 操作 |
-| CodeEditor | QTextEdit | 代码编辑器（因 PyQt5 QPlainTextEdit.setDocument() 不工作而改用 QTextEdit，setAcceptRichText=False）|
+| CodeEditor | FileDragMixin, QTextEdit | 代码编辑器（因 PyQt5 QPlainTextEdit.setDocument() 不工作而改用 QTextEdit，setAcceptRichText=False）|
+| _IOPanelBase | FileDragMixin, QTextEdit | IO 面板基类，共享 setDocument 逻辑（同步文档默认字体）|
 | LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor |
 | CppHighlighter | QSyntaxHighlighter | C++ 语法高亮 |
-| InputPanel | QTextEdit | 输入面板（同 CodeEditor 原因改用 QTextEdit）|
-| OutputPanel | QTextEdit | 输出面板（只读，支持多色富文本）|
+| InputPanel | _IOPanelBase | 输入面板，继承 _IOPanelBase 共享 setDocument |
+| OutputPanel | _IOPanelBase | 输出面板（只读，继承 _IOPanelBase，支持多色富文本）|
 | TabData | object | 单个标签页的全部状态数据 |
 | TabManager | object | 纯数据管理器，无 UI 操作，不持有 main_window 引用 |
 | ProcessManager | QObject | 编译/运行进程管理（QProcess），busy/mode 由状态机驱动 |
@@ -238,13 +241,17 @@ _SETTINGS_DEFAULTS = {
 
 **延迟+分批高亮**：deferred=True 模式下 highlightBlock 仅追踪多行注释状态不产生 format spans；文档先以无高亮状态显示（layout 快 ~0.5s）；`_switch_to_tab` 通过 `QTimer.singleShot(0)` 触发 `_start_batch_highlight`；每批 rehighlightBlock 100 个 block，批间 `QTimer.singleShot(0)` 保持 UI 响应；切换标签时取消旧标签的 batch highlighting，设置 `_highlight_pending=True`。
 
-### 3.3 InputPanel
+### 3.3 _IOPanelBase
 
-继承 QTextEdit（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符，tabStopWidth = `indent_size * charWidth`。setDocument() 重写中同步文档字体。零标签状态下灰显。
+继承 FileDragMixin + QTextEdit，共享 `setDocument()` 逻辑（`doc.setDefaultFont(self.font())` + `super().setDocument(doc)`），消除 InputPanel 和 OutputPanel 的重复。FileDragMixin 让 URL 拖放事件 ignore（由 MainWindow 处理），文本拖放交给 QTextEdit 默认行为。
 
-### 3.4 OutputPanel
+### 3.4 InputPanel
 
-继承 QTextEdit，外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。只读，支持多色富文本。
+继承 `_IOPanelBase`（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符，tabStopWidth = `indent_size * charWidth`。setDocument() 由基类提供。零标签状态下灰显。
+
+### 3.5 OutputPanel
+
+继承 `_IOPanelBase`（只读），外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。setDocument() 由基类提供。支持多色富文本。
 
 **自动滚动**：仅当滚动条已在底部时才自动跟随新输出。用户翻看历史输出时不被强制拉回底部。按 END 键可回到底部跟踪模式。滚动通过 per-tab 的 `_need_scroll` 标志和 50ms 共享 QTimer 批量执行，避免逐行滚动影响性能。每次 `_output_clear` 后视为"在底部"，新内容开始后默认自动跟踪。`_is_output_at_bottom()` 判断滚动条距离底部不超过 3px 即视为在底部。
 
@@ -635,3 +642,6 @@ def main():
 | 2026/05/07 | 括号补全上下文感知 | `_handle_bracket_open` 调用 `_is_bracket_in_comment_or_string` 检查光标位置，在字符串/注释内跳过自动补全，返回 bool 表示是否已处理 |
 | 2026/05/07 | psutil.Process 缓存复用 | `_start_memory_tracking` 创建 Process 对象缓存到 `_tracked_process`，`_poll_memory` 直接使用缓存而非每 100ms 重新创建 |
 | 2026/05/07 | FlowController 拆出 MainWindow | 编译/运行状态机从 MainWindow 中抽成独立 FlowController 类，MainWindow 只做 UI 跟进，为后续迭代腾出空间 |
+| 2026/05/07 | _IOPanelBase 提取 | InputPanel 和 OutputPanel 共享 setDocument(doc.setDefaultFont + super)，抽 _IOPanelBase(FileDragMixin, QTextEdit) 基类消除重复 |
+| 2026/05/07 | _save_widget_state helper | 三处相同的 widget state 保存代码（cursor/scroll/output_scroll）提取为 `_save_widget_state(tab)` 方法 |
+| 2026/05/07 | MainWindow.__init__ 拆分 | 115 行 __init__ 拆为 `__init_settings` → `__init_core_state` → `__init_widgets` → `__init_ui` → `__init_connections` → `__init_final` 六个子方法 |
