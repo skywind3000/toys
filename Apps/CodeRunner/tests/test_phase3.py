@@ -34,7 +34,7 @@ from CodeRunner import (
     Settings, _SETTINGS_DEFAULTS, TabData, TabManager,
     CodeEditor, MainWindow, _init_font_defaults,
     _dpi_factor, _ICON_BASE, _create_toolbar_icons,
-    _detect_encoding, _read_file, _window_state_path
+    _read_file, _window_state_path
 )
 
 

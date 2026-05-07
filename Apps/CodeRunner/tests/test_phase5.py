@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from CodeRunner import (
     Settings, _SETTINGS_DEFAULTS, TabData, TabManager,
     CodeEditor, InputPanel, MainWindow,
-    _init_font_defaults, _detect_encoding, _read_file,
+    _init_font_defaults, _read_file,
     EncodingManager, _expand_env_vars, _ensure_cmd_file,
     _output_clear, _output_append, ProcessManager,
     _FLOW_IDLE, _FLOW_COMPILING, _FLOW_RUNNING
@@ -45,42 +45,46 @@ from CodeRunner import (
 #----------------------------------------------------------------------
 class TestEncodingDetection (unittest.TestCase):
 
+    def _write_and_read (self, raw_bytes):
+        """Write raw bytes to a temp file, read back with _read_file,
+        return (content, encoding)."""
+        with tempfile.NamedTemporaryFile(
+                suffix='.cpp', delete=False, mode='wb') as f:
+            f.write(raw_bytes)
+            path = f.name
+        try:
+            return _read_file(path)
+        finally:
+            os.unlink(path)
+
     def test_utf8_bom (self):
-        raw = b'\xef\xbb\xbf#include <iostream>'
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read(b'\xef\xbb\xbf#include <iostream>')
         self.assertEqual(encoding, 'UTF-8')
 
     def test_pure_utf8 (self):
-        raw = b'#include <iostream>\nint main() { return 0; }'
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read(
+            b'#include <iostream>\nint main() { return 0; }')
         self.assertEqual(encoding, 'UTF-8')
 
     def test_utf8_with_chinese (self):
-        raw = 'int x = 中文;'.encode('utf-8')
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read('int x = 中文;'.encode('utf-8'))
         self.assertEqual(encoding, 'UTF-8')
 
     def test_gbk_on_windows (self):
         if sys.platform != 'win32':
             return
-        # GBK-encoded Chinese text
-        raw = '中文'.encode('gbk')
-        # This is not valid UTF-8, so detection should fall back to gbk
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read('中文'.encode('gbk'))
         self.assertEqual(encoding, 'gbk')
 
     def test_mixed_invalid_bytes (self):
-        # Bytes that are not valid UTF-8 and not valid any encoding
-        raw = b'\x80\x81\x82'
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read(b'\x80\x81\x82')
         if sys.platform == 'win32':
             self.assertEqual(encoding, 'gbk')
         else:
             self.assertEqual(encoding, 'utf-8')
 
     def test_empty_file (self):
-        raw = b''
-        encoding = _detect_encoding(raw)
+        _, encoding = self._write_and_read(b'')
         self.assertEqual(encoding, 'UTF-8')
 
     def test_read_file_utf8_bom (self):

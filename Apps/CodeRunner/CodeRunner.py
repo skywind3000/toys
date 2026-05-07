@@ -185,21 +185,8 @@ _ACTION_DEFS = [
 
 
 #----------------------------------------------------------------------
-# File encoding detection
+# File encoding detection (inlined in _read_file)
 #----------------------------------------------------------------------
-def _detect_encoding (raw:bytes) -> str:
-    """Detect file encoding: UTF-8 BOM → UTF-8 strict → system encoding."""
-    if raw[:3] == b'\xef\xbb\xbf':
-        return 'UTF-8'
-    try:
-        raw.decode('utf-8', 'strict')
-        return 'UTF-8'
-    except UnicodeDecodeError:
-        pass
-    if sys.platform == 'win32':
-        return 'gbk'
-    return 'utf-8'
-
 
 def _read_file (path:str) -> tuple:
     """Read file with auto encoding detection. Returns (content, encoding).
@@ -569,14 +556,54 @@ class CppHighlighter (QSyntaxHighlighter):
         if seg_start >= 0:
             self.setFormat(seg_start, end - seg_start, fmt)
 
+    def __is_position_masked (self, text:str, pos:int) -> bool:
+        """Check if position is inside a string/char literal or SL comment.
+        Used in deferred mode where format() hasn't been applied yet.
+        Simulates first-match-wins: strings/chars mask // inside them."""
+        # Collect string and char literal ranges first (higher semantic priority)
+        masked = []
+        for regex in (self._rules[1][0], self._rules[2][0]):  # strings, chars
+            it = regex.globalMatch(text)
+            while it.hasNext():
+                m = it.next()
+                masked.append((m.capturedStart(), m.capturedEnd()))
+        # Find // comments not inside any string/char range
+        it = self._rules[0][0].globalMatch(text)  # //[^\n]*
+        while it.hasNext():
+            m = it.next()
+            start = m.capturedStart()
+            inside_str = any(start >= s and start < e for s, e in masked)
+            if not inside_str:
+                masked.append((start, len(text)))
+        # Check if pos falls inside any masked range
+        return any(pos >= s and pos < e for s, e in masked)
+
+    def __find_free_multi_start (self, text:str, offset:int = 0):
+        """Find next /* that is not masked by string/char/SL comment.
+        Returns match or None. Used in deferred mode."""
+        match = self._multi_start.match(text, offset)
+        while match.hasMatch():
+            idx = match.capturedStart()
+            if not self.__is_position_masked(text, idx):
+                return match
+            match = self._multi_start.match(text, match.capturedEnd())
+        return None
+
     def __highlight_multiline_comments (self, text:str):
         start_state = self.previousBlockState()
         start_idx = 0
         if start_state != 1:
+            # Find first /* not masked by higher-priority rules (strings, //)
             match = self._multi_start.match(text)
-            if match.hasMatch():
-                start_idx = match.capturedStart()
-            else:
+            while match.hasMatch():
+                idx = match.capturedStart()
+                fg = self.format(idx).foreground()
+                is_free = not fg.style() or fg.color() == QColor()
+                if is_free:
+                    start_idx = idx
+                    break
+                match = self._multi_start.match(text, match.capturedEnd())
+            if not match.hasMatch():
                 self.setCurrentBlockState(0)
                 return
         end_match = self._multi_end.match(text, start_idx)
@@ -585,29 +612,41 @@ class CppHighlighter (QSyntaxHighlighter):
             self.setFormat(start_idx, end_idx - start_idx,
                            self._multi_fmt)
             self.setCurrentBlockState(0)
-            # Continue looking for more /* after */
-            next_start = self._multi_start.match(text, end_idx)
-            if next_start.hasMatch():
+            # Loop: continue looking for more /* */ pairs after closing */
+            search_from = end_idx
+            while True:
+                next_start = self._multi_start.match(text, search_from)
+                if not next_start.hasMatch():
+                    break
                 ns = next_start.capturedStart()
+                # Skip /* inside already-formatted regions
+                fg = self.format(ns).foreground()
+                is_free = not fg.style() or fg.color() == QColor()
+                if not is_free:
+                    search_from = next_start.capturedEnd()
+                    continue
                 next_end = self._multi_end.match(text, ns)
                 if next_end.hasMatch():
                     ne = next_end.capturedEnd()
                     self.setFormat(ns, ne - ns, self._multi_fmt)
+                    search_from = ne
                 else:
                     self.setFormat(ns, len(text) - ns, self._multi_fmt)
                     self.setCurrentBlockState(1)
+                    break
         else:
             self.setFormat(start_idx, len(text) - start_idx,
                            self._multi_fmt)
             self.setCurrentBlockState(1)
 
     def __track_multiline_state (self, text:str):
-        """Deferred mode: only track multiline comment state, no formatting."""
+        """Deferred mode: only track multiline comment state, no formatting.
+        Uses __is_position_masked to simulate first-match-wins for // and strings."""
         start_state = self.previousBlockState()
         start_idx = 0
         if start_state != 1:
-            match = self._multi_start.match(text)
-            if match.hasMatch():
+            match = self.__find_free_multi_start(text)
+            if match:
                 start_idx = match.capturedStart()
             else:
                 self.setCurrentBlockState(0)
@@ -615,12 +654,19 @@ class CppHighlighter (QSyntaxHighlighter):
         end_match = self._multi_end.match(text, start_idx)
         if end_match.hasMatch():
             self.setCurrentBlockState(0)
-            next_start = self._multi_start.match(text, end_match.capturedEnd())
-            if next_start.hasMatch():
+            # Loop: continue tracking more /* */ pairs
+            search_from = end_match.capturedEnd()
+            while True:
+                next_start = self.__find_free_multi_start(text, search_from)
+                if not next_start:
+                    break
                 next_end = self._multi_end.match(
                     text, next_start.capturedStart())
-                if not next_end.hasMatch():
+                if next_end.hasMatch():
+                    search_from = next_end.capturedEnd()
+                else:
                     self.setCurrentBlockState(1)
+                    break
         else:
             self.setCurrentBlockState(1)
 
@@ -2264,6 +2310,7 @@ class MainWindow (QMainWindow):
             self._update_window_title()
             return
         self._last_file_dir = os.path.dirname(path)
+        self._add_recent_file(path)
 
     def _action_close (self):
         if self.tab_manager.current_index < 0:
@@ -2273,6 +2320,9 @@ class MainWindow (QMainWindow):
     def _action_zoom_in (self):
         tab = self.tab_manager.get_current()
         if tab is None:
+            return
+        base_size = self.settings.editor_font_size
+        if base_size + tab.zoom_font_size >= 72:
             return
         tab.zoom_font_size += 1
         self._apply_zoom(tab)
@@ -2692,6 +2742,7 @@ class MainWindow (QMainWindow):
             return
         tab = self._flow_tab
         if not tab:
+            self._set_flow_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
@@ -2780,6 +2831,10 @@ class MainWindow (QMainWindow):
                                    QColor(Qt.red))
                     self.status_message.setText('Failed to launch terminal')
                 self._maybe_scroll_output(tab)
+            else:
+                # Unknown intent — reset to idle as a safeguard
+                self._set_flow_state(_FLOW_IDLE)
+                self.status_message.setText('Ready')
 
     def _on_run_stdout_ready (self, text:str):
         tab = self.proc_mgr.target_tab
@@ -2803,6 +2858,7 @@ class MainWindow (QMainWindow):
             return
         tab = self._flow_tab
         if not tab:
+            self._set_flow_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
@@ -3085,6 +3141,7 @@ class MainWindow (QMainWindow):
             tab.file_path = path
             tab.is_new = False
             self._last_file_dir = os.path.dirname(path)
+            self._add_recent_file(path)
         else:
             content = tab.editor_doc.toPlainText()
             try:
@@ -3266,13 +3323,15 @@ class MainWindow (QMainWindow):
             'v_splitter': self.v_splitter.sizes(),
             'last_file_dir': self._last_file_dir,
             'tabs': [],
-            'active_tab': self.tab_manager.current_index,
             'recent_files': self._recent_files[:10],
         }
-        for t in self.tab_manager.tabs:
+        persisted_count = 0
+        for i, t in enumerate(self.tab_manager.tabs):
             # Skip discarded new tabs (user chose "Discard" in close dialog)
             if t.is_new and not t.is_dirty:
                 continue
+            if i == self.tab_manager.current_index:
+                state['active_tab'] = persisted_count
             entry = {}
             if t.is_new:
                 entry['is_new'] = True
@@ -3283,6 +3342,7 @@ class MainWindow (QMainWindow):
                 entry['file_path'] = t.file_path
                 entry['input_text'] = t.input_doc.toPlainText()
             state['tabs'].append(entry)
+            persisted_count += 1
         try:
             with open(path, 'w', encoding='utf-8') as f:
                 json.dump(state, f, indent=4, ensure_ascii=False)
@@ -3334,7 +3394,8 @@ class MainWindow (QMainWindow):
         # Restore last_file_dir
         self._last_file_dir = state.get('last_file_dir', '')
         # Restore recent files
-        self._recent_files = state.get('recent_files', [])
+        self._recent_files = [os.path.normpath(p)
+                          for p in state.get('recent_files', [])]
         self._update_recent_menu()
         # Restore tabs
         tabs_data = state.get('tabs', [])
@@ -3437,12 +3498,19 @@ class MainWindow (QMainWindow):
 
     def dropEvent (self, event):
         if event.mimeData().hasUrls():
+            opened = False
             for url in event.mimeData().urls():
                 path = url.toLocalFile()
                 if path and any(path.lower().endswith(ext)
                                 for ext in _SOURCE_EXTENSIONS):
                     self._open_file_path(path, add_recent=True)
-        event.acceptProposedAction()
+                    opened = True
+            if opened:
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        else:
+            event.ignore()
 
 
 #----------------------------------------------------------------------

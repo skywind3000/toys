@@ -10,6 +10,7 @@
 #======================================================================
 import sys
 import os
+import tempfile
 import unittest
 
 # Force offscreen platform so tests run without display
@@ -34,7 +35,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from CodeRunner import (
     Settings, _SETTINGS_DEFAULTS, TabData, TabManager,
     CodeEditor, InputPanel, MainWindow, CppHighlighter,
-    _init_font_defaults, _detect_encoding, _read_file
+    _init_font_defaults, _read_file
 )
 
 
@@ -43,35 +44,47 @@ from CodeRunner import (
 #----------------------------------------------------------------------
 class TestEncodingDetection (unittest.TestCase):
 
+    def _write_and_read (self, raw_bytes):
+        """Write raw bytes to a temp file, read back with _read_file,
+        return (content, encoding)."""
+        with tempfile.NamedTemporaryFile(
+                mode='wb', suffix='.cpp', delete=False) as f:
+            f.write(raw_bytes)
+            path = f.name
+        try:
+            return _read_file(path)
+        finally:
+            os.unlink(path)
+
     def test_utf8_bom_detected (self):
-        raw = b'\xef\xbb\xbf#include <iostream>'
-        self.assertEqual(_detect_encoding(raw), 'UTF-8')
+        _, enc = self._write_and_read(b'\xef\xbb\xbf#include <iostream>')
+        self.assertEqual(enc, 'UTF-8')
 
     def test_pure_utf8_detected (self):
-        raw = '#include <iostream>\n'.encode('utf-8')
-        self.assertEqual(_detect_encoding(raw), 'UTF-8')
+        _, enc = self._write_and_read('#include <iostream>\n'.encode('utf-8'))
+        self.assertEqual(enc, 'UTF-8')
 
     def test_utf8_with_chinese (self):
-        raw = '// \xe4\xb8\xad\xe6\x96\x87\n'.encode('utf-8')
-        self.assertEqual(_detect_encoding(raw), 'UTF-8')
+        _, enc = self._write_and_read('// \xe4\xb8\xad\xe6\x96\x87\n'.encode('utf-8'))
+        self.assertEqual(enc, 'UTF-8')
 
     def test_gbk_detected_when_not_utf8 (self):
-        raw = b'\xd6\xd0\xce\xc4'
+        _, enc = self._write_and_read(b'\xd6\xd0\xce\xc4')
         if sys.platform == 'win32':
-            self.assertEqual(_detect_encoding(raw), 'gbk')
+            self.assertEqual(enc, 'gbk')
         else:
-            self.assertEqual(_detect_encoding(raw), 'utf-8')
+            self.assertEqual(enc, 'utf-8')
 
     def test_empty_file_is_utf8 (self):
-        raw = b''
-        self.assertEqual(_detect_encoding(raw), 'UTF-8')
+        _, enc = self._write_and_read(b'')
+        self.assertEqual(enc, 'UTF-8')
 
     def test_mixed_invalid_bytes (self):
-        raw = b'hello \xff world'
+        _, enc = self._write_and_read(b'hello \xff world')
         if sys.platform == 'win32':
-            self.assertEqual(_detect_encoding(raw), 'gbk')
+            self.assertEqual(enc, 'gbk')
         else:
-            self.assertEqual(_detect_encoding(raw), 'utf-8')
+            self.assertEqual(enc, 'utf-8')
 
 
 #----------------------------------------------------------------------
