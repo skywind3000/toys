@@ -17,7 +17,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QTextDocument, QTextCursor
+from PyQt5.QtGui import QTextCursor
 
 # Ensure single QApplication instance
 _app = QApplication.instance()
@@ -30,8 +30,7 @@ if _app is None:
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from CodeRunner import (
-    Settings, _SETTINGS_DEFAULTS, TabData, TabManager,
-    MainWindow, _init_font_defaults, CodeEditor,
+    Settings, TabData, MainWindow, _init_font_defaults, CodeEditor,
     _strip_trailing_whitespace
 )
 
@@ -60,7 +59,7 @@ class TestCommentUncomment (unittest.TestCase):
         editor = self._make_editor_with_content('int x = 0;')
         editor._handle_comment_uncomment()
         text = editor.document().toPlainText()
-        self.assertIn('//int x = 0;', text)
+        self.assertIn('// int x = 0;', text)
 
     def test_uncomment_single_line (self):
         """Uncomment a single commented line."""
@@ -74,7 +73,7 @@ class TestCommentUncomment (unittest.TestCase):
         editor = self._make_editor_with_content('    int x = 0;')
         editor._handle_comment_uncomment()
         text = editor.document().toPlainText()
-        self.assertIn('    //int x = 0;', text)
+        self.assertIn('    // int x = 0;', text)
 
     def test_uncomment_preserves_indent (self):
         """Uncomment removes // after indent."""
@@ -83,19 +82,19 @@ class TestCommentUncomment (unittest.TestCase):
         text = editor.document().toPlainText()
         self.assertIn('    int x = 0;', text)
 
-    def test_uncomment_removes_single_space (self):
-        """Uncomment removes one space after // if present."""
+    def test_uncomment_removes_all_spaces (self):
+        """Uncomment removes // and all trailing spaces after it."""
         editor = self._make_editor_with_content('//  hello')
         editor._handle_comment_uncomment()
         text = editor.document().toPlainText()
-        # // and one trailing space removed, leaving " hello"
-        self.assertEqual(' hello', text)
+        self.assertEqual('hello', text)
 
-    def test_uncomment_no_space (self):
+    def test_uncomment_no_spaces (self):
         """Uncomment removes // without trailing space."""
         editor = self._make_editor_with_content('//hello')
         editor._handle_comment_uncomment()
         text = editor.document().toPlainText()
+        self.assertEqual('hello', text)
         self.assertEqual('hello', text.strip())
 
     def test_comment_empty_line (self):

@@ -331,8 +331,6 @@
 - 括号匹配高亮（ExtraSelections 背景色标记配对括号，非注释/字符串上下文）
 - #include <> 自动补全（输入 `<` 且行以 `#include` 开头时补 `>`）
 - /* */ 多行注释自动闭合（输入 `/*` 补 `*/`，输入 `*/` 右侧匹配时跳过）
-- InputPanel 快捷清空按钮（INPUT 标签右侧 ✕）
-- OutputPanel 快捷复制按钮（OUTPUT 标签右侧复制图标）
 
 **P3 — 锦上添花**：
 - Ctrl+Shift+K 删除当前行
@@ -342,7 +340,6 @@
 **实现的类/方法**：
 - CodeEditor 扩展：keyPressEvent 新增 Ctrl+/、Ctrl+D、Ctrl+Shift+K、Alt+Up/Alt+Down 处理；Tab/Shift+Tab 选区缩进；ExtraSelections 当前行高亮 + 括号匹配高亮；括号补全扩展（#include <>、/* */）；contextMenuEvent 右键菜单
 - MainWindow 扩展：Edit 菜单新增动作项；保存前行尾空白清理
-- IO section header 扩展：InputPanel ✕ 清空按钮、OutputPanel 复制按钮
 
 **自动测试项**：
 - Comment/Uncomment 逻辑：单行注释、多行注释、取消注释（行首已有 `//`）
@@ -363,8 +360,6 @@
 - [ ] 输入 `#include <` → 自动插入 `>`，光标在中间
 - [ ] 输入 `/*` → 自动补 `*/`，光标在中间
 - [ ] 输入 `*/` 且右侧是 `*/` → 光标跳过
-- [ ] INPUT 标签右侧 ✕ 按钮，点击清空输入内容
-- [ ] OUTPUT 标签右侧复制按钮，点击复制全部输出到剪贴板
 - [ ] 保存文件时行尾空白被自动清理
 - [ ] 编辑器右键菜单包含 Comment/Uncomment、Indent、Unindent、Duplicate Line、Delete Line
 - [ ] Edit 菜单包含新增的所有动作项

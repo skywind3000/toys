@@ -141,37 +141,20 @@ def _window_state_path () -> str:
 
 
 def _make_io_section (settings, label_text:str, text_edit:QWidget,
-                      dpi:float=1.0, button:QPushButton=None) -> QWidget:
-    """Wrap a text edit widget with a label header (INPUT or OUTPUT).
-    Optional button is placed to the right of the label."""
+                      dpi:float=1.0) -> QWidget:
+    """Wrap a text edit widget with a label header (INPUT or OUTPUT)."""
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(0)
-    # Header row: label + optional button
-    header = QHBoxLayout()
-    header.setContentsMargins(0, 0, 0, 0)
-    header.setSpacing(0)
     label = QLabel(label_text)
     label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     font = label.font()
     font.setBold(True)
     font.setPointSize(settings.io_font_size)
     label.setFont(font)
-    header.addWidget(label, 1)
-    if button:
-        # Small button styled to match the label height
-        btn_font = button.font()
-        btn_font.setPointSize(max(8, settings.io_font_size - 2))
-        button.setFont(btn_font)
-        button.setFixedSize(
-            int(20 * dpi), label.sizeHint().height() + int(4 * dpi))
-        button.setCursor(Qt.PointingHandCursor)
-        header.addWidget(button)
-    header_widget = QWidget()
-    header_widget.setLayout(header)
-    header_widget.setFixedHeight(label.sizeHint().height() + int(4 * dpi))
-    layout.addWidget(header_widget)
+    label.setFixedHeight(label.sizeHint().height() + int(4 * dpi))
+    layout.addWidget(label)
     layout.addWidget(text_edit, 1)
     container._section_label = label
     return container
@@ -205,8 +188,8 @@ _ACTION_DEFS = [
     ('act_replace', 'Replace', None, 'Ctrl+H', None),
     ('act_goto_line', 'Goto Line', None, 'Ctrl+G', None),
     ('act_comment', 'Comment/Uncomment', None, 'Ctrl+/', None),
-    ('act_indent', 'Indent', None, None, 'Indent (Tab with selection)'),
-    ('act_unindent', 'Unindent', None, None, 'Unindent (Shift+Tab with selection)'),
+    ('act_indent', 'Indent', None, 'Ctrl+]', None),
+    ('act_unindent', 'Unindent', None, 'Ctrl+[', None),
     ('act_duplicate', 'Duplicate Line', None, 'Ctrl+D', None),
     ('act_delete_line', 'Delete Line', None, 'Ctrl+Shift+K', None),
     ('act_move_up', 'Move Line Up', None, 'Alt+Up', None),
@@ -1459,13 +1442,12 @@ class CodeEditor (FileDragMixin, QTextEdit):
             text = block.text()
             cursor_pos = block.position()
             if all_commented:
-                # Remove // — find first // after leading whitespace
+                # Remove // and all spaces immediately after it
                 stripped_len = len(text) - len(text.lstrip())
                 comment_start = stripped_len
                 if text[comment_start:comment_start + 2] == '//':
-                    # Remove // and optional single space after it
                     remove_end = comment_start + 2
-                    if remove_end < len(text) and text[remove_end] == ' ':
+                    while remove_end < len(text) and text[remove_end] == ' ':
                         remove_end += 1
                     c = QTextCursor(doc)
                     c.setPosition(cursor_pos + comment_start)
@@ -1473,76 +1455,100 @@ class CodeEditor (FileDragMixin, QTextEdit):
                                   QTextCursor.KeepAnchor)
                     c.removeSelectedText()
             else:
-                # Add // before first non-whitespace
+                # Add "// " before first non-whitespace
                 stripped_len = len(text) - len(text.lstrip())
                 if stripped_len == len(text):
-                    # Empty line — add // at start
+                    # Whitespace-only line — add // at start
                     c = QTextCursor(doc)
                     c.setPosition(cursor_pos)
-                    c.insertText('//')
+                    c.insertText('// ')
                 else:
                     c = QTextCursor(doc)
                     c.setPosition(cursor_pos + stripped_len)
-                    c.insertText('//')
+                    c.insertText('// ')
             block = block.next()
         cursor.endEditBlock()
 
     def _handle_indent_selection (self):
         """Indent all selected lines by one level."""
-        cursor = self.textCursor()
         doc = self.document()
+        cursor = self.textCursor()
         start_block = doc.findBlock(cursor.selectionStart())
         end_block = doc.findBlock(cursor.selectionEnd())
         if cursor.selectionEnd() == end_block.position():
             end_block = end_block.previous()
         indent_char = '\t' if self.indent_style == 'tab' else \
             ' ' * self.indent_size
+        added_len = len(indent_char)
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        num_lines = end_block.blockNumber() - start_block.blockNumber() + 1
         cursor.beginEditBlock()
-        block = start_block
-        while block.isValid() and block.blockNumber() <= end_block.blockNumber():
+        block_num = start_block.blockNumber()
+        end_num = end_block.blockNumber()
+        for i in range(block_num, end_num + 1):
+            block = doc.findBlockByNumber(i)
             c = QTextCursor(doc)
             c.setPosition(block.position())
             c.insertText(indent_char)
-            block = block.next()
         cursor.endEditBlock()
+        # Restore selection adjusted for inserted chars per line
+        new_cursor = QTextCursor(doc)
+        new_cursor.setPosition(sel_start + added_len)
+        new_cursor.setPosition(
+            sel_end + added_len * num_lines,
+            QTextCursor.KeepAnchor)
+        self.setTextCursor(new_cursor)
 
     def _handle_unindent_selection (self):
         """Unindent all selected lines by one level."""
-        cursor = self.textCursor()
         doc = self.document()
+        cursor = self.textCursor()
         start_block = doc.findBlock(cursor.selectionStart())
         end_block = doc.findBlock(cursor.selectionEnd())
         if cursor.selectionEnd() == end_block.position():
             end_block = end_block.previous()
+        block_num = start_block.blockNumber()
+        end_num = end_block.blockNumber()
+        sel_start = cursor.selectionStart()
+        sel_end = cursor.selectionEnd()
+        removed_per_line = []
         cursor.beginEditBlock()
-        block = start_block
-        while block.isValid() and block.blockNumber() <= end_block.blockNumber():
+        for i in range(block_num, end_num + 1):
+            block = doc.findBlockByNumber(i)
             text = block.text()
-            c = QTextCursor(doc)
-            c.setPosition(block.position())
+            remove_len = 0
             if text.startswith('\t'):
-                c.setPosition(block.position() + 1, QTextCursor.KeepAnchor)
-                c.removeSelectedText()
+                remove_len = 1
             elif text.startswith(' ' * self.indent_size):
-                c.setPosition(
-                    block.position() + self.indent_size,
-                    QTextCursor.KeepAnchor)
-                c.removeSelectedText()
+                remove_len = self.indent_size
             elif text.startswith(' '):
-                # Remove as many spaces as we can up to indent_size
                 count = 0
                 for ch in text:
                     if ch == ' ' and count < self.indent_size:
                         count += 1
                     else:
                         break
-                if count > 0:
-                    c.setPosition(
-                        block.position() + count,
-                        QTextCursor.KeepAnchor)
-                    c.removeSelectedText()
-            block = block.next()
+                remove_len = count
+            removed_per_line.append(remove_len)
+            if remove_len > 0:
+                c = QTextCursor(doc)
+                c.setPosition(block.position())
+                c.setPosition(
+                    block.position() + remove_len,
+                    QTextCursor.KeepAnchor)
+                c.removeSelectedText()
         cursor.endEditBlock()
+        # Restore selection adjusted for removed chars
+        removed_total = sum(removed_per_line)
+        first_removed = removed_per_line[0] if removed_per_line else 0
+        new_cursor = QTextCursor(doc)
+        new_cursor.setPosition(
+            max(0, sel_start - first_removed))
+        new_cursor.setPosition(
+            max(0, sel_end - removed_total),
+            QTextCursor.KeepAnchor)
+        self.setTextCursor(new_cursor)
 
     def _handle_duplicate_line (self):
         """Duplicate current line or selected lines below."""
@@ -2913,22 +2919,10 @@ class MainWindow (QMainWindow):
 
     def __build_mainarea (self):
         # Wrap IO panels with label headers
-        self.btn_input_clear = QPushButton('✕')
-        self.btn_input_clear.setStyleSheet(
-            'QPushButton { border: none; color: #888; }'
-            'QPushButton:hover { color: #333; }')
-        self.btn_input_clear.clicked.connect(self._clear_input)
         self.input_section = _make_io_section(
-            self.settings, 'INPUT', self.input_panel, self._dpi,
-            self.btn_input_clear)
-        self.btn_output_copy = QPushButton('📋')
-        self.btn_output_copy.setStyleSheet(
-            'QPushButton { border: none; color: #888; }'
-            'QPushButton:hover { color: #333; }')
-        self.btn_output_copy.clicked.connect(self._copy_output)
+            self.settings, 'INPUT', self.input_panel, self._dpi)
         self.output_section = _make_io_section(
-            self.settings, 'OUTPUT', self.output_panel, self._dpi,
-            self.btn_output_copy)
+            self.settings, 'OUTPUT', self.output_panel, self._dpi)
 
         # Vertical splitter
         self.v_splitter = QSplitter(Qt.Vertical)
@@ -3177,21 +3171,6 @@ class MainWindow (QMainWindow):
     def _apply_zoom (self, tab):
         zoom_size = max(6, self.settings.editor_font_size + tab.zoom_font_size)
         self.editor.setFontSize(zoom_size)
-
-    def _clear_input (self):
-        """Clear current tab's InputPanel content."""
-        tab = self.tab_manager.get_current()
-        if tab:
-            tab.input_doc.setPlainText('')
-            tab.input_doc.setModified(False)
-
-    def _copy_output (self):
-        """Copy current tab's OutputPanel content to clipboard."""
-        tab = self.tab_manager.get_current()
-        if tab:
-            text = tab.output_doc.toPlainText()
-            clipboard = QApplication.clipboard()
-            clipboard.setText(text)
 
     def _action_undo (self):
         focus = QApplication.focusWidget()
