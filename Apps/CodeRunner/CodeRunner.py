@@ -1702,35 +1702,11 @@ class CodeEditor (FileDragMixin, QTextEdit):
     def keyPressEvent (self, event):
         key = event.key()
         text = event.text()
-        modifiers = event.modifiers()
 
         # Insert key toggles overwrite mode
         if key == Qt.Key_Insert:
             self.overwrite_mode = not self.overwrite_mode
             self._notify_overwrite_changed()
-            return
-
-        # Ctrl+/ — Comment/Uncomment
-        if key == Qt.Key_Slash and modifiers == Qt.ControlModifier:
-            self._handle_comment_uncomment()
-            return
-
-        # Ctrl+D — Duplicate line
-        if key == Qt.Key_D and modifiers == Qt.ControlModifier:
-            self._handle_duplicate_line()
-            return
-
-        # Ctrl+Shift+K — Delete line
-        if key == Qt.Key_K and modifiers == (Qt.ControlModifier | Qt.ShiftModifier):
-            self._handle_delete_line()
-            return
-
-        # Alt+Up/Alt+Down — Move line
-        if key == Qt.Key_Up and modifiers == Qt.AltModifier:
-            self._handle_move_line_up()
-            return
-        if key == Qt.Key_Down and modifiers == Qt.AltModifier:
-            self._handle_move_line_down()
             return
 
         # Tab — indent selection or insert tab
@@ -3429,14 +3405,14 @@ class MainWindow (QMainWindow):
         self.act_replace.triggered.connect(self._action_replace)
         self.act_goto_line.triggered.connect(self._action_goto_line)
 
-        # Edit extension actions
-        self.act_comment.triggered.connect(self._action_comment)
-        self.act_indent.triggered.connect(self._action_indent)
-        self.act_unindent.triggered.connect(self._action_unindent)
-        self.act_duplicate.triggered.connect(self._action_duplicate)
-        self.act_delete_line.triggered.connect(self._action_delete_line)
-        self.act_move_up.triggered.connect(self._action_move_up)
-        self.act_move_down.triggered.connect(self._action_move_down)
+        # Edit extension actions — direct to CodeEditor
+        self.act_comment.triggered.connect(self.editor._handle_comment_uncomment)
+        self.act_indent.triggered.connect(self.editor._handle_indent_selection)
+        self.act_unindent.triggered.connect(self.editor._handle_unindent_selection)
+        self.act_duplicate.triggered.connect(self.editor._handle_duplicate_line)
+        self.act_delete_line.triggered.connect(self.editor._handle_delete_line)
+        self.act_move_up.triggered.connect(self.editor._handle_move_line_up)
+        self.act_move_down.triggered.connect(self.editor._handle_move_line_down)
 
         # Run actions
         self.act_build.triggered.connect(self._action_build)
@@ -3682,27 +3658,6 @@ class MainWindow (QMainWindow):
             cursor.setPosition(block.position())
             self.editor.setTextCursor(cursor)
             self.editor.centerCursor()
-
-    def _action_comment (self):
-        self.editor._handle_comment_uncomment()
-
-    def _action_indent (self):
-        self.editor._handle_indent_selection()
-
-    def _action_unindent (self):
-        self.editor._handle_unindent_selection()
-
-    def _action_duplicate (self):
-        self.editor._handle_duplicate_line()
-
-    def _action_delete_line (self):
-        self.editor._handle_delete_line()
-
-    def _action_move_up (self):
-        self.editor._handle_move_line_up()
-
-    def _action_move_down (self):
-        self.editor._handle_move_line_down()
 
     def _action_build (self):
         if self.flow_ctrl.state != _FLOW_IDLE:
