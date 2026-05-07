@@ -3356,12 +3356,13 @@ class MainWindow (QMainWindow):
             action2.triggered.connect(self._on_save_with_encoding)
         menu.exec_(pos_widget.mapToGlobal(pos_widget.rect().bottomLeft()))
 
-    def _on_reopen_with_encoding (self):
+    def _on_reopen_with_encoding (self, encoding:str=None):
         """Reopen current file with chosen encoding."""
-        action = self.sender()
-        if action is None:
-            return
-        encoding = action.data()
+        if encoding is None:
+            action = self.sender()
+            if action is None:
+                return
+            encoding = action.data()
         tab = self.tab_manager.get_current()
         if tab is None or tab.is_new:
             return
@@ -3388,12 +3389,13 @@ class MainWindow (QMainWindow):
         self._update_window_title()
         self._update_status_info(tab)
 
-    def _on_save_with_encoding (self):
+    def _on_save_with_encoding (self, encoding:str=None):
         """Save current file with chosen encoding."""
-        action = self.sender()
-        if action is None:
-            return
-        encoding = action.data()
+        if encoding is None:
+            action = self.sender()
+            if action is None:
+                return
+            encoding = action.data()
         tab = self.tab_manager.get_current()
         if tab is None:
             return
@@ -3636,7 +3638,7 @@ class MainWindow (QMainWindow):
             try:
                 tab.editor_doc.modificationChanged.disconnect(
                     tab._on_modified_changed)
-            except RuntimeError:
+            except (RuntimeError, TypeError):
                 pass
         event.accept()
 
