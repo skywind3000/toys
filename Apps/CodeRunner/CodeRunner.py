@@ -1906,7 +1906,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         line_sel.format.setBackground(QBrush(self._CURRENT_LINE_COLOR))
         line_sel.format.setProperty(QTextCharFormat.FullWidthSelection, True)
         line_sel.cursor = cursor
-        line_sel.cursor.select(QTextCursor.LineUnderCursor)
+        line_sel.cursor.movePosition(QTextCursor.StartOfLine)
         selections.append(line_sel)
         # Bracket match highlight
         match_sel = self._find_bracket_match_selections()
