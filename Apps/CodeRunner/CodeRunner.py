@@ -1183,8 +1183,11 @@ class CodeEditor (FileDragMixin, QTextEdit):
         return space
 
     def _update_line_number_area_width (self):
-        visible = self.line_number_area.isVisible()
-        width = self._line_number_width() if visible else 0
+        # Use isHidden() instead of isVisible() — isVisible() returns False
+        # when parent window hasn't been shown yet (during __init__),
+        # causing viewport margins to stay 0 after session restore.
+        shown = not self.line_number_area.isHidden()
+        width = self._line_number_width() if shown else 0
         margins = self.viewportMargins()
         self.setViewportMargins(
             width, margins.top(), margins.right(), margins.bottom())
