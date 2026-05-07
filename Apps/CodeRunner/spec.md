@@ -198,6 +198,26 @@ _SETTINGS_DEFAULTS = {
 
 **Zoom**：Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小（最小 6pt）。仅改 CodeEditor，不影响 IO 面板；会话级不持久化。字号存入 TabData.zoom_font_size。Settings 中修改编辑器字号后所有标签的 zoom 偏移重置为 0，显示字号回到 Settings 基准值；修改非字体相关设置（如编译参数、超时）时 zoom 偏移保留不变。
 
+**Comment/Uncomment (Ctrl+/)**：keyPressEvent 处理。无选区时操作当前行；有选区时操作所有被选中的行。Toggle 逻辑：检查所有操作行是否已以 `//` 开头（忽略行首空白），若全部已注释则移除 `//`（及紧随的单个空格，若有），否则对每行首个非空白字符前插入 `//`。
+
+**Indent/Unindent (Tab/Shift+Tab 有选区)**：keyPressEvent 处理。有选区时 Tab → 选中行每行行首加 `\t`（indent_style='tab'）或 indent_size 个空格（indent_style='space'）；Shift+Tab → 选中行每行行首移除一个 `\t` 或 indent_size 个空格。无选区时 Tab 插入 `\t`（原有行为不变），Shift+Tab 无特殊行为。
+
+**Duplicate Line (Ctrl+D)**：keyPressEvent 处理。无选区 → 选中当前 block 全文，copy 后 insert 到下一行；有选区 → 复制选区文本 insert 到选区末尾之后。不操作剪贴板。
+
+**Delete Line (Ctrl+Shift+K)**：keyPressEvent 处理。无选区 → 删除当前 block；有选区 → 删除所有被选中的 block。
+
+**Move Line Up/Down (Alt+Up/Alt+Down)**：keyPressEvent 处理。无选区 → 当前 block 与上方/下方 block 互换，光标跟随移动；有选区 → 选中 block 范围与上方/下方 block 互换，选区范围调整。
+
+**当前行高亮**：使用 QTextEdit.ExtraSelection，浅色背景（`QColor(245, 245, 220)` 浅黄），cursorPositionChanged 信号触发更新。每次光标移动时清空旧 ExtraSelection 再添加新的。只在 CodeEditor 中启用，不影响 InputPanel/OutputPanel。
+
+**括号匹配高亮**：使用 QTextEdit.ExtraSelection。光标位于括号字符（`(){}[]`）旁时，通过 `QTextDocument.characterAt()` 定位匹配括号位置，两个括号同时添加背景色高亮（`QColor(180, 220, 255)` 浅蓝）。仅在非注释/非字符串上下文中生效。cursorPositionChanged 信号触发更新，与当前行高亮合并处理。
+
+**#include <> 自动补全**：扩展括号补全逻辑。当输入 `<` 且当前行以 `#include` 开头时，自动插入 `>` 并光标置中间。否则 `<` 不触发补全（避免在比较运算符中误补）。
+
+**/* */ 自动补全**：扩展括号补全逻辑。当输入 `/` 且光标左侧字符为 `*`（即刚输入 `/*`）时，自动插入 ` */`（含前导空格）并光标置 `/*` 和 `*/` 之间。输入 `*/` 且光标右侧恰好为 `*/` 时跳过（与闭括号跳过逻辑一致）。
+
+**右键上下文菜单**：override contextMenuEvent。创建 QMenu 包含：Undo、Redo、separator、Cut、Copy、Paste、separator、Comment/Uncomment、Indent、Unindent、Duplicate Line、Delete Line。动作与 Edit 菜单和快捷键共享 QAction 实例。
+
 ### 3.2 CppHighlighter
 
 规则分组与颜色：
@@ -219,11 +239,11 @@ _SETTINGS_DEFAULTS = {
 
 ### 3.3 InputPanel
 
-继承 QTextEdit（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符，tabStopWidth = `indent_size * charWidth`。setDocument() 重写中同步文档字体。零标签状态下灰显。
+继承 QTextEdit（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。INPUT 标签右侧 ✕ 清空按钮（QPushButton），点击清空当前标签的 input_doc 内容（`input_doc.setPlainText('')`），方便每次做新题目时快速更换输入数据。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符，tabStopWidth = `indent_size * charWidth`。setDocument() 重写中同步文档字体。零标签状态下灰显。
 
 ### 3.4 OutputPanel
 
-继承 QTextEdit，外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。只读，支持多色富文本。
+继承 QTextEdit，外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。OUTPUT 标签右侧复制按钮（QPushButton），点击将 output_doc.toPlainText() 通过 QClipboard 复制到剪贴板。只读，支持多色富文本。
 
 **自动滚动**：仅当滚动条已在底部时才自动跟随新输出。用户翻看历史输出时不被强制拉回底部。按 END 键可回到底部跟踪模式。滚动通过 per-tab 的 `_need_scroll` 标志和 50ms 共享 QTimer 批量执行，避免逐行滚动影响性能。每次 `_output_clear` 后视为"在底部"，新内容开始后默认自动跟踪。`_is_output_at_bottom()` 判断滚动条距离底部不超过 3px 即视为在底部。
 
@@ -456,7 +476,7 @@ QMessageBox："Save Changes?" — "File '{filename}' has unsaved changes." — S
 
 **FileDialog 起始路径**：`_start_dir()` 方法返回有效的起始目录 — 使用 `_last_file_dir`（从 window.json 恢复）若其仍存在于磁盘，否则回退到 `~/`。Open/Save As/Save（新文件）均使用 `_start_dir()` 作为对话框起始路径，成功选择文件后更新 `_last_file_dir`。
 
-**Save**：新文件弹 QFileDialog 选路径，保存后 is_new→False, is_dirty→False。已保存文件直接写入，使用 TabData.encoding 编码。编码转换失败（如 GBK 无法编码的字符）时捕获 UnicodeEncodeError 弹警告，不崩溃。保存成功后刷新标签名。
+**Save**：新文件弹 QFileDialog 选路径，保存后 is_new→False, is_dirty→False。已保存文件直接写入，使用 TabData.encoding 编码。保存前自动清理行尾空白：每行末尾的空格和 Tab 被移除，清理后再写入磁盘。编码转换失败（如 GBK 无法编码的字符）时捕获 UnicodeEncodeError 弹警告，不崩溃。保存成功后刷新标签名。
 
 **Save As**：始终弹 QFileDialog，保存后更新 file_path 和 encoding。
 
@@ -561,3 +581,12 @@ def main():
 | 2026/05/07 | Replace All 计数显示 | Replace All 完成后标题栏显示替换数量 |
 | 2026/05/07 | Save with Encoding rollback | 新文件 Save with Encoding 失败时 rollback file_path/is_new，避免留下无效状态 |
 | 2026/05/07 | 编码标签可点击 | `_ClickableLabel` 继承 QLabel 加 PointingHandCursor，点击弹出编码选择菜单 |
+| 2026/05/07 | Ctrl+/ 注释/取消注释 | 最高频调试操作，选中行批量加 `//`，已注释行移除 `//` |
+| 2026/05/07 | Tab/Shift+Tab 选区缩进 | 有选区时缩进/反缩进，无选区时 Tab 插入制表符（原有行为） |
+| 2026/05/07 | Ctrl+D 复制行 | 修改代码时经常复制一行再微调，不替换剪贴板 |
+| 2026/05/07 | 当前行高亮 | ExtraSelections 浅色背景标记，cursorPositionChanged 驱动 |
+| 2026/05/07 | 括号匹配高亮 | ExtraSelections 背景色标记配对括号，非注释/字符串上下文 |
+| 2026/05/07 | #include <> 和 /* */ 自动补全 | 扩展括号补全逻辑，`#include <` 补 `>`，`/*` 补 `*/` |
+| 2026/05/07 | IO 面板快捷按钮 | INPUT ✕ 清空按钮 + OUTPUT 复制按钮，提升做题效率 |
+| 2026/05/07 | 行尾空白自动清理 | 保存时移除每行末尾空格/Tab |
+| 2026/05/07 | 编辑器右键菜单 | contextMenuEvent 弹 QMenu，动作与 Edit 菜单共享 |

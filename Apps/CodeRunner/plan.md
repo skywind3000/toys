@@ -2,7 +2,7 @@
 
 ## 总览
 
-分 7 个阶段实施，每个阶段产出可独立运行的程序。阶段完成后需用户手工确认验收通过，才能进入下一阶段。
+分 8 个阶段实施，每个阶段产出可独立运行的程序。阶段完成后需用户手工确认验收通过，才能进入下一阶段。
 
 每个阶段可在新会话中实施：新会话读 prd.md → spec.md → plan.md → 当前 CodeRunner.py，找到第一个 `pending` 阶段开始工作。完成后将该阶段状态改为 `done`，用户验收确认后才能推进下一阶段。
 
@@ -15,6 +15,7 @@
 | 5. 编译与运行 | done |
 | 6. 设置与持久化 | done |
 | 7. 查找替换与收尾 | done |
+| 8. 编辑器增强与体验优化 | pending |
 
 ## 阶段 1：骨架与布局 **[done]**
 
@@ -273,7 +274,7 @@
 
 ---
 
-## 阶段 7：查找替换与收尾 **[pending]**
+## 阶段 7：查找替换与收尾 **[done]**
 
 **目标**：所有 PRD 功能完整覆盖，细节打磨。
 
@@ -310,3 +311,60 @@
 - [ ] 退出时 dirty 标签逐个弹出保存确认
 - [ ] 所有快捷键与 PRD 一致
 - [ ] Toolbar 按钮 tooltip 显示"动作名 (快捷键)"格式
+
+---
+
+## 阶段 8：编辑器增强与体验优化 **[pending]**
+
+**目标**：高频编辑操作便捷化，编辑器视觉辅助增强，IO 面板快捷操作。
+
+**新增功能**（按优先级分组）：
+
+**P1 — 高频操作**：
+- Ctrl+/ 注释/取消注释（选中行或当前行，toggle 逻辑）
+- Tab/Shift+Tab 多行缩进/反缩进（有选区时）
+- Ctrl+D 复制当前行（不操作剪贴板）
+- 当前行高亮（ExtraSelections 浅色背景标记）
+- 编辑器右键上下文菜单（Undo/Redo/Cut/Copy/Paste/Comment/Indent/Unindent/Duplicate/Delete）
+
+**P2 — 体验增强**：
+- 括号匹配高亮（ExtraSelections 背景色标记配对括号，非注释/字符串上下文）
+- #include <> 自动补全（输入 `<` 且行以 `#include` 开头时补 `>`）
+- /* */ 多行注释自动闭合（输入 `/*` 补 `*/`，输入 `*/` 右侧匹配时跳过）
+- InputPanel 快捷清空按钮（INPUT 标签右侧 ✕）
+- OutputPanel 快捷复制按钮（OUTPUT 标签右侧复制图标）
+
+**P3 — 锦上添花**：
+- Ctrl+Shift+K 删除当前行
+- Alt+Up/Alt+Down 上下移动当前行
+- 保存时行尾空白自动清理
+
+**实现的类/方法**：
+- CodeEditor 扩展：keyPressEvent 新增 Ctrl+/、Ctrl+D、Ctrl+Shift+K、Alt+Up/Alt+Down 处理；Tab/Shift+Tab 选区缩进；ExtraSelections 当前行高亮 + 括号匹配高亮；括号补全扩展（#include <>、/* */）；contextMenuEvent 右键菜单
+- MainWindow 扩展：Edit 菜单新增动作项；保存前行尾空白清理
+- IO section header 扩展：InputPanel ✕ 清空按钮、OutputPanel 复制按钮
+
+**自动测试项**：
+- Comment/Uncomment 逻辑：单行注释、多行注释、取消注释（行首已有 `//`）
+- Indent/Unindent 逻辑：Tab 模式和 Space 模式下选区缩进
+- Duplicate Line：单行复制、多行复制
+- 行尾空白清理：含尾部空格/Tab 的行保存后被移除
+
+**手动验收清单**：
+- [ ] Ctrl+/ 注释当前行（加 `//`），再次 Ctrl+/ 取消注释（移除 `//`）
+- [ ] 选中多行 Ctrl+/ → 每行加 `//`；选中已注释多行 Ctrl+/ → 每行移除 `//`
+- [ ] 选中多行 Tab → 每行增加一级缩进
+- [ ] 选中多行 Shift+Tab → 每行减少一级缩进
+- [ ] Ctrl+D 复制当前行到下一行，剪贴板不受影响
+- [ ] Ctrl+Shift+K 删除当前行
+- [ ] Alt+Up/Alt+Down 上下移动当前行
+- [ ] 当前行有浅色背景标记，切换行后高亮跟随
+- [ ] 光标停在括号上时，配对括号背景色高亮
+- [ ] 输入 `#include <` → 自动插入 `>`，光标在中间
+- [ ] 输入 `/*` → 自动补 `*/`，光标在中间
+- [ ] 输入 `*/` 且右侧是 `*/` → 光标跳过
+- [ ] INPUT 标签右侧 ✕ 按钮，点击清空输入内容
+- [ ] OUTPUT 标签右侧复制按钮，点击复制全部输出到剪贴板
+- [ ] 保存文件时行尾空白被自动清理
+- [ ] 编辑器右键菜单包含 Comment/Uncomment、Indent、Unindent、Duplicate Line、Delete Line
+- [ ] Edit 菜单包含新增的所有动作项
