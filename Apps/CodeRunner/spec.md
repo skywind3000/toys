@@ -173,6 +173,7 @@ _SETTINGS_DEFAULTS = {
 - OutputPanel 内容不持久化，重启后为空
 - 恢复新文件标签时 `is_dirty=True` + `editor_doc.setModified(True)`
 - 恢复已保存文件时跳过已删除文件
+- last_file_dir 恢复后若目录不存在则回退到 ~/
 
 ## 3. 编辑器组件
 
@@ -194,7 +195,7 @@ _SETTINGS_DEFAULTS = {
 
 **改写模式**：Insert 键切换 overwrite_mode，输入字符时先删除光标右侧一个字符再插入。状态栏显示 INS/OVR。Paste 操作不受改写模式影响。
 
-**Zoom**：Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小（最小 6pt）。仅改 CodeEditor，不影响 IO 面板；会话级不持久化。字号存入 TabData.zoom_font_size。Settings 中修改编辑器字号后所有标签的 zoom 偏移重置为 0，显示字号回到 Settings 基准值（此为设计选择：设置变更代表用户重新定义了基准字号，此时清除所有 zoom 偏移可确保所有标签统一使用新基准，避免旧标签带着旧的 zoom 偏移与新基准叠加导致字号混乱）。
+**Zoom**：Ctrl++ 放大字号（步长 1pt），Ctrl+- 缩小（最小 6pt）。仅改 CodeEditor，不影响 IO 面板；会话级不持久化。字号存入 TabData.zoom_font_size。Settings 中修改编辑器字号后所有标签的 zoom 偏移重置为 0，显示字号回到 Settings 基准值；修改非字体相关设置（如编译参数、超时）时 zoom 偏移保留不变。
 
 ### 3.2 CppHighlighter
 
@@ -365,7 +366,7 @@ exit %CR_EXITCODE%
 **文件编码检测**（打开文件时）：
 1. 前 3 字节为 `\xEF\xBB\xBF` → UTF-8 BOM，跳过 BOM 后解码
 2. 整文件 UTF-8 严格解码成功 → UTF-8
-3. 以上失败 → 系统编码（Windows 'gbk'，其他 'utf-8'）
+3. 以上失败 → 系统编码（Windows 'GBK'，其他 'UTF-8'）
 
 不做概率检测，只用 BOM 和严格 UTF-8 验证两种确定性方法。
 
@@ -449,7 +450,9 @@ QMessageBox："Save Changes?" — "File '{filename}' has unsaved changes." — S
 
 **Open**：QFileDialog 选择文件 → `os.path.normpath` 统一路径 → 遍历已有标签检查重复（已打开则 _switch_to_tab 激活）→ `_read_file` 检测编码并读取 → 创建 TabData → add_tab + _switch_to_tab。文件不可读时弹 QMessageBox 警告。更新 last_file_dir 和 recent_files。
 
-**Save**：新文件弹 QFileDialog 选路径，保存后 is_new→False, is_dirty→False。已保存文件直接写入，使用 TabData.encoding 编码。保存成功后刷新标签名。
+**FileDialog 起始路径**：`_start_dir()` 方法返回有效的起始目录 — 使用 `_last_file_dir`（从 window.json 恢复）若其仍存在于磁盘，否则回退到 `~/`。Open/Save As/Save（新文件）均使用 `_start_dir()` 作为对话框起始路径，成功选择文件后更新 `_last_file_dir`。
+
+**Save**：新文件弹 QFileDialog 选路径，保存后 is_new→False, is_dirty→False。已保存文件直接写入，使用 TabData.encoding 编码。编码转换失败（如 GBK 无法编码的字符）时捕获 UnicodeEncodeError 弹警告，不崩溃。保存成功后刷新标签名。
 
 **Save As**：始终弹 QFileDialog，保存后更新 file_path 和 encoding。
 
@@ -545,3 +548,7 @@ def main():
 | 2026/05/07 | Qt message handler 过滤无害警告 | 首次运行 Open 文件时 QMenu 在窗口完全可见前 grab mouse 产生 `setMouseGrabEnabled` 警告，属于 Qt Windows 平台已知问题 |
 | 2026/05/07 | Open 与 drag-drop 合并为 `_open_file_path` | dropEvent 的 `continue` 只跳了内层循环导致重复 tab，抽取公共方法后重复检测逻辑统一生效 |
 | 2026/05/07 | 子组件 drag-drop 事件转发 MainWindow | CodeEditor/InputPanel/OutputPanel 默认 QTextEdit 会把文件拖放当文本插入，override drag 事件遇到 URL 时 ignore 让 MainWindow 处理 |
+| 2026/05/07 | 保存捕获 UnicodeEncodeError | GBK 编码文件保存含非 GBK 字符时 UnicodeEncodeError 不在 IOError/OSError 捕获范围，会崩溃 |
+| 2026/05/07 | 编码名统一大写 | 状态栏显示 'GBK' 而非 'gbk'，与 'UTF-8' 一致 |
+| 2026/05/07 | zoom 仅在字号变更时重置 | 修改非字体设置（编译参数等）时不清零 zoom 偏移 |
+| 2026/05/07 | FileDialog 起始路径存在性检查 | `_start_dir()` 检查 `_last_file_dir` 是否仍存在于磁盘，不存在则回退 ~/ |

@@ -204,7 +204,7 @@ def _read_file (path:str) -> tuple:
     except UnicodeDecodeError:
         pass
     # Fall back to system encoding
-    encoding = 'gbk' if sys.platform == 'win32' else 'utf-8'
+    encoding = 'GBK' if sys.platform == 'win32' else 'UTF-8'
     content = raw.decode(encoding, 'replace')
     return (content, encoding)
 
@@ -2268,8 +2268,16 @@ class MainWindow (QMainWindow):
             self._add_recent_file(path)
         return True
 
+    def _start_dir (self) -> str:
+        """Return a valid starting directory for file dialogs.
+        Uses _last_file_dir if it still exists on disk,
+        otherwise falls back to home directory."""
+        if self._last_file_dir and os.path.isdir(self._last_file_dir):
+            return self._last_file_dir
+        return os.path.expanduser('~')
+
     def _action_open (self):
-        start_dir = self._last_file_dir or os.path.expanduser('~')
+        start_dir = self._start_dir()
         path, _ = QFileDialog.getOpenFileName(
             self, 'Open File', start_dir,
             'C++ Files (*.cpp *.c *.cc *.cxx *.h *.hpp *.hh);;All Files (*)')
@@ -2286,7 +2294,7 @@ class MainWindow (QMainWindow):
         tab = self.tab_manager.get_current()
         if tab is None:
             return
-        start_dir = self._last_file_dir or os.path.expanduser('~')
+        start_dir = self._start_dir()
         if tab.file_path:
             start_dir = os.path.dirname(tab.file_path)
         path, _ = QFileDialog.getSaveFileName(
@@ -2488,12 +2496,14 @@ class MainWindow (QMainWindow):
             self.status_message.setText('Running...')
 
     def _action_settings (self):
+        old_font_size = self.settings.editor_font_size
         dlg = SettingsDialog(self.settings, self)
         if dlg.exec_() == QDialog.Accepted:
-            self._apply_settings()
+            self._apply_settings(old_font_size)
 
-    def _apply_settings (self):
-        """Apply current settings to all widgets (fonts, bracket completion)."""
+    def _apply_settings (self, old_font_size:int=-1):
+        """Apply current settings to all widgets (fonts, bracket completion).
+        Only resets zoom if editor_font_size actually changed."""
         s = self.settings
         # If compiler-related settings changed, invalidate all tab mtime
         if hasattr(s, 'compiler_mtime') and s.compiler_mtime > 0:
@@ -2540,12 +2550,13 @@ class MainWindow (QMainWindow):
             lbl_font.setPointSize(s.io_font_size)
             label.setFont(lbl_font)
             label.setFixedHeight(label.sizeHint().height() + int(4 * self._dpi))
-        # Update all zoom sizes (reset zoom offset)
-        for t in self.tab_manager.tabs:
-            t.zoom_font_size = 0
-        if tab:
-            zoom_size = max(6, s.editor_font_size)
-            self.editor.setFontSize(zoom_size)
+        # Reset zoom offset only if editor font size actually changed
+        if old_font_size >= 0 and s.editor_font_size != old_font_size:
+            for t in self.tab_manager.tabs:
+                t.zoom_font_size = 0
+            if tab:
+                zoom_size = max(6, s.editor_font_size)
+                self.editor.setFontSize(zoom_size)
 
     #===== Compile/Run Flow =====
 
@@ -3123,7 +3134,7 @@ class MainWindow (QMainWindow):
     def _save_tab_data (self, tab:TabData) -> int:
         """Save tab to disk. Returns 0 success, -1 cancel, -2 error."""
         if tab.is_new:
-            start_dir = self._last_file_dir or os.path.expanduser('~')
+            start_dir = self._start_dir()
             path, _ = QFileDialog.getSaveFileName(
                 self, 'Save File', start_dir,
                 'C++ Files (*.cpp *.c *.cc *.cxx *.h '
@@ -3135,7 +3146,7 @@ class MainWindow (QMainWindow):
             try:
                 with open(path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
-            except (IOError, OSError) as e:
+            except (IOError, OSError, UnicodeEncodeError) as e:
                 QMessageBox.warning(self, 'Save Error', str(e))
                 return -2
             tab.file_path = path
@@ -3147,7 +3158,7 @@ class MainWindow (QMainWindow):
             try:
                 with open(tab.file_path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
-            except (IOError, OSError) as e:
+            except (IOError, OSError, UnicodeEncodeError) as e:
                 QMessageBox.warning(self, 'Save Error', str(e))
                 return -2
 
@@ -3395,7 +3406,7 @@ class MainWindow (QMainWindow):
         self._last_file_dir = state.get('last_file_dir', '')
         # Restore recent files
         self._recent_files = [os.path.normpath(p)
-                          for p in state.get('recent_files', [])]
+                              for p in state.get('recent_files', [])]
         self._update_recent_menu()
         # Restore tabs
         tabs_data = state.get('tabs', [])
