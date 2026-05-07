@@ -94,8 +94,8 @@
 ProcessManager ───────────────────────────────────────────────
   compile_finished(exit_code, stderr, reason)  ──→  FlowController.on_compile_finished
   run_finished(exit_code, elapsed, peak, reason, error_detail) ──→  FlowController.on_run_finished
-  run_stdout_ready(text)  ──→  MainWindow._on_run_stdout_ready
-  run_stderr_ready(text)  ──→  MainWindow._on_run_stderr_ready
+  run_stdout_ready(text)  ──→  MainWindow._on_run_stdout_ready ──→  _output_append + start scroll timer
+  run_stderr_ready(text)  ──→  MainWindow._on_run_stderr_ready ──→  _output_append + start scroll timer
 
 FlowController ──────────────────────────────────────────────
   state_changed(str)         ──→  MainWindow._update_status_from_state
@@ -270,7 +270,7 @@ class TabManager:
 
 **文档字体同步**：CodeEditor/InputPanel/OutputPanel 的 `setDocument()` 重写中调用 `doc.setDefaultFont(self.font())`。文档布局（Tab 定位等）使用 `defaultFont` 计算，字体不一致会导致 Tab 显示宽度错误。
 
-**CodeEditor.setDocument 额外逻辑**：断旧文档的 `blockCountChanged` 信号，连新文档的信号，更新行号区域宽度。
+**CodeEditor.setDocument 额外逻辑**：断旧文档的 `blockCountChanged` 信号，连新文档的信号，更新行号区域宽度。同步 `self._highlighter = getattr(doc, '_highlighter', None)`，从文档属性获取 highlighter 引用，消除对 window 层级的穿越访问。TabData 创建 highlighter 时将引用写入 `editor_doc._highlighter`。
 
 **关键属性**：
 
@@ -405,7 +405,7 @@ _SETTINGS_DEFAULTS = {
 
 **字体变更联动**：更换字体或字号时，必须调用 `updateFontMetrics()` 重新计算 Tab 宽度，并同步 `document.setDefaultFont(editor.font())`，否则 Tab 显示宽度错误。CodeEditor 有专门的 `setFontSize(point_size)` 方法设置字号并刷新 metrics，Zoom 功能通过此方法实现。
 
-**括号补全**：输入开符号自动插入闭符号并光标置中间；输入闭符号时光标右侧恰好同一闭符号则跳过；删除开符号时右侧紧邻闭符号一并删除。可通过 Settings 开关控制（默认启用）。**上下文感知**：`_is_bracket_in_comment_or_string(pos)` 检查光标位置是否在注释/字符串内，是则跳过自动补全，`_handle_bracket_open` 返回 False 表示不处理。该方法检查 highlighter.format() 的前景色，deferred 模式下检查 block state（多行注释）+ 行内文本 regex 检查字符串。引号 `"` `'` 也纳入括号补全（`_BRACKET_OPEN` 包含引号），引号闭符号跳过逻辑：光标右侧恰好同一引号时跳过。
+**括号补全**：输入开符号自动插入闭符号并光标置中间；输入闭符号时光标右侧恰好同一闭符号则跳过；删除开符号时右侧紧邻闭符号一并删除。可通过 Settings 开关控制（默认启用）。**上下文感知**：`_is_bracket_in_comment_or_string(pos)` 检查光标位置是否在注释/字符串内，是则跳过自动补全。开符号 `_handle_bracket_open` 返回 False 表示不处理；闭符号 `_handle_bracket_close` 返回 False 表示不跳过，均使用 `self._highlighter`（从 CodeEditor._highlighter 获取，通过 setDocument 同步），而非穿越 window 层级。该方法检查 highlighter.format() 的前景色，deferred 模式下检查 block state（多行注释）+ 行内文本 regex 检查字符串。引号 `"` `'` 也纳入括号补全（`_BRACKET_OPEN` 包含引号），引号闭符号跳过逻辑：光标右侧恰好同一引号时跳过。
 
 **自动缩进**：Enter 键 — `_handle_enter_key` 取当前行前导空白作为新行基础缩进（`__extract_indent`）；当前行末 `{` 时增加一级缩进（indent_style='tab' 加 `\t`，indent_style='space' 加 `indent_size` 个空格）；光标在 `{` 和 `}` 之间时插入两行（`{` 后新行 + 缩进 + `}` 行缩进），光标置中间行。
 
@@ -603,7 +603,7 @@ class FlowController(QObject):
 | on_compile_finished(exit_code, stderr, reason) | 编译完成回调：状态转移 + 写 output_doc + emit signal |
 | on_run_finished(exit_code, elapsed, peak, reason, error_detail) | 运行完成回调：状态转移 + 写 output_doc + emit signal |
 
-**信号分工**：FlowController 直接操作 `tab.output_doc`（QTextDocument 是纯数据），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。`run_stdout_ready/run_stderr_ready` 仍由 MainWindow 直接处理（只需 _output_append + scroll timer，两行代码不值得迁出再 signal 回来）。
+**信号分工**：FlowController 直接操作 `tab.output_doc`（QTextDocument 是纯数据），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。`run_stdout_ready/run_stderr_ready` 由 MainWindow 接收后直接调用 `_output_append` 写入 output_doc，并启动 scroll timer（如果 `_need_scroll` 且当前标签页匹配）。
 
 **状态机**：FlowController 使用显式状态机：`state`（IDLE/COMPILING/RUNNING）、`intent`（build/test/run）、`tab`。
 
@@ -920,7 +920,7 @@ def main():
 | Ctrl+D 复制行 | 不替换剪贴板 |
 | 当前行高亮 | ExtraSelections 浅黄背景 |
 | 括号匹配高亮 | ExtraSelections 背景色，非注释/字符串上下文 |
-| 括号补全上下文感知 | `_is_bracket_in_comment_or_string` 检查 |
+| 括号补全上下文感知 | `_is_bracket_in_comment_or_string` 检查，开符号和闭符号均检查 |
 | #include <> 和 /* */ 自动补全 | 扩展括号补全逻辑 |
 | 行尾空白自动清理 | `_strip_trailing_whitespace_in_doc` cursor 操作原地清理 |
 | 保存流程两阶段事务 | 先在纯文本副本上 strip+写盘，成功后才原地修改文档，失败/取消时文档不变 |
@@ -944,5 +944,9 @@ def main():
 | closeEvent 进程清理 | 关闭窗口时 kill + cleanup 运行中进程 |
 | _handle_close_tab 进程清理 | 关闭正在运行的标签时 kill + waitForFinished 排空管道 + 写入剩余输出 + cleanup |
 | ProcessManager stdout/stderr None 保护 | handler 入口检查 self.process is None，防止 cleanup 后排队信号 AttributeError |
+| CodeEditor._highlighter 解耦 | 通过 setDocument 同步 getattr(doc, '_highlighter')，消除对 window/tab_manager 的穿越访问 |
+| CodeEditor._handle_bracket_close 上下文检查 | 闭括号跳过也检查 _is_bracket_in_comment_or_string，与开括号一致 |
+| Template 编辑器 Tab 键 | indent_style='space' 时插入 indent_size 个空格，indent_style='tab' 时默认行为 |
+| 编译器路径验证 | SettingsDialog OK 时检查绝对/相对路径是否存在，裸名不检查（由 PATH 展开），不阻止保存 |
 | About 对话框 | Help 菜单 About 项，显示作者和时间 |
 | MainWindow 冗余 IDLE 检查 | _action_build/run/test 在调 FlowController 前先检查 IDLE 状态，FlowController 入口方法也检查，双重保护 |

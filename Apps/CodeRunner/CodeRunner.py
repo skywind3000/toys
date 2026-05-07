@@ -781,6 +781,8 @@ class TabData:
 
         # Highlighter created in deferred mode (no format spans initially)
         self.highlighter = CppHighlighter(self.editor_doc, deferred=True)
+        # Store on document so CodeEditor can find it via setDocument
+        self.editor_doc._highlighter = self.highlighter
 
         # Connect dirty tracking via modificationChanged
         self.editor_doc.modificationChanged.connect(
@@ -1603,6 +1605,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         self.line_number_area = LineNumberArea(self)
         self.overwrite_mode = False
         self._bracket_completion_enabled = True
+        self._highlighter = None
         self.document().blockCountChanged.connect(
             self._update_line_number_area_width)
         self.verticalScrollBar().valueChanged.connect(
@@ -1661,6 +1664,8 @@ class CodeEditor (FileDragMixin, QTextEdit):
         doc.blockCountChanged.connect(
             self._update_line_number_area_width)
         self._update_line_number_area_width()
+        # Sync highlighter reference from document attribute
+        self._highlighter = getattr(doc, '_highlighter', None)
 
     def resizeEvent (self, event):
         super().resizeEvent(event)
@@ -2231,8 +2236,13 @@ class CodeEditor (FileDragMixin, QTextEdit):
         return True
 
     def _handle_bracket_close (self, text:str) -> bool:
+        """Skip over auto-completed close bracket/quote. Returns True if
+        skipped, False if not handled. Context-aware: does not skip inside
+        comments or string literals."""
+        pos = self.textCursor().position()
+        if self._is_bracket_in_comment_or_string(pos):
+            return False
         cursor = self.textCursor()
-        pos = cursor.position()
         doc = self.document()
         if pos < doc.characterCount():
             char_after = doc.characterAt(pos)
@@ -2409,7 +2419,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
         return -1
 
     def _is_bracket_in_comment_or_string (self, pos:int) -> bool:
-        """Check if position is inside a comment or string literal."""
+        """Check if position is inside a comment or string literal.
+        Uses self._highlighter (synced via setDocument) instead of
+        traversing the window hierarchy."""
         block = self.document().findBlock(pos)
         if not block.isValid():
             return False
@@ -2419,11 +2431,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         if local_pos < 0 or local_pos >= len(text):
             return False
         # Check highlighter format at this position
-        highlighter = None
-        win = self.window()
-        tab = win.tab_manager.get_current() if hasattr(win, 'tab_manager') else None
-        if tab and tab.highlighter:
-            highlighter = tab.highlighter
+        highlighter = self._highlighter
         if highlighter and not highlighter._deferred:
             fmt = highlighter.format(local_pos)
             fg = fmt.foreground()
@@ -2870,7 +2878,8 @@ class SettingsDialog (QDialog):
             self.edit_template.fontMetrics().horizontalAdvance('x') * size)
 
     def eventFilter (self, obj, event):
-        """Event filter for template editor: auto indent on Enter."""
+        """Event filter for template editor: auto indent on Enter,
+        Tab key respects indent_style setting."""
         if obj is self.edit_template and event.type() == event.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 cursor = self.edit_template.textCursor()
@@ -2892,6 +2901,12 @@ class SettingsDialog (QDialog):
                 # Insert newline + leading whitespace
                 cursor.insertText('\n' + leading)
                 return True
+            if event.key() == Qt.Key_Tab:
+                if self.combo_indent_style.currentIndex() == 1:
+                    # Space mode: insert indent_size spaces instead of \t
+                    cursor = self.edit_template.textCursor()
+                    cursor.insertText(' ' * self.spin_indent_size.value())
+                    return True
         return super().eventFilter(obj, event)
 
     def __on_reset_template (self):
@@ -2927,6 +2942,27 @@ class SettingsDialog (QDialog):
         c.indent_size = self.spin_indent_size.value()
         c.word_wrap = self.chk_word_wrap.isChecked()
         c.template_text = self.edit_template.toPlainText()
+
+        # Warn if compiler path looks invalid (absolute/relative path
+        # that doesn't exist on disk). Bare names like 'gcc' are OK —
+        # they're resolved from PATH at compile time.
+        compiler = c.compiler_path
+        if compiler and os.path.dirname(compiler):
+            # Has a directory component — resolve relative paths
+            if not os.path.isabs(compiler):
+                base = os.path.dirname(os.path.abspath(__file__))
+                resolved = os.path.abspath(os.path.join(base, compiler))
+            else:
+                resolved = compiler
+            if not os.path.exists(resolved):
+                result = QMessageBox.warning(
+                    self, 'Compiler Path',
+                    "The compiler path '{}' does not exist on disk.\n\n"
+                    "Compilation may fail. Save anyway?".format(compiler),
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No)
+                if result == QMessageBox.No:
+                    return
 
         # Check if compiler-related settings changed → update mtime
         old = self._original
