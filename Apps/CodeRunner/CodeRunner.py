@@ -1356,11 +1356,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
                 cursor.insertText('\t')
             return
 
-        # Shift+Tab — unindent selection
+        # Shift+Tab — unindent selection or current line
         if key == Qt.Key_Backtab:
-            cursor = self.textCursor()
-            if cursor.hasSelection():
-                self._handle_unindent_selection()
+            self._handle_unindent_selection()
             return
 
         # Enter key — auto indent
@@ -1470,51 +1468,67 @@ class CodeEditor (FileDragMixin, QTextEdit):
         cursor.endEditBlock()
 
     def _handle_indent_selection (self):
-        """Indent all selected lines by one level."""
+        """Indent current line or all selected lines by one level."""
         doc = self.document()
         cursor = self.textCursor()
-        start_block = doc.findBlock(cursor.selectionStart())
-        end_block = doc.findBlock(cursor.selectionEnd())
-        if cursor.selectionEnd() == end_block.position():
-            end_block = end_block.previous()
+        has_selection = cursor.hasSelection()
+        if has_selection:
+            start_block = doc.findBlock(cursor.selectionStart())
+            end_block = doc.findBlock(cursor.selectionEnd())
+            if cursor.selectionEnd() == end_block.position():
+                end_block = end_block.previous()
+        else:
+            start_block = cursor.block()
+            end_block = start_block
         indent_char = '\t' if self.indent_style == 'tab' else \
             ' ' * self.indent_size
-        added_len = len(indent_char)
-        sel_start = cursor.selectionStart()
-        sel_end = cursor.selectionEnd()
-        num_lines = end_block.blockNumber() - start_block.blockNumber() + 1
-        cursor.beginEditBlock()
-        block_num = start_block.blockNumber()
+        start_num = start_block.blockNumber()
         end_num = end_block.blockNumber()
-        for i in range(block_num, end_num + 1):
+        if not has_selection:
+            cursor_col = cursor.position() - cursor.block().position()
+        cursor.beginEditBlock()
+        for i in range(start_num, end_num + 1):
             block = doc.findBlockByNumber(i)
             c = QTextCursor(doc)
             c.setPosition(block.position())
             c.insertText(indent_char)
         cursor.endEditBlock()
-        # Restore selection adjusted for inserted chars per line
-        new_cursor = QTextCursor(doc)
-        new_cursor.setPosition(sel_start + added_len)
-        new_cursor.setPosition(
-            sel_end + added_len * num_lines,
-            QTextCursor.KeepAnchor)
-        self.setTextCursor(new_cursor)
+        if has_selection:
+            # Linewise: anchor at block start, position at end of block
+            # range, so repeated indent/unindent never drifts
+            new_start = doc.findBlockByNumber(start_num).position()
+            new_end_block = doc.findBlockByNumber(end_num)
+            new_end = new_end_block.position() + new_end_block.length()
+            new_cursor = QTextCursor(doc)
+            new_cursor.setPosition(new_start)
+            new_cursor.setPosition(new_end, QTextCursor.KeepAnchor)
+            self.setTextCursor(new_cursor)
+        else:
+            new_block = doc.findBlockByNumber(start_num)
+            new_pos = new_block.position() + cursor_col + len(indent_char)
+            new_cursor = QTextCursor(doc)
+            new_cursor.setPosition(new_pos)
+            self.setTextCursor(new_cursor)
 
     def _handle_unindent_selection (self):
-        """Unindent all selected lines by one level."""
+        """Unindent current line or all selected lines by one level."""
         doc = self.document()
         cursor = self.textCursor()
-        start_block = doc.findBlock(cursor.selectionStart())
-        end_block = doc.findBlock(cursor.selectionEnd())
-        if cursor.selectionEnd() == end_block.position():
-            end_block = end_block.previous()
-        block_num = start_block.blockNumber()
+        has_selection = cursor.hasSelection()
+        if has_selection:
+            start_block = doc.findBlock(cursor.selectionStart())
+            end_block = doc.findBlock(cursor.selectionEnd())
+            if cursor.selectionEnd() == end_block.position():
+                end_block = end_block.previous()
+        else:
+            start_block = cursor.block()
+            end_block = start_block
+        start_num = start_block.blockNumber()
         end_num = end_block.blockNumber()
-        sel_start = cursor.selectionStart()
-        sel_end = cursor.selectionEnd()
+        if not has_selection:
+            cursor_col = cursor.position() - cursor.block().position()
         removed_per_line = []
-        cursor.beginEditBlock()
-        for i in range(block_num, end_num + 1):
+        for i in range(start_num, end_num + 1):
             block = doc.findBlockByNumber(i)
             text = block.text()
             remove_len = 0
@@ -1531,6 +1545,10 @@ class CodeEditor (FileDragMixin, QTextEdit):
                         break
                 remove_len = count
             removed_per_line.append(remove_len)
+        cursor.beginEditBlock()
+        for i in range(start_num, end_num + 1):
+            block = doc.findBlockByNumber(i)
+            remove_len = removed_per_line[i - start_num]
             if remove_len > 0:
                 c = QTextCursor(doc)
                 c.setPosition(block.position())
@@ -1539,16 +1557,24 @@ class CodeEditor (FileDragMixin, QTextEdit):
                     QTextCursor.KeepAnchor)
                 c.removeSelectedText()
         cursor.endEditBlock()
-        # Restore selection adjusted for removed chars
-        removed_total = sum(removed_per_line)
-        first_removed = removed_per_line[0] if removed_per_line else 0
-        new_cursor = QTextCursor(doc)
-        new_cursor.setPosition(
-            max(0, sel_start - first_removed))
-        new_cursor.setPosition(
-            max(0, sel_end - removed_total),
-            QTextCursor.KeepAnchor)
-        self.setTextCursor(new_cursor)
+        if has_selection:
+            # Linewise: anchor at block start, position at end of block
+            # range, so repeated indent/unindent never drifts
+            new_start = doc.findBlockByNumber(start_num).position()
+            new_end_block = doc.findBlockByNumber(end_num)
+            new_end = new_end_block.position() + new_end_block.length()
+            new_cursor = QTextCursor(doc)
+            new_cursor.setPosition(new_start)
+            new_cursor.setPosition(new_end, QTextCursor.KeepAnchor)
+            self.setTextCursor(new_cursor)
+        else:
+            removed = removed_per_line[0]
+            new_block = doc.findBlockByNumber(start_num)
+            new_col = max(0, cursor_col - removed)
+            new_pos = new_block.position() + new_col
+            new_cursor = QTextCursor(doc)
+            new_cursor.setPosition(new_pos)
+            self.setTextCursor(new_cursor)
 
     def _handle_duplicate_line (self):
         """Duplicate current line or selected lines below."""
@@ -3242,14 +3268,10 @@ class MainWindow (QMainWindow):
         self.editor._handle_comment_uncomment()
 
     def _action_indent (self):
-        cursor = self.editor.textCursor()
-        if cursor.hasSelection():
-            self.editor._handle_indent_selection()
+        self.editor._handle_indent_selection()
 
     def _action_unindent (self):
-        cursor = self.editor.textCursor()
-        if cursor.hasSelection():
-            self.editor._handle_unindent_selection()
+        self.editor._handle_unindent_selection()
 
     def _action_duplicate (self):
         self.editor._handle_duplicate_line()

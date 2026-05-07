@@ -200,7 +200,7 @@ _SETTINGS_DEFAULTS = {
 
 **Comment/Uncomment (Ctrl+/)**：keyPressEvent 处理。无选区时操作当前行；有选区时操作所有被选中的行。Toggle 逻辑：检查所有操作行是否已以 `//` 开头（忽略行首空白，空行视为未注释），若全部已注释则移除 `//` 及紧随的所有空格，否则对每行首个非空白字符前插入 `// `（含空格）。
 
-**Indent/Unindent**：keyPressEvent 处理。有选区时 Tab → 选中行每行行首加 `\t`（indent_style='tab'）或 indent_size 个空格（indent_style='space'）；Shift+Tab → 选中行每行行首移除一个 `\t` 或 indent_size 个空格。无选区时 Tab 插入 `\t`（原有行为不变），Shift+Tab 无特殊行为。菜单快捷键：Indent = Ctrl+]，Unindent = Ctrl+[。
+**Indent/Unindent**：keyPressEvent 处理。有选区时 Tab → 选中行每行行首加 `\t`（indent_style='tab'）或 indent_size 个空格（indent_style='space'）；Shift+Tab → 选中行每行行首移除一个 `\t` 或 indent_size 个空格。无选区时 Tab 插入 `\t`（原有行为不变），Shift+Tab → 当前行行首移除一个 `\t` 或 indent_size 个空格（与 Ctrl+[ 一致）。菜单快捷键：Indent = Ctrl+]，Unindent = Ctrl+[。无选区时 Ctrl+] 缩进当前行，Ctrl+[ 反缩进当前行。操作后选区恢复为 linewise（锚点在首行行首，光标在末行行尾+1），确保多次缩进/反缩进不会让选区漂移到其他行。
 
 **Duplicate Line (Ctrl+D)**：keyPressEvent 处理。无选区 → 选中当前 block 全文，copy 后 insert 到下一行；有选区 → 复制选区文本 insert 到选区末尾之后。不操作剪贴板。
 
