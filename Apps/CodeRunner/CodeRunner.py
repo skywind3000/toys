@@ -1790,25 +1790,36 @@ class CodeEditor (FileDragMixin, QTextEdit):
             start_block = cursor.block()
             end_block = start_block
 
-        # Check if ALL lines are already commented
+        # Check if ALL non-blank lines are already commented
         all_commented = True
+        has_non_blank = False
         block = start_block
         while block.isValid() and block.blockNumber() <= end_block.blockNumber():
             text = block.text()
             stripped = text.lstrip()
-            # Empty/whitespace-only lines are not considered "commented"
             if not stripped:
-                all_commented = False
-                break
-            if not stripped.startswith('//'):
+                # Skip blank lines in the "all commented" check
+                pass
+            elif stripped.startswith('//'):
+                has_non_blank = True
+            else:
+                has_non_blank = True
                 all_commented = False
                 break
             block = block.next()
+        # If no non-blank lines exist, do nothing
+        if not has_non_blank:
+            return
 
         cursor.beginEditBlock()
         block = start_block
         while block.isValid() and block.blockNumber() <= end_block.blockNumber():
             text = block.text()
+            stripped = text.lstrip()
+            # Skip blank lines — comment/uncomment should not touch them
+            if not stripped:
+                block = block.next()
+                continue
             cursor_pos = block.position()
             if all_commented:
                 # Remove // and all spaces immediately after it
@@ -1826,15 +1837,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
             else:
                 # Add "// " before first non-whitespace
                 stripped_len = len(text) - len(text.lstrip())
-                if stripped_len == len(text):
-                    # Whitespace-only line — add // at start
-                    c = QTextCursor(doc)
-                    c.setPosition(cursor_pos)
-                    c.insertText('// ')
-                else:
-                    c = QTextCursor(doc)
-                    c.setPosition(cursor_pos + stripped_len)
-                    c.insertText('// ')
+                c = QTextCursor(doc)
+                c.setPosition(cursor_pos + stripped_len)
+                c.insertText('// ')
             block = block.next()
         cursor.endEditBlock()
 
