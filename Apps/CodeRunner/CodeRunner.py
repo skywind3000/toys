@@ -1961,6 +1961,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
 
     def _update_extra_selections (self):
         """Update current line highlight and bracket match highlight."""
+        if not self.isEnabled():
+            self.setExtraSelections([])
+            return
         selections = []
         # Current line highlight
         cursor = self.textCursor()
@@ -4294,6 +4297,7 @@ class MainWindow (QMainWindow):
         self.input_panel.setDocument(self.empty_input_doc)
         self.output_panel.setDocument(self.empty_output_doc)
         self.editor.setEnabled(False)
+        self.editor.setExtraSelections([])
         self.editor.line_number_area.hide()
         self.input_section.setEnabled(False)
         self.output_section.setEnabled(False)

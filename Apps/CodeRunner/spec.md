@@ -589,3 +589,9 @@ def main():
 | 2026/05/07 | #include <> 和 /* */ 自动补全 | 扩展括号补全逻辑，`#include <` 补 `>`，`/*` 补 `*/` |
 | 2026/05/07 | 行尾空白自动清理 | 保存时移除每行末尾空格/Tab |
 | 2026/05/07 | 编辑器右键菜单 | contextMenuEvent 弹 QMenu，动作与 Edit 菜单共享 |
+| 2026/05/07 | Reopen with Encoding dirty 检查 | 有未保存修改时弹出 Save/Discard/Cancel 确认对话框，防止无提示覆盖用户修改 |
+| 2026/05/07 | 行尾裁剪回写文档 | `_strip_trailing_whitespace_in_doc` 在文档中原地清理行尾空白，使文档内容与磁盘一致后再写磁盘和标记 setModified(False)，维护"脏=不一致"语义 |
+| 2026/05/07 | Run 终端 CR_ENV_SETUP | .cmd 脚本改用 `CR_SET_PATH` 和 `CR_ENV_SETUP` 占位，os.environ 只临时设置 4 个 CR_ 前缀变量而非逐个设置用户环境变量，减少全局状态污染 |
+| 2026/05/07 | waitForStarted 改为异步 | 移除 `waitForStarted(5000)` 阻塞调用，改用 `errorOccurred` 信号异步处理 `FailedToStart`，避免 UI 冻结 |
+| 2026/05/07 | 括号补全上下文感知 | `_handle_bracket_open` 调用 `_is_bracket_in_comment_or_string` 检查光标位置，在字符串/注释内跳过自动补全，返回 bool 表示是否已处理 |
+| 2026/05/07 | psutil.Process 缓存复用 | `_start_memory_tracking` 创建 Process 对象缓存到 `_tracked_process`，`_poll_memory` 直接使用缓存而非每 100ms 重新创建 |
