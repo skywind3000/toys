@@ -320,7 +320,8 @@ def _ensure_cmd_file () -> str:
         'coderunner.cmd')
     content = (
         '@echo off\n'
-        'if defined CR_PATH_PREFIX set PATH=%CR_PATH_PREFIX%;%PATH%\n'
+        '%CR_SET_PATH%\n'
+        '%CR_ENV_SETUP%\n'
         'call %CR_COMMAND%\n'
         'set CR_EXITCODE=%ERRORLEVEL%\n'
         'call %CR_PAUSE%\n'
@@ -871,6 +872,7 @@ class ProcessManager (QObject):
         self._memory_timer = None
         self._timeout_timer = None
         self._tracked_pid = 0
+        self._tracked_process = None
         self._stdin_data = None
         self._enc_mgr = EncodingManager()
         self._stderr_buffer = ''
@@ -891,18 +893,17 @@ class ProcessManager (QObject):
         self.process.readyReadStandardError.connect(
             self._on_compile_stderr_ready)
         self.process.finished.connect(self._on_compile_finished)
+        # errorOccurred handles FailedToStart asynchronously
+        error_signal_name = (
+            'errorOccurred' if hasattr(QProcess, 'errorOccurred') else 'error')
+        getattr(self.process, error_signal_name).connect(
+            self._on_compile_error)
         # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_compile_timeout)
         self._timeout_timer.start(timeout * 1000)
         self.process.start(command[0], command[1:])
-        if not self.process.waitForStarted(5000):
-            self._stop_timeout_timer()
-            err_msg = self.process.errorString()
-            self._cleanup()
-            self._finished_emitted = True
-            self.compile_finished.emit(-1, err_msg, 'failed_to_start')
 
     def start_test_run (self, exe_path:str, work_dir:str,
                         env:QProcessEnvironment, stdin_data:bytes,
@@ -923,19 +924,17 @@ class ProcessManager (QObject):
             self._on_run_stderr_ready)
         self.process.started.connect(self._on_run_started)
         self.process.finished.connect(self._on_run_finished)
+        # errorOccurred handles FailedToStart asynchronously
+        error_signal_name = (
+            'errorOccurred' if hasattr(QProcess, 'errorOccurred') else 'error')
+        getattr(self.process, error_signal_name).connect(
+            self._on_run_error)
         # Start timeout timer BEFORE process to avoid gap
         self._timeout_timer = QTimer(self)
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_run_timeout)
         self._timeout_timer.start(timeout * 1000)
         self.process.start(exe_path)
-        if not self.process.waitForStarted(5000):
-            self._stop_timeout_timer()
-            err_msg = self.process.errorString()
-            self._cleanup()
-            self._finished_emitted = True
-            self.run_finished.emit(-1, 0, 0, 'failed_to_start',
-                                   err_msg)  # error_detail: QProcess error
 
     def kill_process (self):
         """Kill current process. finished signal will arrive with reason='killed'."""
@@ -963,6 +962,13 @@ class ProcessManager (QObject):
                 pass
             try:
                 self.process.started.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                error_signal_name = (
+                    'errorOccurred' if hasattr(QProcess, 'errorOccurred')
+                    else 'error')
+                getattr(self.process, error_signal_name).disconnect()
             except (RuntimeError, TypeError):
                 pass
             self.process.deleteLater()
@@ -1017,6 +1023,17 @@ class ProcessManager (QObject):
         self.process.kill()
         self._cleanup()
         self.compile_finished.emit(-1, stderr_text, 'timeout')
+
+    def _on_compile_error (self, error):
+        """Handle QProcess error for compile process."""
+        if self._finished_emitted:
+            return
+        if error == QProcess.FailedToStart:
+            self._finished_emitted = True
+            self._stop_timeout_timer()
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.compile_finished.emit(-1, err_msg, 'failed_to_start')
 
     #----- Run handlers -----
 
@@ -1085,21 +1102,32 @@ class ProcessManager (QObject):
         self._cleanup()
         self.run_finished.emit(-1, elapsed, peak, 'timeout', '')  # error_detail: unused
 
+    def _on_run_error (self, error):
+        """Handle QProcess error for run process."""
+        if self._finished_emitted:
+            return
+        if error == QProcess.FailedToStart:
+            self._finished_emitted = True
+            self._stop_timeout_timer()
+            err_msg = self.process.errorString()
+            self._cleanup()
+            self.run_finished.emit(-1, 0, 0, 'failed_to_start', err_msg)
+
     #----- Memory tracking -----
 
     def _start_memory_tracking (self, pid:int):
         self._peak_memory = 0
         self._tracked_pid = pid
+        self._tracked_process = _psutil.Process(pid)
         self._memory_timer = QTimer(self)
         self._memory_timer.timeout.connect(self._poll_memory)
         self._memory_timer.start(100)
 
     def _poll_memory (self):
         try:
-            proc = _psutil.Process(self._tracked_pid)
-            mem = proc.memory_info()
+            mem = self._tracked_process.memory_info()
             self._peak_memory = max(self._peak_memory, mem.rss)
-        except Exception:
+        except (_psutil.NoSuchProcess, _psutil.AccessDenied):
             pass
 
     def _stop_memory_tracking (self):
@@ -1107,6 +1135,7 @@ class ProcessManager (QObject):
             self._memory_timer.stop()
             self._memory_timer = None
         self._tracked_pid = 0
+        self._tracked_process = None
 
 
 #----------------------------------------------------------------------
@@ -1385,8 +1414,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
                 if self._handle_slash_for_comment():
                     return
             if text in self._BRACKET_OPEN:
-                self._handle_bracket_open(text)
-                return
+                if self._handle_bracket_open(text):
+                    return
+                # In comment/string context, fall through to default input
             if text in self._BRACKET_CLOSE:
                 if self._handle_bracket_close(text):
                     return
@@ -1810,18 +1840,23 @@ class CodeEditor (FileDragMixin, QTextEdit):
     def set_bracket_completion (self, enabled:bool):
         self._bracket_completion_enabled = enabled
 
-    def _handle_bracket_open (self, text:str):
+    def _handle_bracket_open (self, text:str) -> bool:
+        """Handle bracket/quote auto-completion. Returns True if handled,
+        False if in comment/string context (should use default input)."""
         cursor = self.textCursor()
+        # Skip auto-completion inside comments or string literals
+        pos = cursor.position()
+        if self._is_bracket_in_comment_or_string(pos):
+            return False
         # For quotes: if cursor is inside a matching pair, skip over
         if text in ('"', "'"):
-            pos = cursor.position()
             doc = self.document()
             if pos < doc.characterCount():
                 char_after = doc.characterAt(pos)
                 if char_after == text:
                     cursor.movePosition(QTextCursor.Right)
                     self.setTextCursor(cursor)
-                    return
+                    return True
         # Insert open + close, place cursor between
         close = self._BRACKET_OPEN[text]
         cursor.beginEditBlock()
@@ -1829,6 +1864,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         cursor.movePosition(QTextCursor.Left)
         cursor.endEditBlock()
         self.setTextCursor(cursor)
+        return True
 
     def _handle_bracket_close (self, text:str) -> bool:
         cursor = self.textCursor()
@@ -2105,6 +2141,28 @@ def _output_clear (doc:QTextDocument):
     cursor = QTextCursor(doc)
     cursor.select(QTextCursor.Document)
     cursor.removeSelectedText()
+
+
+def _strip_trailing_whitespace_in_doc (doc:QTextDocument) -> None:
+    """Strip trailing whitespace from each line in a QTextDocument.
+    Uses cursor operations so the change is recorded as a single undo step.
+    After calling this, doc.toPlainText() and the on-disk content are consistent."""
+    cursor = QTextCursor(doc)
+    cursor.beginEditBlock()
+    block = doc.begin()
+    while block.isValid():
+        text = block.text()
+        stripped = text.rstrip()
+        if stripped != text:
+            # Select trailing whitespace and delete it
+            block_pos = block.position()
+            start = block_pos + len(stripped)
+            end = block_pos + len(text)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            cursor.removeSelectedText()
+        block = block.next()
+    cursor.endEditBlock()
 
 
 def _output_append (doc:QTextDocument, text:str, color:QColor=None):
@@ -3541,33 +3599,39 @@ class MainWindow (QMainWindow):
         work_dir = os.path.dirname(exe_path)
         bat_path = _ensure_cmd_file()
         _, bin_dir = _resolve_compiler_path(self.settings.compiler_path)
-        # Compute all expanded env values before modifying os.environ
+        # Compute CR_SET_PATH: prepend bin_dir to PATH if needed
+        if bin_dir:
+            cr_set_path = 'set PATH={};%PATH%'.format(bin_dir)
+        else:
+            cr_set_path = 'rem no path prefix'
+        # Compute CR_ENV_SETUP: batch set commands for user env vars
         expanded_env = {}
         for key, value in self.settings.env_vars.items():
             expanded_env[key] = _expand_env_vars(value)
-        # Save original env values for restoration
+        env_lines = []
+        for key, value in expanded_env.items():
+            if key.startswith('CR_'):
+                continue  # Don't overwrite CR_* vars
+            env_lines.append('set {}={}'.format(key, value))
+        if env_lines:
+            cr_env_setup = '\n'.join(env_lines)
+        else:
+            cr_env_setup = 'rem no custom env'
+        # Only temporarily set CR_* prefixed vars in os.environ
         saved_env = {}
         try:
-            # Set CR_* vars for the cmd script
-            saved_env['CR_COMMAND'] = os.environ.get('CR_COMMAND')
-            os.environ['CR_COMMAND'] = '"{}"'.format(exe_path)
-            saved_env['CR_PAUSE'] = os.environ.get('CR_PAUSE')
-            os.environ['CR_PAUSE'] = 'pause'
-            if bin_dir:
-                saved_env['CR_PATH_PREFIX'] = os.environ.get(
-                    'CR_PATH_PREFIX')
-                os.environ['CR_PATH_PREFIX'] = bin_dir
-            # Set user env vars for the terminal process
-            for key, value in expanded_env.items():
-                if key.startswith('CR_'):
-                    continue  # Don't overwrite CR_* vars
-                saved_env[key] = os.environ.get(key)
-                os.environ[key] = value
+            for cr_key, cr_value in {
+                'CR_COMMAND': '"{}"'.format(exe_path),
+                'CR_PAUSE': 'pause',
+                'CR_SET_PATH': cr_set_path,
+                'CR_ENV_SETUP': cr_env_setup,
+            }.items():
+                saved_env[cr_key] = os.environ.get(cr_key)
+                os.environ[cr_key] = cr_value
             ok = QProcess.startDetached(
                 'cmd',
                 ['/c', 'start', '', '/D', work_dir, bat_path])
         finally:
-            # Restore original env values
             for key, orig in saved_env.items():
                 if orig is None:
                     os.environ.pop(key, None)
@@ -4002,8 +4066,17 @@ class MainWindow (QMainWindow):
         tab = self.tab_manager.get_current()
         if tab is None or tab.is_new:
             return
+        # Check for unsaved changes before overwriting
+        if tab.is_dirty or tab.editor_doc.isModified():
+            result = self._confirm_reopen_encoding(tab)
+            if result == 'save':
+                if self._save_tab_data(tab) < 0:
+                    return
+            elif result == 'cancel':
+                return
         try:
-            content = open(tab.file_path, 'r', encoding=encoding).read()
+            with open(tab.file_path, 'r', encoding=encoding) as f:
+                content = f.read()
         except (IOError, OSError, UnicodeDecodeError) as e:
             QMessageBox.warning(
                 self, 'Encoding Error',
@@ -4111,6 +4184,9 @@ class MainWindow (QMainWindow):
 
     def _save_tab_data (self, tab:TabData) -> int:
         """Save tab to disk. Returns 0 success, -1 cancel, -2 error."""
+        # Strip trailing whitespace in document first so doc == disk
+        _strip_trailing_whitespace_in_doc(tab.editor_doc)
+        content = tab.editor_doc.toPlainText()
         if tab.is_new:
             start_dir = self._start_dir()
             path, _ = QFileDialog.getSaveFileName(
@@ -4120,8 +4196,6 @@ class MainWindow (QMainWindow):
             if not path:
                 return -1
             path = os.path.normpath(path)
-            content = _strip_trailing_whitespace(
-                tab.editor_doc.toPlainText())
             try:
                 with open(path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
@@ -4133,8 +4207,6 @@ class MainWindow (QMainWindow):
             self._last_file_dir = os.path.dirname(path)
             self._add_recent_file(path)
         else:
-            content = _strip_trailing_whitespace(
-                tab.editor_doc.toPlainText())
             try:
                 with open(tab.file_path, 'w', encoding=tab.encoding) as f:
                     f.write(content)
@@ -4158,6 +4230,24 @@ class MainWindow (QMainWindow):
         msg = QMessageBox(self)
         msg.setWindowTitle('Save Changes?')
         msg.setText("File '{}' has unsaved changes.".format(name))
+        msg.setStandardButtons(
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Save)
+        result = msg.exec_()
+        if result == QMessageBox.Save:
+            return 'save'
+        elif result == QMessageBox.Discard:
+            return 'discard'
+        return 'cancel'
+
+    def _confirm_reopen_encoding (self, tab:TabData) -> str:
+        """Confirm before Reopen with Encoding overwrites unsaved changes."""
+        name = os.path.basename(tab.file_path)
+        msg = QMessageBox(self)
+        msg.setWindowTitle('Unsaved Changes')
+        msg.setText(
+            "Reopen with Encoding will discard unsaved changes in "
+            "'{}'.".format(name))
         msg.setStandardButtons(
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
         msg.setDefaultButton(QMessageBox.Save)

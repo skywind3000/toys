@@ -396,7 +396,7 @@ class TestCmdFilePathPrefix (unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_cmd_file_contains_path_prefix (self):
-        """coderunner.cmd includes CR_PATH_PREFIX conditional."""
+        """coderunner.cmd includes CR_SET_PATH and CR_ENV_SETUP placeholders."""
         old_temp = os.environ.get('TEMP', '')
         old_tmp = os.environ.get('TMP', '')
         os.environ['TEMP'] = self.tmpdir
@@ -413,11 +413,9 @@ class TestCmdFilePathPrefix (unittest.TestCase):
             os.environ['TMP'] = old_tmp
         else:
             del os.environ['TMP']
-        # Verify the PATH injection line exists
-        self.assertIn('CR_PATH_PREFIX', content)
-        expected = ('if defined CR_PATH_PREFIX '
-                    'set PATH=%CR_PATH_PREFIX%;%PATH%')
-        self.assertIn(expected, content)
+        # Verify the new placeholders exist
+        self.assertIn('CR_SET_PATH', content)
+        self.assertIn('CR_ENV_SETUP', content)
 
 
 if __name__ == '__main__':
