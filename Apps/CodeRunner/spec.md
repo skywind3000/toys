@@ -31,6 +31,7 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 | SettingsDialog | QDialog | 设置面板（三页 Tab）|
 | FindDialog | QDialog | 非模态查找对话框 |
 | ReplaceDialog | QDialog | 非模态替换对话框 |
+| _ClickableLabel | QLabel | 状态栏编码标签，点击弹出编码菜单 |
 
 ## 2. 数据模型
 
@@ -426,11 +427,11 @@ OK 时：验证 → apply_from(copy) → save JSON → compiler_path/flags/env_v
 
 ### 6.2 FindDialog
 
-非模态 QDialog：QLineEdit + 大小写敏感 QCheckBox + 向上/向下 QRadioButton + Find Next/Close 按钮。目标为 CodeEditor，使用 `QTextDocument.find()`。未找到时标题栏提示 "Not found"。关闭时 `hide()` 不销毁，保留上次输入。
+非模态 QDialog：QLineEdit + 大小写敏感 QCheckBox + 向上/向下 QRadioButton + Find Next/Close 按钮。目标为 CodeEditor，使用 `QTextDocument.find()`。未找到时标题栏提示 "Not found"。关闭时 `hide()` 不销毁，保留上次输入。FindDialog 在 MainWindow 中惰性创建（`self._find_dialog`），Ctrl+F 时 show + activateWindow + focus + selectAll。搜索到末尾/开头时自动从头/尾继续搜索。
 
 ### 6.3 ReplaceDialog
 
-非模态 QDialog，FindDialog 基础增加：替换文本 QLineEdit + Replace/Replace All 按钮。关闭时隐藏保留状态。
+非模态 QDialog，FindDialog 基础增加：替换文本 QLineEdit + Replace / Replace All / Close 按钮。关闭时隐藏保留状态。ReplaceDialog 同样惰性创建。Replace 先检查当前选中文本是否匹配查找文本（区分大小写选项），匹配则替换后自动 Find Next。Replace All 用 QTextCursor 从头遍历替换所有匹配项，完成后标题栏显示替换数量。
 
 ### 6.4 GotoLineDialog
 
@@ -438,7 +439,10 @@ OK 时：验证 → apply_from(copy) → save JSON → compiler_path/flags/env_v
 
 ### 6.5 编码选择菜单
 
-状态栏编码标签点击 → QMenu："Reopen with Encoding" / "Save with Encoding"，列出常见编码（UTF-8、GBK、Big5、Shift_JIS、ISO-8859-1 等）。
+状态栏编码标签使用 `_ClickableLabel`（继承 QLabel），设置 `PointingHandCursor` 提示可点击。点击 → QMenu："Reopen with Encoding" / "Save with Encoding"，列出常见编码列表 `_COMMON_ENCODINGS`（UTF-8、GBK、GB18030、Big5、Shift_JIS、EUC-JP、EUC-KR、ISO-8859-1、ISO-8859-2、Windows-1252、Windows-1251）。
+
+- **Reopen with Encoding**：用指定编码重新读取文件内容，更新 `tab.encoding`、重置 dirty 状态、重新触发语法高亮。新文件（is_new=True）不可 Reopen。
+- **Save with Encoding**：用指定编码写文件，更新 `tab.encoding`、重置 dirty 状态。新文件先弹出 Save As 对话框选路径，取消则不保存。保存失败（如 UnicodeEncodeError）时 rollback file_path/is_new 并弹警告。
 
 ### 6.6 保存确认对话框
 
@@ -552,3 +556,8 @@ def main():
 | 2026/05/07 | 编码名统一大写 | 状态栏显示 'GBK' 而非 'gbk'，与 'UTF-8' 一致 |
 | 2026/05/07 | zoom 仅在字号变更时重置 | 修改非字体设置（编译参数等）时不清零 zoom 偏移 |
 | 2026/05/07 | FileDialog 起始路径存在性检查 | `_start_dir()` 检查 `_last_file_dir` 是否仍存在于磁盘，不存在则回退 ~/ |
+| 2026/05/07 | Find/Replace 惰性创建对话框 | MainWindow 中 `_find_dialog` / `_replace_dialog` 初始 None，Ctrl+F/Ctrl+H 时创建并 show，close 时 hide 保留状态，避免每次都新建 |
+| 2026/05/07 | Find 搜索从头/尾循环 | 搜索到末尾未找到时自动从开头继续搜索，向上搜索同理从结尾继续 |
+| 2026/05/07 | Replace All 计数显示 | Replace All 完成后标题栏显示替换数量 |
+| 2026/05/07 | Save with Encoding rollback | 新文件 Save with Encoding 失败时 rollback file_path/is_new，避免留下无效状态 |
+| 2026/05/07 | 编码标签可点击 | `_ClickableLabel` 继承 QLabel 加 PointingHandCursor，点击弹出编码选择菜单 |

@@ -17,12 +17,13 @@ import time
 import json
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
-    QTextEdit, QLabel, QWidget, QAction,
+    QTextEdit, QLabel, QWidget, QAction, QMenu,
     QVBoxLayout, QShortcut, QFileDialog, QMessageBox,
     QInputDialog, QDialog, QTabWidget, QLineEdit,
     QSpinBox, QCheckBox, QFontComboBox, QTableWidget,
     QTableWidgetItem, QPushButton, QHBoxLayout,
-    QHeaderView, QComboBox, QPlainTextEdit as QPlainTextEditWidget
+    QHeaderView, QComboBox, QRadioButton,
+    QPlainTextEdit as QPlainTextEditWidget
 )
 from PyQt5.QtCore import (
     Qt, QSize, QPointF, QTimer, QRect, QRegularExpression,
@@ -54,6 +55,13 @@ _FLOW_RUNNING = 'running'
 # Windows NTSTATUS codes for common crash scenarios
 _DLL_NOT_FOUND = 0xC0000135   # STATUS_DLL_NOT_FOUND (-1073741515)
 _ACCESS_VIOLATION = 0xC0000005  # STATUS_ACCESS_VIOLATION (-1073741819)
+
+# Common encodings for Reopen/Save with Encoding menu
+_COMMON_ENCODINGS = [
+    'UTF-8', 'GBK', 'GB18030', 'Big5', 'Shift_JIS',
+    'EUC-JP', 'EUC-KR', 'ISO-8859-1', 'ISO-8859-2',
+    'Windows-1252', 'Windows-1251',
+]
 
 
 def _describe_exit_code (exit_code:int) -> str:
@@ -1121,6 +1129,26 @@ class FileDragMixin:
 
 
 #----------------------------------------------------------------------
+# _ClickableLabel — status bar label that pops encoding menu on click
+#----------------------------------------------------------------------
+class _ClickableLabel (QLabel):
+    """Clickable label in status bar for encoding selection menu."""
+
+    def __init__ (self, text:str='', parent=None):
+        super().__init__(text, parent)
+        self._main_window = None
+        self.setCursor(Qt.PointingHandCursor)
+
+    def setMainWindow (self, mw):
+        self._main_window = mw
+
+    def mousePressEvent (self, event):
+        if event.button() == Qt.LeftButton and self._main_window:
+            self._main_window._show_encoding_menu(self)
+        super().mousePressEvent(event)
+
+
+#----------------------------------------------------------------------
 # LineNumberArea
 #----------------------------------------------------------------------
 class LineNumberArea (QWidget):
@@ -1908,6 +1936,204 @@ class SettingsDialog (QDialog):
 
 
 #----------------------------------------------------------------------
+# FindDialog
+#----------------------------------------------------------------------
+class FindDialog (QDialog):
+    """Non-modal find dialog. Close hides, preserving state."""
+
+    def __init__ (self, editor:QTextEdit, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+        self.setWindowTitle('Find')
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.__build_ui()
+
+    def __build_ui (self):
+        layout = QVBoxLayout(self)
+
+        # Find text
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Find:'))
+        self.edit_find = QLineEdit()
+        row.addWidget(self.edit_find)
+        layout.addLayout(row)
+
+        # Options
+        row = QHBoxLayout()
+        self.chk_case = QCheckBox('Case Sensitive')
+        row.addWidget(self.chk_case)
+        layout.addLayout(row)
+
+        row = QHBoxLayout()
+        self.radio_down = QRadioButton('Down')
+        self.radio_up = QRadioButton('Up')
+        self.radio_down.setChecked(True)
+        row.addWidget(self.radio_down)
+        row.addWidget(self.radio_up)
+        layout.addLayout(row)
+
+        # Buttons
+        row = QHBoxLayout()
+        self.btn_find_next = QPushButton('Find Next')
+        self.btn_close = QPushButton('Close')
+        row.addWidget(self.btn_find_next)
+        row.addWidget(self.btn_close)
+        layout.addLayout(row)
+
+        self.btn_find_next.clicked.connect(self._on_find_next)
+        self.btn_close.clicked.connect(self.hide)
+
+    def _on_find_next (self):
+        text = self.edit_find.text()
+        if not text:
+            return
+        flags = QTextDocument.FindFlag(0)
+        if self.chk_case.isChecked():
+            flags |= QTextDocument.FindCaseSensitively
+        if self.radio_up.isChecked():
+            flags |= QTextDocument.FindBackward
+        cursor = self.editor.textCursor()
+        found = self.editor.document().find(text, cursor, flags)
+        if found.hasSelection():
+            self.editor.setTextCursor(found)
+            self.setWindowTitle('Find')
+        else:
+            # Try from beginning/end
+            doc = self.editor.document()
+            if flags & QTextDocument.FindBackward:
+                start = QTextCursor(doc)
+                start.movePosition(QTextCursor.End)
+            else:
+                start = QTextCursor(doc)
+                start.movePosition(QTextCursor.Start)
+            found = doc.find(text, start, flags)
+            if found.hasSelection():
+                self.editor.setTextCursor(found)
+                self.setWindowTitle('Find')
+            else:
+                self.setWindowTitle('Find - Not found')
+
+
+#----------------------------------------------------------------------
+# ReplaceDialog
+#----------------------------------------------------------------------
+class ReplaceDialog (QDialog):
+    """Non-modal replace dialog. Close hides, preserving state."""
+
+    def __init__ (self, editor:QTextEdit, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+        self.setWindowTitle('Replace')
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
+        self.__build_ui()
+
+    def __build_ui (self):
+        layout = QVBoxLayout(self)
+
+        # Find text
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Find:'))
+        self.edit_find = QLineEdit()
+        row.addWidget(self.edit_find)
+        layout.addLayout(row)
+
+        # Replace text
+        row = QHBoxLayout()
+        row.addWidget(QLabel('Replace:'))
+        self.edit_replace = QLineEdit()
+        row.addWidget(self.edit_replace)
+        layout.addLayout(row)
+
+        # Options
+        self.chk_case = QCheckBox('Case Sensitive')
+        layout.addWidget(self.chk_case)
+
+        # Buttons
+        row = QHBoxLayout()
+        self.btn_find_next = QPushButton('Find Next')
+        self.btn_replace = QPushButton('Replace')
+        self.btn_replace_all = QPushButton('Replace All')
+        self.btn_close = QPushButton('Close')
+        row.addWidget(self.btn_find_next)
+        row.addWidget(self.btn_replace)
+        row.addWidget(self.btn_replace_all)
+        row.addWidget(self.btn_close)
+        layout.addLayout(row)
+
+        self.btn_find_next.clicked.connect(self._on_find_next)
+        self.btn_replace.clicked.connect(self._on_replace)
+        self.btn_replace_all.clicked.connect(self._on_replace_all)
+        self.btn_close.clicked.connect(self.hide)
+
+    def _find_flags (self) -> QTextDocument.FindFlag:
+        flags = QTextDocument.FindFlag(0)
+        if self.chk_case.isChecked():
+            flags |= QTextDocument.FindCaseSensitively
+        return flags
+
+    def _on_find_next (self):
+        text = self.edit_find.text()
+        if not text:
+            return
+        flags = self._find_flags()
+        cursor = self.editor.textCursor()
+        found = self.editor.document().find(text, cursor, flags)
+        if found.hasSelection():
+            self.editor.setTextCursor(found)
+            self.setWindowTitle('Replace')
+        else:
+            start = QTextCursor(self.editor.document())
+            start.movePosition(QTextCursor.Start)
+            found = self.editor.document().find(text, start, flags)
+            if found.hasSelection():
+                self.editor.setTextCursor(found)
+                self.setWindowTitle('Replace')
+            else:
+                self.setWindowTitle('Replace - Not found')
+
+    def _on_replace (self):
+        cursor = self.editor.textCursor()
+        find_text = self.edit_find.text()
+        replace_text = self.edit_replace.text()
+        if not find_text:
+            return
+        # Check if current selection matches find text
+        selected = cursor.selectedText()
+        case_match = self.chk_case.isChecked()
+        if selected == find_text or (not case_match
+                                     and selected.lower() == find_text.lower()):
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.insertText(replace_text)
+            cursor.endEditBlock()
+            self.editor.setTextCursor(cursor)
+        # Find next occurrence
+        self._on_find_next()
+
+    def _on_replace_all (self):
+        find_text = self.edit_find.text()
+        replace_text = self.edit_replace.text()
+        if not find_text:
+            return
+        flags = self._find_flags()
+        doc = self.editor.document()
+        cursor = QTextCursor(doc)
+        cursor.beginEditBlock()
+        count = 0
+        while True:
+            found = doc.find(find_text, cursor, flags)
+            if not found.hasSelection():
+                break
+            found.removeSelectedText()
+            found.insertText(replace_text)
+            cursor = found
+            count += 1
+        cursor.endEditBlock()
+        self.editor.setTextCursor(cursor)
+        self.setWindowTitle('Replace - {} replaced'.format(count))
+
+
+#----------------------------------------------------------------------
 # MainWindow
 #----------------------------------------------------------------------
 class MainWindow (QMainWindow):
@@ -1988,6 +2214,10 @@ class MainWindow (QMainWindow):
         self._flow_state = _FLOW_IDLE
         self._flow_intent = None  # 'build', 'test', 'run'
         self._flow_tab = None     # TabData that initiated the flow
+
+        # Find/Replace dialogs (created lazily, preserved across show/hide)
+        self._find_dialog = None
+        self._replace_dialog = None
 
         # Create actions first (needed by menubar and toolbar)
         self.__create_actions()
@@ -2142,7 +2372,8 @@ class MainWindow (QMainWindow):
     def __build_statusbar (self):
         statusbar = self.statusBar()
         self.status_message = QLabel('')
-        self.status_info = QLabel('')
+        self.status_info = _ClickableLabel('')
+        self.status_info.setMainWindow(self)
         self.status_message.setAlignment(Qt.AlignLeft)
         self.status_info.setAlignment(Qt.AlignRight)
         statusbar.addWidget(self.status_message, 1)
@@ -2388,12 +2619,20 @@ class MainWindow (QMainWindow):
             self.editor.paste()
 
     def _action_find (self):
-        # TODO: implement FindDialog
-        pass
+        if self._find_dialog is None:
+            self._find_dialog = FindDialog(self.editor, self)
+        self._find_dialog.show()
+        self._find_dialog.activateWindow()
+        self._find_dialog.edit_find.setFocus()
+        self._find_dialog.edit_find.selectAll()
 
     def _action_replace (self):
-        # TODO: implement ReplaceDialog
-        pass
+        if self._replace_dialog is None:
+            self._replace_dialog = ReplaceDialog(self.editor, self)
+        self._replace_dialog.show()
+        self._replace_dialog.activateWindow()
+        self._replace_dialog.edit_find.setFocus()
+        self._replace_dialog.edit_find.selectAll()
 
     def _action_goto_line (self):
         tab = self.tab_manager.get_current()
@@ -3099,6 +3338,104 @@ class MainWindow (QMainWindow):
         text = 'Ln {}/{}, Col {} | {} | {}'.format(
             line, total, col, tab.encoding, mode)
         self.status_info.setText(text)
+
+    def _show_encoding_menu (self, pos_widget):
+        """Show encoding menu when status bar encoding label is clicked."""
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        menu = QMenu(self)
+        reopen_menu = menu.addMenu('Reopen with Encoding')
+        save_menu = menu.addMenu('Save with Encoding')
+        for enc in _COMMON_ENCODINGS:
+            action = reopen_menu.addAction(enc)
+            action.setData(enc)
+            action.triggered.connect(self._on_reopen_with_encoding)
+            action2 = save_menu.addAction(enc)
+            action2.setData(enc)
+            action2.triggered.connect(self._on_save_with_encoding)
+        menu.exec_(pos_widget.mapToGlobal(pos_widget.rect().bottomLeft()))
+
+    def _on_reopen_with_encoding (self):
+        """Reopen current file with chosen encoding."""
+        action = self.sender()
+        if action is None:
+            return
+        encoding = action.data()
+        tab = self.tab_manager.get_current()
+        if tab is None or tab.is_new:
+            return
+        try:
+            content = open(tab.file_path, 'r', encoding=encoding).read()
+        except (IOError, OSError, UnicodeDecodeError) as e:
+            QMessageBox.warning(
+                self, 'Encoding Error',
+                'Failed to read file with {}: {}'.format(encoding, e))
+            return
+        tab.encoding = encoding
+        # Set content without triggering modificationChanged
+        tab.editor_doc.blockSignals(True)
+        tab.editor_doc.setPlainText(content)
+        tab.editor_doc.setModified(False)
+        tab.editor_doc.blockSignals(False)
+        # Re-apply highlighter (document content changed)
+        tab.highlighter.cancel_batch_highlight()
+        tab.highlighter.rehighlight()
+        tab._highlight_pending = False
+        tab.is_dirty = False
+        self._update_tab_name(
+            self.tab_manager.find_tab_index(tab))
+        self._update_window_title()
+        self._update_status_info(tab)
+
+    def _on_save_with_encoding (self):
+        """Save current file with chosen encoding."""
+        action = self.sender()
+        if action is None:
+            return
+        encoding = action.data()
+        tab = self.tab_manager.get_current()
+        if tab is None:
+            return
+        old_path = tab.file_path
+        old_is_new = tab.is_new
+        if tab.is_new:
+            # Need to save to a path first
+            start_dir = self._start_dir()
+            path, _ = QFileDialog.getSaveFileName(
+                self, 'Save File', start_dir,
+                'C++ Files (*.cpp *.c *.cc *.cxx *.h '
+                '*.hpp *.hh);;All Files (*)')
+            if not path:
+                return
+            path = os.path.normpath(path)
+            tab.file_path = path
+            tab.is_new = False
+        content = tab.editor_doc.toPlainText()
+        try:
+            with open(tab.file_path, 'w', encoding=encoding) as f:
+                f.write(content)
+        except (IOError, OSError, UnicodeEncodeError) as e:
+            # Rollback on failure
+            tab.file_path = old_path
+            tab.is_new = old_is_new
+            QMessageBox.warning(
+                self, 'Save Error',
+                'Failed to save with {}: {}'.format(encoding, e))
+            return
+        # Update encoding and dirty state
+        tab.encoding = encoding
+        tab.editor_doc.setModified(False)
+        tab.is_dirty = False
+        self._update_tab_name(
+            self.tab_manager.find_tab_index(tab))
+        self._update_window_title()
+        self._update_status_info(tab)
+        self._add_recent_file(tab.file_path)
+        self._last_file_dir = os.path.dirname(tab.file_path)
+        self.status_message.setText(
+            'Saved: {} ({})'.format(
+                os.path.basename(tab.file_path), encoding))
 
     def _update_tab_name (self, index:int):
         """Update tabbar text for given index."""

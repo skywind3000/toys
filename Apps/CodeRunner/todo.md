@@ -1,14 +1,10 @@
 # CodeRunner 改进待办
 
-综合 improve1.md 和 improve2.md，去重合并后的改进清单。
+改进清单。
 
 ---
 
-## P0 — 必须补齐（规格已定义但未实现）
-
-- **Find/Replace 对话框**：`_action_find` 和 `_action_replace` 是空函数，spec.md 已定义 FindDialog 和 ReplaceDialog 的完整规格。非模态对话框，关闭时 hide() 不销毁，保留上次输入
-
-## P1 — 高频操作，投入小收益大
+## P1 — 高频操作，投入小收益大（需要同时把动作加入 Menu 和右键菜单）
 
 - **Ctrl+/ 注释/取消注释**：选中多行批量加 `//`，未选中时注释当前行，所有行已以 `//` 开头则移除。调试时频繁注释代码块
 - **Tab/Shift+Tab 多行缩进/反缩进**：选中多行后 Tab 每行增加一级缩进，Shift+Tab 每行减少一级缩进。目前 Tab 对选区是替换而非缩进
