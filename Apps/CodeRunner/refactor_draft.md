@@ -42,12 +42,12 @@
 
 ## 入口点改造
 
-所有向 OutputPanel 写入数据的地方，统一改为向对应 tab 的 output_buffer 追加 `(color, text)` 元组，不再直接调用 `_output_append` 写入 Document：
+所有向 OutputPanel 写入数据的地方，统一改为向对应 tab 的 output_buffer 追加 `(color, text)` 元组：
 
 - `_on_run_stdout_ready(text)` → `tab.output_buffer.append((None, text))`
 - `_on_run_stderr_ready(text)` → `tab.output_buffer.append((QColor(128,128,128), text))`
 - 编译错误信息输出 → `tab.output_buffer.append((error_color, text))`
-- 其他所有 `_output_append(tab.output_doc, ...)` 调用点 → 改为 `tab.output_buffer.append((color, text))`
+- 其他所有写入 output_doc 的调用点 → 改为 `tab.output_buffer.append((color, text))`
 
 ## Buffer Flush 逻辑
 
@@ -122,10 +122,11 @@ TabData 新增字段，移除旧字段：
 
 ## 入口点清单（需逐一改造）
 
-所有需要修改的调用点（当前代码中 `_need_scroll = True` + `_output_append` 的组合），共约 15 处，均在 `FlowController.on_compile_finished` / `on_run_finished`、`clear_and_start_compile`、`start_test_run`、`MainWindow._on_run_stdout_ready`、`_on_run_stderr_ready`、`OutputPanel.keyPressEvent`、以及若干 `scroll_requested.emit(tab)` 触发路径中。
+所有需要修改的调用点（当前代码中 `_need_scroll = True` + 直接写入 output_doc 的组合），共约 15 处，均在 `FlowController.on_compile_finished` / `on_run_finished`、`clear_and_start_compile`、`start_test_run`、`MainWindow._on_run_stdout_ready`、`_on_run_stderr_ready`、`OutputPanel.keyPressEvent`、以及若干 `scroll_requested.emit(tab)` 触发路径中。
 
 改造规则：
 - `_output_clear(tab.output_doc)` + `tab._need_scroll = True` → `tab.output_buffer.clear()` + `_output_clear(tab.output_doc)` + `tab.pinned_to_bottom = True`
-- `_output_append(tab.output_doc, text, color)` → `tab.output_buffer.append((color, text))`
+- 直接写入 `tab.output_doc` 的调用 → `tab.output_buffer.append((color, text))`
+- `_output_append` 函数已移除（flush 逻辑内联 cursor 操作）
 - `self.scroll_requested.emit(tab)` + 对应的 `_on_flow_scroll_requested` → 可移除，滚动由 timer tick 统一负责
 - `tab._need_scroll = True` 的独立赋值（不伴随 clear/append）→ `tab.pinned_to_bottom = True`

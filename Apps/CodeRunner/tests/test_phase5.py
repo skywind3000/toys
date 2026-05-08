@@ -35,7 +35,7 @@ from CodeRunner import (
     CodeEditor, InputPanel, MainWindow,
     _init_font_defaults, _read_file,
     EncodingManager, _expand_env_vars, _ensure_cmd_file,
-    _output_clear, _output_append, ProcessManager,
+    _output_clear, ProcessManager,
     _FLOW_IDLE, _FLOW_COMPILING, _FLOW_RUNNING
 )
 
@@ -261,35 +261,7 @@ class TestOutputRendering (unittest.TestCase):
         _output_clear(doc)
         self.assertEqual(doc.toPlainText(), '')
 
-    def test_output_append_default_color (self):
-        doc = QTextDocument()
-        _output_clear(doc)
-        _output_append(doc, 'Hello')
-        self.assertEqual(doc.toPlainText(), 'Hello')
-
-    def test_output_append_with_color (self):
-        doc = QTextDocument()
-        _output_clear(doc)
-        _output_append(doc, 'Error', QColor(Qt.red))
-        self.assertEqual(doc.toPlainText(), 'Error')
-
-    def test_output_append_multiple_segments (self):
-        doc = QTextDocument()
-        _output_clear(doc)
-        _output_append(doc, 'stdout text')
-        _output_append(doc, 'stderr text', QColor(128, 128, 128))
-        _output_append(doc, 'error text', QColor(Qt.red))
-        self.assertEqual(
-            doc.toPlainText(), 'stdout textstderr texterror text')
-
-    def test_output_append_then_clear (self):
-        doc = QTextDocument()
-        _output_clear(doc)
-        _output_append(doc, 'first')
-        _output_clear(doc)
-        _output_append(doc, 'second')
-        self.assertEqual(doc.toPlainText(), 'second')
-
+    
 
 #----------------------------------------------------------------------
 # CMD file creation tests
@@ -530,7 +502,8 @@ class TestOutputScroll (unittest.TestCase):
         tab = TabData(is_new=True, content='', dirty_callback=None)
         # Fill output with many lines
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
@@ -543,7 +516,8 @@ class TestOutputScroll (unittest.TestCase):
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
@@ -568,7 +542,8 @@ class TestOutputScroll (unittest.TestCase):
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         tab.pinned_to_bottom = False
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
@@ -582,7 +557,8 @@ class TestOutputScroll (unittest.TestCase):
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(50)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
@@ -598,7 +574,8 @@ class TestOutputScroll (unittest.TestCase):
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
@@ -608,12 +585,13 @@ class TestOutputScroll (unittest.TestCase):
         self.assertTrue(window._flush_output_timer.isActive())
 
     def test_at_bottom_check_before_append (self):
-        """When user is at bottom, _output_append should cause scroll.
+        """When user is at bottom, buffer+flush should cause scroll.
         Checks at_bottom BEFORE appending (like _on_run_finished timeout)."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(50)])
-        _output_append(tab.output_doc, text)
+        tab.output_buffer.append((None, text))
+        window._flush_output_buffer(tab)
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
@@ -621,10 +599,12 @@ class TestOutputScroll (unittest.TestCase):
         sb = window.output_panel.verticalScrollBar()
         sb.setValue(sb.maximum())
         self.assertTrue(window._is_output_at_bottom())
-        # Check at_bottom BEFORE append (simulating _on_run_finished)
+        # Check at_bottom BEFORE buffer append (simulating _on_run_finished)
         at_bottom = tab is window.tab_manager.get_current() \
             and window._is_output_at_bottom()
-        _output_append(tab.output_doc, '\nTimeout message\n', QColor(Qt.red))
+        tab.output_buffer.append(
+            (QColor(Qt.red), '\nTimeout message\n'))
+        window._flush_output_buffer(tab)
         # After append, _is_output_at_bottom returns False (max increased)
         self.assertFalse(window._is_output_at_bottom())
         # But at_bottom was True before append, so we should scroll

@@ -2529,18 +2529,6 @@ def _strip_trailing_whitespace_in_doc (doc:QTextDocument) -> None:
     cursor.endEditBlock()
 
 
-def _output_append (doc:QTextDocument, text:str, color:QColor=None):
-    """Append text to an output document with optional foreground color.
-    color=None uses default foreground (stdout default)."""
-    cursor = QTextCursor(doc)
-    cursor.movePosition(QTextCursor.End)
-    fmt = QTextCharFormat()
-    if color is not None:
-        fmt.setForeground(QBrush(color))
-    cursor.setCharFormat(fmt)
-    cursor.insertText(text)
-
-
 def _strip_trailing_whitespace (text:str) -> str:
     """Remove trailing spaces/tabs from each line."""
     return '\n'.join(line.rstrip() for line in text.split('\n'))

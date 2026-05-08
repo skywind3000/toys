@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from CodeRunner import (
     Settings, TabData, MainWindow, _init_font_defaults,
-    _output_clear, _output_append
+    _output_clear
 )
 
 
@@ -155,7 +155,8 @@ class TestSwitchToTabScrollRestore (unittest.TestCase):
         tab1, idx1 = self._add_tab('tab1 content')
         tab2, idx2 = self._add_tab('tab2 content')
         # Add some output content so scrollbar has range
-        _output_append(tab2.output_doc, 'line1\nline2\nline3\n')
+        tab2.output_buffer.append((None, 'line1\nline2\nline3\n'))
+        self.window._flush_output_buffer(tab2)
         # Switch to tab2 with pinned=True
         tab2.pinned_to_bottom = True
         self.window._switch_to_tab(idx2)
@@ -168,12 +169,14 @@ class TestSwitchToTabScrollRestore (unittest.TestCase):
         tab1, idx1 = self._add_tab('tab1 content')
         tab2, idx2 = self._add_tab('tab2 content')
         # Add some output content
-        _output_append(tab2.output_doc, 'line1\nline2\nline3\nline4\nline5\n')
+        tab2.output_buffer.append((None, 'line1\nline2\nline3\nline4\nline5\n'))
+        self.window._flush_output_buffer(tab2)
         # First switch to tab2, scroll down a bit, save state
         self.window._switch_to_tab(idx2)
         # Scroll to a non-bottom position
         sb = self.window.output_panel.verticalScrollBar()
-        _output_append(tab2.output_doc, 'more content\nmore content\nmore content\n')
+        tab2.output_buffer.append((None, 'more content\nmore content\nmore content\n'))
+        self.window._flush_output_buffer(tab2)
         # Now switch to tab1
         tab2.pinned_to_bottom = True
         self.window._switch_to_tab(idx1)
@@ -231,7 +234,7 @@ class TestOutputClearPreservesPinned (unittest.TestCase):
     def test_output_clear_with_pinned_true (self):
         """After _output_clear + pinned_to_bottom=True, output is at bottom."""
         tab = TabData(content='hello')
-        _output_append(tab.output_doc, 'some output\nmore output\n')
+        tab.output_buffer.append((None, 'some output\nmore output\n'))
         _output_clear(tab.output_doc)
         tab.pinned_to_bottom = True
         self.assertTrue(tab.pinned_to_bottom)

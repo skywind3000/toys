@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from CodeRunner import (
     Settings, TabData, MainWindow, _init_font_defaults,
-    _output_clear, _output_append, FlowController,
+    _output_clear, FlowController,
     _FLOW_IDLE
 )
 
@@ -172,7 +172,8 @@ class TestFlushOutputBuffer (unittest.TestCase):
 
     def test_flush_accumulates_to_existing_doc (self):
         """Flushing appends to existing output_doc content."""
-        _output_append(self.tab.output_doc, 'existing\n')
+        self.tab.output_buffer.append((None, 'existing\n'))
+        self.window._flush_output_buffer(self.tab)
         self.tab.output_buffer.append((None, 'new\n'))
         self.window._flush_output_buffer(self.tab)
         text = self.tab.output_doc.toPlainText()
@@ -372,7 +373,8 @@ class TestOutputClearWithBuffer (unittest.TestCase):
         """Both buffer and doc should be empty after clear."""
         tab = TabData(content='hello')
         tab.output_buffer.append((None, 'buffered\n'))
-        _output_append(tab.output_doc, 'in doc\n')
+        tab.output_buffer.append((None, 'in doc\n'))
+        # Simulate: after clearing, both should be empty
         tab.output_buffer.clear()
         _output_clear(tab.output_doc)
         self.assertEqual(tab.output_buffer, [])

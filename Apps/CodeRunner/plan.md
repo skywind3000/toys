@@ -18,7 +18,7 @@
 | 8. 编辑器增强与体验优化 | done |
 | 9. OutputPanel: pinned_to_bottom 状态重构 | done |
 | 10. OutputPanel: buffer + flush timer 机制 | done |
-| 11. OutputPanel: 交互式 flush 与清理 | pending |
+| 11. OutputPanel: 交互式 flush 与清理 | done |
 
 ## 阶段 1：骨架与布局 **[done]**
 
@@ -442,7 +442,7 @@
 
 ---
 
-## 阶段 11：OutputPanel — 交互式 flush 与清理 **[pending]**
+## 阶段 11：OutputPanel — 交互式 flush 与清理 **[done]**
 
 **目标**：完善交互式程序的即时 flush，清理废弃代码，运行质量检查。
 

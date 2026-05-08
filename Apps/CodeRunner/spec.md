@@ -43,7 +43,6 @@
 | `_auto_detect_compiler()` | 搜索常见路径+PATH 查找 g++/gcc |
 | `_describe_exit_code(code)` | Windows NTSTATUS 码可读描述 |
 | `_output_clear(doc)` | 清空 QTextDocument 内容 |
-| `_output_append(doc, text, color)` | 追加文本（可选颜色）到 QTextDocument（仅供内部 flush 使用，外部入口改用 output_buffer） |
 | `_strip_trailing_whitespace(text)` | 字符串级行尾空白清理 |
 | `_strip_trailing_whitespace_in_doc(doc)` | QTextDocument 内 cursor 操作原地清理行尾空白 |
 | `_icon_canvas(dpi)` | 创建 icon pixmap+painter |
@@ -518,7 +517,7 @@ Mixin 类（非 QObject），三个方法 override：`dragEnterEvent`、`dragMov
 
 | 内容类型 | 颜色 |
 |----------|------|
-| stdout | 默认前景色（QPalette.Text）— `_output_append(doc, text)` color=None |
+| stdout | 默认前景色（QPalette.Text）— color=None |
 | stderr | 灰色 `QColor(128, 128, 128)` |
 | 退出状态行 / Build 成功 / Process stopped | 灰色 |
 | 编译错误 / Runtime Error / 超时 / Failed to start / Program crashed | 红色 `QColor(Qt.red)` |
