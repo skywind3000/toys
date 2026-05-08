@@ -71,7 +71,7 @@ _COMMON_ENCODINGS = [
     'Windows-1252', 'Windows-1251',
 ]
 
-# Output panel size limit (character count) — prevents runaway programs
+# Output panel size limit (character count) -- prevents runaway programs
 # from consuming excessive memory and degrading UI responsiveness
 _OUTPUT_MAX_CHARS = 500000
 
@@ -341,13 +341,13 @@ def _resolve_compiler_path (compiler_path:str) -> tuple:
     # Check if it's a bare name (no directory separator)
     dir_part = os.path.dirname(compiler_path)
     if not dir_part:
-        # Bare name like 'g++' — already in PATH
+        # Bare name like 'g++' -- already in PATH
         return (compiler_path, '')
     if os.path.isabs(compiler_path):
         # Absolute path like C:\MinGW\bin\g++.exe
         bin_dir = os.path.dirname(compiler_path)
         return (compiler_path, bin_dir)
-    # Relative path — resolve against CodeRunner.py's directory
+    # Relative path -- resolve against CodeRunner.py's directory
     base_dir = os.path.dirname(os.path.abspath(__file__))
     resolved = os.path.abspath(os.path.join(base_dir, compiler_path))
     bin_dir = os.path.dirname(resolved)
@@ -849,7 +849,7 @@ class TabData:
 
 
 #----------------------------------------------------------------------
-# TabManager (pure data manager — no UI coupling)
+# TabManager (pure data manager -- no UI coupling)
 #----------------------------------------------------------------------
 class TabManager:
 
@@ -1211,19 +1211,19 @@ class ProcessManager (QObject):
 
 
 #----------------------------------------------------------------------
-# FlowController — compile/run state machine
+# FlowController -- compile/run state machine
 #----------------------------------------------------------------------
 class FlowController (QObject):
     """Compile/run state machine. Manages state transitions and output
     content. UI presentation (status bar, scroll, dialogs) is delegated
     to MainWindow via signals."""
 
-    state_changed = pyqtSignal(str)        # idle/compiling/running → default status text
-    status_message = pyqtSignal(str)       # specific result message → override status text
-    busy_message_requested = pyqtSignal()  # 弹 busy 提示
-    terminal_requested = pyqtSignal(object)  # tab → MainWindow 执行 launch_terminal
-    output_clear = pyqtSignal(object)      # tab → MainWindow clears output buffer + doc + pins to bottom
-    output_append = pyqtSignal(object, object, str)  # tab, color(QColor/None), text → MainWindow appends to buffer
+    state_changed = pyqtSignal(str)        # idle/compiling/running -> default status text
+    status_message = pyqtSignal(str)       # specific result message -> override status text
+    busy_message_requested = pyqtSignal()  # popup busy message
+    terminal_requested = pyqtSignal(object)  # tab -> MainWindow execute launch_terminal
+    output_clear = pyqtSignal(object)      # tab -> MainWindow clears output buffer + doc + pins to bottom
+    output_append = pyqtSignal(object, object, str)  # tab, color(QColor/None), text -> MainWindow appends to buffer
     run_stdout_ready = pyqtSignal(str)     # forwarded from ProcessManager
     run_stderr_ready = pyqtSignal(str)     # forwarded from ProcessManager
 
@@ -1278,7 +1278,7 @@ class FlowController (QObject):
             self.set_state(_FLOW_COMPILING, tab=tab, intent='run')
             self.clear_and_start_compile(tab)
         else:
-            # No recompile needed — launch terminal directly
+            # No recompile needed - launch terminal directly
             self.set_state(_FLOW_IDLE)
             self.terminal_requested.emit(tab)
 
@@ -1298,7 +1298,7 @@ class FlowController (QObject):
         if proc_mgr.process and \
            proc_mgr.process.state() != QProcess.NotRunning:
             proc_mgr.process.waitForFinished(500)
-        # Drain remaining output — route all to tab's output regardless
+        # Drain remaining output -- route all to tab's output regardless
         stdout_text, stderr_text = proc_mgr.drain_remaining_output()
         if stdout_text:
             self.output_append.emit(tab, None, stdout_text)
@@ -1464,7 +1464,7 @@ class FlowController (QObject):
             self.status_message.emit(
                 'Build failed with {} error(s)'.format(n))
         else:
-            # Compile succeeded — check intent
+            # Compile succeeded -- check intent
             if self.intent == 'build':
                 elapsed = time.time() - self.proc_mgr.start_time
                 self.output_clear.emit(tab)
@@ -1483,7 +1483,7 @@ class FlowController (QObject):
                 self.set_state(_FLOW_IDLE)
                 self.terminal_requested.emit(tab)
             else:
-                # Unknown intent — reset to idle as a safeguard
+                # Unknown intent -- reset to idle as a safeguard
                 self.set_state(_FLOW_IDLE)
                 self.status_message.emit('Ready')
 
@@ -1556,7 +1556,7 @@ class FlowController (QObject):
 
 
 #----------------------------------------------------------------------
-# FileDragMixin — forward file drag-drop events to MainWindow
+# FileDragMixin -- forward file drag-drop events to MainWindow
 #----------------------------------------------------------------------
 class FileDragMixin:
     """Mixin that ignores URL drag-drop (letting MainWindow handle it)
@@ -1582,7 +1582,7 @@ class FileDragMixin:
 
 
 class _IOPanelBase (FileDragMixin, QTextEdit):
-    """Base class for InputPanel and OutputPanel — shared setDocument."""
+    """Base class for InputPanel and OutputPanel -- shared setDocument."""
 
     def setDocument (self, doc):
         doc.setDefaultFont(self.font())
@@ -1590,7 +1590,7 @@ class _IOPanelBase (FileDragMixin, QTextEdit):
 
 
 #----------------------------------------------------------------------
-# _ClickableLabel — status bar label that pops encoding menu on click
+# _ClickableLabel -- status bar label that pops encoding menu on click
 #----------------------------------------------------------------------
 class _ClickableLabel (QLabel):
     """Clickable label in status bar for encoding selection menu."""
@@ -1676,7 +1676,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         return space
 
     def _update_line_number_area_width (self):
-        # Use isHidden() instead of isVisible() — isVisible() returns False
+        # Use isHidden() instead of isVisible() -- isVisible() returns False
         # when parent window hasn't been shown yet (during __init__),
         # causing viewport margins to stay 0 after session restore.
         shown = not self.line_number_area.isHidden()
@@ -1780,7 +1780,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
             self._notify_overwrite_changed()
             return
 
-        # Tab — indent selection or insert tab/spaces
+        # Tab -- indent selection or insert tab/spaces
         if key == Qt.Key_Tab:
             cursor = self.textCursor()
             if cursor.hasSelection():
@@ -1792,17 +1792,17 @@ class CodeEditor (FileDragMixin, QTextEdit):
                     cursor.insertText(' ' * self.indent_size)
             return
 
-        # Shift+Tab — unindent selection or current line
+        # Shift+Tab -- unindent selection or current line
         if key == Qt.Key_Backtab:
             self._handle_unindent_selection()
             return
 
-        # Enter key — auto indent
+        # Enter key -- auto indent
         if key in (Qt.Key_Return, Qt.Key_Enter):
             self._handle_enter_key()
             return
 
-        # Backspace — smart space deletion and bracket deletion
+        # Backspace -- smart space deletion and bracket deletion
         if key == Qt.Key_Backspace:
             if self._handle_backspace():
                 return
@@ -1882,7 +1882,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         while block.isValid() and block.blockNumber() <= end_block.blockNumber():
             text = block.text()
             stripped = text.lstrip()
-            # Skip blank lines — comment/uncomment should not touch them
+            # Skip blank lines -- comment/uncomment should not touch them
             if not stripped:
                 block = block.next()
                 continue
@@ -2024,8 +2024,8 @@ class CodeEditor (FileDragMixin, QTextEdit):
         doc = self.document()
         if cursor.hasSelection():
             text = cursor.selectedText()
-            # QTextCursor.selectedText uses   as paragraph separator
-            text = text.replace(' ', '\n')
+            # QTextCursor.selectedText uses as paragraph separator
+            text = text.replace('\u2029', '\n')
             end_pos = cursor.selectionEnd()
             c = QTextCursor(doc)
             c.setPosition(end_pos)
@@ -2060,7 +2060,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
                 c.setPosition(
                     next_block.position(), QTextCursor.KeepAnchor)
             else:
-                # Last line — delete to end of document
+                # Last line -- delete to end of document
                 c.setPosition(
                     block.position() + block.length(),
                     QTextCursor.KeepAnchor)
@@ -2193,7 +2193,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         """Skip over */ when typing / and right side has / from auto-close.
         After /* auto-completes */, the closing */ is to the right.
         When user types * then / (closing */), the / on the right is
-        the auto-completed one — skip over it."""
+        the auto-completed one -- skip over it."""
         cursor = self.textCursor()
         pos = cursor.position()
         doc = self.document()
@@ -2258,7 +2258,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
         cursor = self.textCursor()
         pos = cursor.position()
         # For quotes: if cursor is right before a matching quote, skip over
-        # This must precede the comment/string check — skipping over an
+        # This must precede the comment/string check -- skipping over an
         # existing closing quote is a cursor action, not auto-completion.
         if text in ('"', "'"):
             doc = self.document()
@@ -2308,7 +2308,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
             line_text = cursor.block().text()
             prefix = line_text[:col]
             if prefix and all(ch == ' ' for ch in prefix):
-                # All spaces to the left, at indent boundary —
+                # All spaces to the left, at indent boundary --
                 # delete indent_size spaces at once
                 cursor.beginEditBlock()
                 for _i in range(self.indent_size):
@@ -2645,7 +2645,7 @@ def _auto_detect_compiler () -> str:
         for path in _COMPILER_SEARCH_PATHS:
             if os.path.exists(path):
                 return path
-    # Check PATH — prefer g++, fallback to gcc
+    # Check PATH -- prefer g++, fallback to gcc
     ext = '.exe' if sys.platform == 'win32' else ''
     for dir_name in os.environ.get('PATH', '').split(os.pathsep):
         for name in ('g++', 'gcc'):
@@ -2985,11 +2985,11 @@ class SettingsDialog (QDialog):
         c.template_text = self.edit_template.toPlainText()
 
         # Warn if compiler path looks invalid (absolute/relative path
-        # that doesn't exist on disk). Bare names like 'gcc' are OK —
+        # that doesn't exist on disk). Bare names like 'gcc' are OK --
         # they're resolved from PATH at compile time.
         compiler = c.compiler_path
         if compiler and os.path.dirname(compiler):
-            # Has a directory component — resolve relative paths
+            # Has a directory component -- resolve relative paths
             if not os.path.isabs(compiler):
                 base = os.path.dirname(os.path.abspath(__file__))
                 resolved = os.path.abspath(os.path.join(base, compiler))
@@ -3005,7 +3005,7 @@ class SettingsDialog (QDialog):
                 if result == QMessageBox.No:
                     return
 
-        # Check if compiler-related settings changed → update mtime
+        # Check if compiler-related settings changed -> update mtime
         old = self._original
         compiler_changed = (
             old.compiler_path != c.compiler_path
@@ -3489,7 +3489,7 @@ class MainWindow (QMainWindow):
         self.act_replace.triggered.connect(self._action_replace)
         self.act_goto_line.triggered.connect(self._action_goto_line)
 
-        # Edit extension actions — direct to CodeEditor
+        # Edit extension actions -- direct to CodeEditor
         self.act_comment.triggered.connect(self.editor._handle_comment_uncomment)
         self.act_indent.triggered.connect(self.editor._handle_indent_selection)
         self.act_unindent.triggered.connect(self.editor._handle_unindent_selection)
@@ -3517,7 +3517,7 @@ class MainWindow (QMainWindow):
             self._on_tab_close_requested)
         self.tabbar.tabMoved.connect(self._on_tab_moved)
 
-        # Editor cursor position → update status bar
+        # Editor cursor position -> update status bar
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
@@ -3532,12 +3532,12 @@ class MainWindow (QMainWindow):
         self.flow_ctrl.output_append.connect(
             self._on_output_append)
 
-        # Output panel scroll — detect user scroll-up to deactivate auto-scroll
+        # Output panel scroll -- detect user scroll-up to deactivate auto-scroll
         self.output_panel.verticalScrollBar().valueChanged.connect(
             self._on_output_scroll_changed)
 
     def __setup_tab_switch_shortcuts (self):
-        # Alt+1~9 → switch to tab 0~8, Alt+0 → tab 9
+        # Alt+1~9 -> switch to tab 0~8, Alt+0 -> tab 9
         for i in range(1, 10):
             s = QShortcut(QKeySequence('Alt+{}'.format(i)), self)
             s.activated.connect(
@@ -3944,9 +3944,9 @@ class MainWindow (QMainWindow):
         return sb.maximum() - sb.value() <= 3
 
     def _on_output_scroll_changed (self):
-        """Detect user scrolling in output panel — update pinned state.
+        """Detect user scrolling in output panel -- update pinned state.
         __programmatic_scroll=True means timer did the scroll, ignore it.
-        User scroll away from bottom → pinned=False; scroll to bottom → pinned=True."""
+        User scroll away from bottom -> pinned=False; scroll to bottom -> pinned=True."""
         if self.__programmatic_scroll:
             return
         tab = self.tab_manager.get_current()
@@ -4027,7 +4027,7 @@ class MainWindow (QMainWindow):
 
     def _on_flush_timer (self):
         """50ms global timer: flush all tab buffers + scroll current if pinned.
-        Timer never stops — empty ticks have negligible overhead."""
+        Timer never stops -- empty ticks have negligible overhead."""
         for tab in self.tab_manager.tabs:
             self._flush_output_buffer(tab)
         # Scroll current tab to bottom if pinned
@@ -4114,7 +4114,7 @@ class MainWindow (QMainWindow):
             # Flush new tab's buffer so scroll position is correct
             self._flush_output_buffer(new_tab)
         finally:
-            # Unfreeze — document content displayed immediately
+            # Unfreeze -- document content displayed immediately
             self.editor.setUpdatesEnabled(True)
             self.input_panel.setUpdatesEnabled(True)
             self.output_panel.setUpdatesEnabled(True)
@@ -4356,7 +4356,7 @@ class MainWindow (QMainWindow):
     def _save_if_dirty (self, tab:TabData) -> int:
         """Save tab if it has unsaved changes. Returns 0 success/clean,
         -1 user cancelled save dialog, -2 write error.
-        If tab is not dirty and not new, no save is needed → returns 0."""
+        If tab is not dirty and not new, no save is needed -> returns 0."""
         if not tab.is_dirty and not tab.is_new:
             return 0
         return self._save_tab_data(tab)
@@ -4999,7 +4999,7 @@ def _create_toolbar_icons () -> dict:
 
 
 #----------------------------------------------------------------------
-# Qt message handler — suppress harmless Windows platform warnings
+# Qt message handler -- suppress harmless Windows platform warnings
 #----------------------------------------------------------------------
 _SUPPRESSED_WARNINGS = ('setMouseGrabEnabled', 'setKeyboardGrabEnabled')
 
