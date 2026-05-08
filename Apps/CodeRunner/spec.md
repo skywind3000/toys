@@ -6,24 +6,24 @@
 
 | 类 | 基类 | 职责 | 代码行 |
 |----|------|------|--------|
-| EncodingManager | object | 编码检测、编译标志生成、I/O 编码转换 | 230 |
-| Settings | object | 配置数据，实例化设计，支持 copy()/apply_from() | 380 |
-| CppHighlighter | QSyntaxHighlighter | C++ 语法高亮（deferred+分批） | 453 |
-| TabData | object | 单个标签页的全部状态数据 | 742 |
-| TabManager | object | 纯数据管理器，无 UI 操作 | 803 |
-| ProcessManager | QObject | 编译/运行进程管理（QProcess），busy/mode 由状态机驱动 | 853 |
-| FlowController | QObject | 编译/运行状态机，管理状态转移和输出内容 | 1144 |
-| FileDragMixin | — | Mixin：URL 拖放 ignore→MainWindow，文本拖放→QTextEdit 默认 | 1501 |
-| _IOPanelBase | FileDragMixin, QTextEdit | IO 面板基类，共享 setDocument 逻辑 | 1524 |
-| _ClickableLabel | QLabel | 状态栏编码标签，点击弹出编码菜单 | 1535 |
-| LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor | 1555 |
-| CodeEditor | FileDragMixin, QTextEdit | 代码编辑器（setAcceptRichText=False） | 1571 |
-| InputPanel | _IOPanelBase | 输入面板（setAcceptRichText=False） | 2462 |
-| OutputPanel | _IOPanelBase | 输出面板（只读，buffer+flush 机制，pinned_to_bottom 滚动） | 2528 |
-| SettingsDialog | QDialog | 设置面板（三页 Tab） | 2589 |
-| FindDialog | QDialog | 非模态查找对话框 | 2933 |
-| ReplaceDialog | QDialog | 非模态替换对话框 | 3012 |
-| MainWindow | QMainWindow | 主窗口，协调所有组件 | 3131 |
+| EncodingManager | object | 编码检测、编译标志生成、I/O 编码转换 | 275 |
+| Settings | object | 配置数据，实例化设计，支持 copy()/apply_from() | 424 |
+| CppHighlighter | QSyntaxHighlighter | C++ 语法高亮（deferred+分批，first-match-wins via format_if_free） | 501 |
+| TabData | object | 单个标签页的全部状态数据 | 790 |
+| TabManager | object | 纯数据管理器，无 UI 操作 | 854 |
+| ProcessManager | QObject | 编译/运行进程管理（QProcess），busy/mode 由状态机驱动 | 904 |
+| FlowController | QObject | 编译/运行状态机，管理状态转移；输出通过 output_clear/output_append 信号委托 MainWindow | 1216 |
+| FileDragMixin | — | Mixin：URL 拖放 ignore→MainWindow，文本拖放→QTextEdit 默认 | 1561 |
+| _IOPanelBase | FileDragMixin, QTextEdit | IO 面板基类，共享 setDocument 逻辑 | 1584 |
+| _ClickableLabel | QLabel | 状态栏编码标签，点击弹出编码菜单 | 1595 |
+| LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor | 1615 |
+| CodeEditor | FileDragMixin, QTextEdit | 代码编辑器（setAcceptRichText=False） | 1631 |
+| InputPanel | _IOPanelBase | 输入面板（setAcceptRichText=False） | 2538 |
+| OutputPanel | _IOPanelBase | 输出面板（只读，buffer+flush 机制，pinned_to_bottom 滚动） | 2600 |
+| SettingsDialog | QDialog | 设置面板（三页 Tab） | 2661 |
+| FindDialog | QDialog | 非模态查找对话框 | 3033 |
+| ReplaceDialog | QDialog | 非模态替换对话框 | 3112 |
+| MainWindow | QMainWindow | 主窗口，协调所有组件 | 3231 |
 
 ### 0.2 模块级函数索引
 
@@ -40,11 +40,11 @@
 | `_expand_env_vars(value)` | 展开 `$VAR_NAME` 引用 |
 | `_resolve_compiler_path(path)` | 解析编译器路径 → (resolved_path, bin_dir) |
 | `_ensure_cmd_file()` | 创建 `%TEMP%\coderunner.cmd` bat 文件 |
-| `_auto_detect_compiler()` | 搜索常见路径+PATH 查找 g++/gcc |
 | `_describe_exit_code(code)` | Windows NTSTATUS 码可读描述 |
 | `_output_clear(doc)` | 清空 QTextDocument 内容 |
 | `_strip_trailing_whitespace(text)` | 字符串级行尾空白清理 |
 | `_strip_trailing_whitespace_in_doc(doc)` | QTextDocument 内 cursor 操作原地清理行尾空白 |
+| `_auto_detect_compiler()` | 搜索 `_COMPILER_SEARCH_PATHS` + PATH 查找 g++/gcc |
 | `_icon_canvas(dpi)` | 创建 icon pixmap+painter |
 | `_generate_new_icon/save_icon/open_icon/run_icon/test_icon/stop_icon/settings_icon(dpi)` | QPainter 自绘 toolbar 图标 |
 | `_create_toolbar_icons()` | 统一创建所有图标返回 dict |
@@ -93,14 +93,16 @@
 ProcessManager ───────────────────────────────────────────────
   compile_finished(exit_code, stderr, reason)  ──→  FlowController.on_compile_finished
   run_finished(exit_code, elapsed, peak, reason, error_detail) ──→  FlowController.on_run_finished
-  run_stdout_ready(text)  ──→  MainWindow._on_run_stdout_ready ──→  tab.output_buffer.append((None, text))
-  run_stderr_ready(text)  ──→  MainWindow._on_run_stderr_ready ──→  tab.output_buffer.append((gray, text))
+  run_stdout_ready(text)  ──→  FlowController.run_stdout_ready  ──→  MainWindow._on_run_stdout_ready ──→  tab.output_buffer.append((None, text))
+  run_stderr_ready(text)  ──→  FlowController.run_stderr_ready  ──→  MainWindow._on_run_stderr_ready ──→  tab.output_buffer.append((gray, text))
 
 FlowController ──────────────────────────────────────────────
   state_changed(str)         ──→  MainWindow._update_status_from_state
   status_message(str)        ──→  MainWindow._update_status_message
   busy_message_requested()   ──→  MainWindow._show_busy_message
   terminal_requested(TabData)──→  MainWindow._on_terminal_requested
+  output_clear(TabData)      ──→  MainWindow._on_output_clear ──→  tab.output_buffer.clear + _output_clear(tab.output_doc) + pinned_to_bottom=True
+  output_append(TabData, color, text) ──→  MainWindow._on_output_append ──→  tab.output_buffer.append((color, text))
 
 TabData ──────────────────────────────────────────────────────
   editor_doc.modificationChanged ──→  TabData._on_modified_changed ──→  dirty_callback ──→  MainWindow._on_tab_dirty_changed
@@ -111,7 +113,7 @@ MainWindow ───────────────────────
   tabbar.tabMoved             ──→  _on_tab_moved ──→  TabManager.reorder_tabs
   editor.cursorPositionChanged──→  _on_cursor_position_changed ──→  _update_status_info
   output_panel.vScrollBar.valueChanged──→  _on_output_scroll_changed ──→  pinned_to_bottom 管理
-  _flush_output_timer (50ms, never stops) ──→  _on_flush_timer ──→  扫描各 tab: flush buffer + scroll if pinned
+  _flush_output_timer (50ms, never stops) ──→  _on_flush_timer ──→  扫描各 tab: flush buffer + truncate if needed + scroll if pinned
 ```
 
 ### 0.5 MainWindow 方法索引
@@ -150,15 +152,19 @@ MainWindow ───────────────────────
 | **Settings** | `_action_settings` | SettingsDialog → `_apply_settings` |
 | | `_apply_settings` | 更新所有 widget 字体/缩进/wrap/compiler_mtime |
 | | `_launch_terminal` | 创建 bat/env → QProcess.startDetached |
-| **Output 滚动** | `_on_flush_timer` | 50ms 全局 timer，扫描各 tab flush buffer + scroll if pinned |
+| **Output 滚动** | `_on_flush_timer` | 50ms 全局 timer，扫描各 tab flush buffer + truncate if needed + scroll if pinned |
 | | `_flush_output_buffer` | 合并相邻同色条目 → 写入 output_doc |
+| | `_truncate_output_if_needed` | output_doc 超 `_OUTPUT_MAX_CHARS`(500000) 时裁剪前半+插入截断提示 |
 | | `_immediate_flush` | 立即 flush 当前 tab（stdin 提交 / 大输出保护时调用） |
+| | `_check_buffer_overflow` | buffer 超 200 条或 64KB 时立即 flush |
 | | `_is_output_at_bottom` | sb.maximum() - sb.value() ≤ 3 |
 | | `_on_output_scroll_changed` | __programmatic_scroll=True → 忽略；用户 scroll-up → pinned=False；scroll to bottom → pinned=True |
+| | `_on_output_clear(tab)` | FlowController.output_clear 信号 → buffer.clear + _output_clear(doc) + pinned=True |
+| | `_on_output_append(tab, color, text)` | FlowController.output_append 信号 → buffer.append |
 | | `_on_run_stdout/stderr_ready` | `tab.output_buffer.append((color, text))` |
 | **Tab 管理** | `_save_widget_state` | cursor/scroll/input_cursor/input_scroll/output_scroll → tab |
 | | `_switch_to_tab` | 保存旧/交换文档/恢复 IO/延迟恢复 editor |
-| | `_handle_close_tab` | dirty确认/disconnect/remove/零标签切换/进程清理 |
+| | `_handle_close_tab` | dirty确认/disconnect/remove/零标签切换/进程清理(cancel_flow) |
 | | `_enter/exit_zero_tab_state` | 空文档/灰显/恢复 |
 | | `_restore_deferred_cursor` | setTextCursor + scroll |
 | | `_start_batch_highlight` | → highlighter.start_batch_highlight |
@@ -200,6 +206,7 @@ MenuBar → Toolbar → TabBar → MainArea → StatusLine
 - **UI 语言**：英文（所有界面文字、菜单、对话框、消息均使用英文）
 - **主题**：Fusion，Toolbar 七个按钮使用 QPainter 自绘彩色图标（详见第 8 节）
 - **初始化分阶段**：MainWindow.__init__ 拆为 `__init_settings` → `__init_core_state` → `__init_widgets` → `__init_ui` → `__init_connections` → `__init_final` 六个子方法
+- **FlowController 输出委托**：FlowController 不直接操作 `tab.output_buffer` / `tab.output_doc`，而是通过 `output_clear` / `output_append` 信号委托 MainWindow 写入，保持状态机与数据结构的解耦
 - **widget 状态保存**：`_save_widget_state(tab)` 统一保存 cursor/scroll 到 TabData，消除三处重复
 
 ## 2. 数据模型
@@ -454,7 +461,15 @@ _SETTINGS_DEFAULTS = {
 | 6 | 数字（含十六进制、二进制） | 复合正则 | 深蓝色 `QColor(0, 0, 128)` |
 | 7 | 符号/运算符 | C++ 运算符复合正则 | 深青色 `QColor(0, 128, 128)` |
 
-规则顺序决定优先级（first-match-wins）。多行注释在单行规则之后单独处理（`highlightBlock` 方法），直接 `setFormat` 覆盖已有格式。多行注释使用 `setCurrentBlockState/previousBlockState` 跟踪跨块状态（0=正常，1=在注释内）。highlightBlock 中还处理多行注释内字符串的 `"` 匹配，避免字符串颜色覆盖注释颜色。
+规则顺序决定优先级（first-match-wins）。单行规则通过 `__format_if_free` 方法应用，只格式化未被更高优先级规则覆盖的"空闲"位置（`format(i)` 前景色为空或默认色），实现真正的 first-match-wins 而非简单覆盖。多行注释在单行规则之后由 `__highlight_multiline_comments` 单独处理，同样检查"空闲"位置后才覆盖格式（`/*` 在字符串内不会被误判为注释开头）。多行注释使用 `setCurrentBlockState/previousBlockState` 跟踪跨块状态（0=正常，1=在注释内）。highlightBlock 中还处理多行注释内字符串的 `"` 匹配，避免字符串颜色覆盖注释颜色。
+
+**First-match-wins 实现细节**：
+
+- `__format_if_free(start, length, fmt)`：遍历范围内的每个位置，检查 `self.format(i)` 的前景色——空或默认色（`QColor()`）视为"空闲"，仅在空闲位置设置格式，跳过已被更高优先级规则占据的位置。连续空闲段合并为一次 `setFormat` 调用。
+- `__is_position_masked(text, pos)`：deferred 模式下 `format()` 未产生 format spans，此方法通过 regex 模拟 first-match-wins 语义——收集字符串/字符字面量范围，再收集不在字符串内的 `//` 注释范围，检查 pos 是否落入任一范围。
+- `__find_free_multi_start(text, offset)`：deferred 模式下查找下一个不被字符串/字符/单行注释遮蔽的 `/*`，使用 `__is_position_masked` 逐个跳过被遮蔽的匹配。
+- `__highlight_multiline_comments(text)`：非 deferred 模式的多行注释处理，查找 `/*` 时同样检查 `format(i)` 是否空闲，只有空闲位置才启动注释区间。找到匹配的 `*/` 后格式化整段，然后继续搜索后续 `/* */` 对。
+- `__track_multiline_state(text)`：deferred 模式的多行注释状态追踪，使用 `__find_free_multi_start` 替代 raw regex match，确保字符串内的 `/*` 不触发注释状态转移。
 
 **延迟+分批高亮**：
 - deferred=True 模式下 `highlightBlock` 仅追踪多行注释状态不产生 format spans
@@ -488,7 +503,7 @@ Mixin 类（非 QObject），三个方法 override：`dragEnterEvent`、`dragMov
 
 ### 3.5 InputPanel
 
-继承 `_IOPanelBase`（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符（keyPressEvent override），tabStopWidth = `indent_size * charWidth`。setDocument() 由基类提供。零标签状态下灰显。
+继承 `_IOPanelBase`（setAcceptRichText=False），外层 `_make_io_section` 包装（QWidget + QLabel "INPUT"）。字号/字体跟随 Settings.io_font_family/io_font_size。Tab 键插入制表符（keyPressEvent override），tabStopWidth = `indent_size * charWidth`。Enter 键提交时立即 flush 当前 tab 的 output_buffer，确保交互式程序的 prompt 快速显示。setDocument() 由基类提供。零标签状态下灰显。
 
 ### 3.6 OutputPanel
 
@@ -497,11 +512,14 @@ Mixin 类（非 QObject），三个方法 override：`dragEnterEvent`、`dragMov
 **输出机制**：所有输出数据不直接写入 output_doc，而是追加到 TabData 的 `output_buffer` 列表（`(color, text)` 元组）。全局 `_flush_output_timer`（50ms 间隔，永不停止）定期扫描每个 tab 的 buffer：
 
 1. buffer 非空时：合并相邻同 color 条目 → 逐条用 QTextCursor 写入 output_doc → 清空 buffer
-2. 当前 tab 且 `pinned_to_bottom=True` 时：滚动到最后一行
-3. 非当前 tab：仅 flush，不滚动
-4. tab 切换时：若新 tab `pinned_to_bottom=True` 则滚到底部，否则恢复保存的 `output_scroll`
+2. flush 后检查 `_truncate_output_if_needed`：output_doc 字符数超过 `_OUTPUT_MAX_CHARS`（500000）时裁剪前半内容并插入灰色截断提示 `[...output truncated...]`
+3. 当前 tab 且 `pinned_to_bottom=True` 时：滚动到最后一行
+4. 非当前 tab：仅 flush，不滚动
+5. tab 切换时：若新 tab `pinned_to_bottom=True` 则滚到底部，否则恢复保存的 `output_scroll`
 
-**大输出保护**：buffer 积累超过 64KB 或 200 条时，立即执行 flush + scroll（不等 tick）。stdin 提交时也立即 flush 当前 tab，保证交互式程序 prompt 快速显示。
+**大输出保护**：`_check_buffer_overflow` 检查 buffer 积累超过 64KB 或 200 条时，立即执行 `_immediate_flush`（不等 tick）。stdin 提交（InputPanel Enter）时也立即 flush 当前 tab，保证交互式程序 prompt 快速显示。
+
+**输出截断**：`_truncate_output_if_needed` 在每次 flush 后检查 output_doc 的 `characterCount`。超过 `_OUTPUT_MAX_CHARS`(500000) 时，删除前半部分内容并在开头插入灰色 `[...output truncated...]` 提示。防止失控程序消耗过多内存和拖慢 UI。
 
 **pinned_to_bottom 状态管理**：
 
@@ -573,21 +591,25 @@ class ProcessManager(QObject):
 
 **_on_run_started**：Test 运行进程 `started` 信号触发，写入 stdin 数据 + `closeWriteChannel()`。确保进程已启动后才写入 stdin。
 
-**killed 分支行为**：自然崩溃（如 Windows access violation）QProcess 报 CrashExit + 负 exit code，`_describe_exit_code` 附加已知 NTSTATUS 码可读描述（红色），无描述时显示灰色 "Process stopped"。
+**killed 分支行为**：自然崩溃（如 Windows access violation）QProcess 报 CrashExit + 负 exit code，`_describe_exit_code` 附加已知 NTSTATUS 码可读描述（红色），无描述时显示灰色 "Process stopped"。已知的 NTSTATUS 码：Access violation (0xC0000005)、Stack overflow (0xC00000FD)、Integer divide by zero (0xC0000094)、Integer overflow (0xC0000095)、Float divide by zero (0xC0000090)、Float overflow (0xC0000091)、DLL not found (0xC0000135)、Heap corruption (0xC0000374)。
 
-**输出路由**：启动 Test/Build 时记录 `target_tab`，stdout/stderr 和结束信号始终写入 `target_tab.output_doc`，不受标签切换影响。
+**输出路由**：启动 Test/Build 时记录 `target_tab`，stdout/stderr 和结束信号始终路由到 `target_tab`，不受标签切换影响。
 
 **QProcess 配置**：SeparateChannels；编译进程只读 stderr；运行进程分别读 stdout/stderr；Test 模式写入 stdin 后 closeWriteChannel()。
 
 **_cleanup() 方法**：停止内存追踪、停止 timeout timer、断所有 process 信号（finished/readyRead*/started/errorOccurred）、deleteLater process、重置 busy/mode/target_tab/_stdin_data 为 None/False。
 
+**_stop_timeout_timer() 方法**：停止 `_timeout_timer` 并置为 None，供 timeout handler 和 error handler 调用，避免手动重复此逻辑。
+
+**drain_remaining_output() 方法**：在 `_cleanup()` 之前调用，从 QProcess 排空残留 stdout/stderr 数据并解码为文本，返回 `(stdout_text, stderr_text)`。供 `FlowController.cancel_flow()` 使用，确保关闭标签/窗口时不丢失管道中剩余输出。
+
 ### 4.2 FlowController
 
-FlowController 是独立的 QObject，持有编译/运行状态机的全部逻辑。MainWindow 只负责 UI 跟进（status bar、QMessageBox、scroll timer、launch_terminal），状态判断和转移由 FlowController 完成。
+FlowController 是独立的 QObject，持有编译/运行状态机的全部逻辑。**所有对 TabData 数据的写操作通过 output_clear/output_append 信号委托 MainWindow**，FlowController 不直接操作 `tab.output_buffer` 或 `tab.output_doc`。MainWindow 只负责 UI 跟进（status bar、QMessageBox、scroll timer、launch_terminal）和接收输出信号写入 TabData。
 
 ```python
 class FlowController(QObject):
-    state: str           # IDLE/COMPILING/RUNNING
+    state: str           # IDLE/COMPILING/RUNNING（使用常量 _FLOW_IDLE/_FLOW_COMPILING/_FLOW_RUNNING）
     intent: str          # build/test/run
     tab: TabData         # 发起流程的标签页
     proc_mgr: ProcessManager  # 内部持有的进程管理器
@@ -599,6 +621,10 @@ class FlowController(QObject):
         status_message(str)       # 具体结果消息 → MainWindow._update_status_message
         busy_message_requested()  # → MainWindow._show_busy_message
         terminal_requested(TabData) # → MainWindow._on_terminal_requested
+        output_clear(TabData)     # → MainWindow._on_output_clear（清空 buffer + doc + pinned=True）
+        output_append(TabData, color, text) # → MainWindow._on_output_append（追加到 buffer）
+        run_stdout_ready(str)     # 转发 ProcessManager.run_stdout_ready → MainWindow
+        run_stderr_ready(str)     # 转发 ProcessManager.run_stderr_ready → MainWindow
 ```
 
 **核心方法**：
@@ -609,18 +635,19 @@ class FlowController(QObject):
 | start_test(tab) | 入口：检查 busy → need_recompile 则 COMPILING(intent=test)，否则 RUNNING + start_test_run |
 | start_run(tab) | 入口：检查 busy → need_recompile 则 COMPILING(intent=run)，否则 emit terminal_requested |
 | kill_if_busy() | 如果 COMPILING/RUNNING → proc_mgr.kill_process() |
+| cancel_flow() | kill process + waitForFinished(500ms) + drain_remaining_output + _cleanup + set_state(IDLE)；排空数据通过 output_append 信号路由。返回被处理的 tab |
 | set_state(state, tab, intent) | 状态转移 + emit state_changed |
 | need_recompile(tab) | exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime |
 | get_exe_path(tab) | 源文件同目录 + .exe（Windows）/ 无扩展名（其他） |
 | build_compile_command(tab) | [resolved_compiler] [编码flags] [用户flags] source.cpp -o source.exe -lstdc++ |
 | make_process_env() | QProcessEnvironment.systemEnvironment + env_vars + bin_dir PATH prepend |
-| clear_and_start_compile(tab) | output_buffer.clear + _output_clear + "Compiling..." + pinned_to_bottom=True + start_compile |
-| start_test_run(tab) | output_buffer.clear + _output_clear + pinned_to_bottom=True + start_test_run + stdin from input_doc |
+| clear_and_start_compile(tab) | emit output_clear + emit output_append(Compiling...) + start_compile |
+| start_test_run(tab) | emit output_clear + start_test_run + stdin from input_doc |
 | count_compile_errors(stderr) | 统计 `: error:` 行数，无则返回 1 或 0 |
-| on_compile_finished(exit_code, stderr, reason) | 编译完成回调：状态转移 + 写 output_doc + emit signal |
-| on_run_finished(exit_code, elapsed, peak, reason, error_detail) | 运行完成回调：状态转移 + 写 output_doc + emit signal |
+| on_compile_finished(exit_code, stderr, reason) | 编译完成回调：状态转移 + emit output_clear/output_append + emit status_message |
+| on_run_finished(exit_code, elapsed, peak, reason, error_detail) | 运行完成回调：状态转移 + emit output_append + emit status_message |
 
-**信号分工**：FlowController 直接操作 `tab.output_buffer`（追加 (color, text) 元组）和 `tab.output_doc`（清空、写入编译/运行结果行），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。`run_stdout_ready/run_stderr_ready` 由 MainWindow 接收后追加到对应 tab 的 `output_buffer`，全局 `_flush_output_timer` 定期 flush 到 output_doc 并处理滚动。
+**信号分工**：FlowController **不直接操作** `tab.output_buffer` 或 `tab.output_doc`，所有对输出数据的写操作（清空、追加编译/运行结果行）通过 `output_clear` / `output_append` 信号委托 MainWindow。MainWindow 接收信号后写入对应 tab 的 `output_buffer`，全局 `_flush_output_timer` 定期 flush 到 output_doc 并处理滚动。`run_stdout_ready/run_stderr_ready` 由 FlowController 转发 ProcessManager 的信号到 MainWindow，MainWindow 接收后追加到 `tab.output_buffer`。`state_changed` 发出状态名用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。
 
 **状态机**：FlowController 使用显式状态机：`state`（IDLE/COMPILING/RUNNING）、`intent`（build/test/run）、`tab`。
 
@@ -825,7 +852,7 @@ OK 时：验证 → apply_from(copy) → save JSON → compiler_path/flags/env_v
 
 **Save As**：`_action_save_as` — 始终弹 QFileDialog，保存后更新 file_path、last_file_dir、recent_files。失败时 rollback。
 
-**Close Tab**（`_handle_close_tab`）：dirty 时弹 `_confirm_close_tab` → 断 `modificationChanged` 信号 → 取消 batch highlighting → 如果该标签正在运行进程（FlowController.tab is this tab），kill_process + waitForFinished(500ms) 排空管道中剩余 stdout/stderr 写入 tab.output_doc + _cleanup + set_state(IDLE) → 如果当前标签不是被关闭标签，保存当前标签的 widget state（防止状态丢失）→ 移除 tabbar → remove_tab → 调整零标签或切换 → deferred save window state。
+**Close Tab**（`_handle_close_tab`）：dirty 时弹 `_confirm_close_tab` → 断 `modificationChanged` 信号 → 取消 batch highlighting → 如果该标签正在运行进程（FlowController.tab is this tab），调用 `flow_ctrl.cancel_flow()` 统一处理 kill + waitForFinished + drain_remaining_output + cleanup + set_state(IDLE)，然后 `_flush_output_buffer(tab)` 确保排空数据写入 output_doc → 如果当前标签不是被关闭标签，保存当前标签的 widget state（防止状态丢失）→ 移除 tabbar → remove_tab → 调整零标签或切换 → deferred save window state。
 
 **拖放打开**：MainWindow `setAcceptDrops(True)`，`dragEnterEvent` 检查 MIME URLs 后缀匹配 `_SOURCE_EXTENSIONS`（`.cpp/.c/.cc/.cxx/.h/.hpp/.hh`）。`dropEvent` 对每个匹配 URL 调用 `_open_file_path(path, add_recent=True)`。CodeEditor/InputPanel/OutputPanel（FileDragMixin）的 drag 事件遇到 URL 时 ignore，让事件传播到 MainWindow；纯文本拖放交给 QTextEdit 默认行为。
 
@@ -959,7 +986,14 @@ def main():
 | CodeEditor.setFontSize | Zoom 功能专用字号设置方法 |
 | CodeEditor._notify_overwrite_changed | overwrite 模式切换时更新光标宽度（宽光标 vs 1px） |
 | closeEvent 进程清理 | 关闭窗口时 kill + cleanup 运行中进程 |
-| _handle_close_tab 进程清理 | 关闭正在运行的标签时 kill + waitForFinished 排空管道 + 写入剩余输出 + cleanup |
+| _handle_close_tab 进程清理 | 关闭正在运行的标签时调用 flow_ctrl.cancel_flow()，统一 kill+waitForFinished+drain+cleanup+set_state |
+| FlowController 输出信号委托 | FlowController 不直接操作 tab.output_buffer/output_doc，通过 output_clear/output_append 信号委托 MainWindow，保持状态机与数据结构解耦 |
+| FlowController.cancel_flow() | 统一封装 kill+waitForFinished+drain_remaining_output+cleanup+set_state(IDLE)，替代 _handle_close_tab 和 closeEvent 中散落的 kill/cleanup 逻辑 |
+| ProcessManager.drain_remaining_output() | _cleanup() 前排空 QProcess 管道中残留 stdout/stderr，确保关闭标签/窗口时不丢失输出数据 |
+| ProcessManager._stop_timeout_timer() | 停止并置空 timeout timer 的 helper，消除 timeout/error handler 中重复逻辑 |
+| CppHighlighter first-match-wins 实现 | 单行规则用 __format_if_free 只格式化空闲位置；多行注释也检查空闲位置；deferred 模式用 __is_position_masked/__find_free_multi_start 模拟语义 |
+| 输出截断 _OUTPUT_MAX_CHARS | output_doc 超 500000 字符时裁剪前半并插入截断提示，防止失控程序消耗过多内存 |
+| _check_buffer_overflow 分离方法 | buffer 超 200 条或 64KB 时立即 flush，从 _on_flush_timer 中独立为方法 |
 | ProcessManager stdout/stderr None 保护 | handler 入口检查 self.process is None，防止 cleanup 后排队信号 AttributeError |
 | CodeEditor._highlighter 解耦 | 通过 setDocument 同步 getattr(doc, '_highlighter')，消除对 window/tab_manager 的穿越访问 |
 | CodeEditor._handle_bracket_close 上下文检查 | 闭括号跳过也检查 _is_bracket_in_comment_or_string，与开括号一致 |
