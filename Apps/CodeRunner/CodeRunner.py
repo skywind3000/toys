@@ -16,6 +16,7 @@ import math
 import time
 import json
 import shlex
+import locale
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabBar, QSplitter,
     QTextEdit, QLabel, QWidget, QAction, QMenu,
@@ -63,6 +64,10 @@ _COMMON_ENCODINGS = [
     'EUC-JP', 'EUC-KR', 'ISO-8859-1', 'ISO-8859-2',
     'Windows-1252', 'Windows-1251',
 ]
+
+# Output panel size limit (character count) — prevents runaway programs
+# from consuming excessive memory and degrading UI responsiveness
+_OUTPUT_MAX_CHARS = 500000
 
 
 def _describe_exit_code (exit_code:int) -> str:
@@ -220,9 +225,27 @@ def _read_file (path:str) -> tuple:
     except UnicodeDecodeError:
         pass
     # Fall back to system encoding
-    encoding = 'GBK' if sys.platform == 'win32' else 'UTF-8'
+    encoding = EncodingManager.platform_charset().upper()
     content = raw.decode(encoding, 'replace')
     return (content, encoding)
+
+
+#----------------------------------------------------------------------
+# Charset normalization: map Windows codepage names to standard names
+# recognized by both Python codecs and GCC -fexec-charset/-finput-charset
+#----------------------------------------------------------------------
+_CHARSET_NORMALIZE = {
+    'cp936': 'gbk',
+    'cp1252': 'windows-1252',
+    'cp1250': 'windows-1250',
+    'cp1251': 'windows-1251',
+    'cp1253': 'windows-1253',
+    'cp1254': 'windows-1254',
+    'cp1255': 'windows-1255',
+    'cp1256': 'windows-1256',
+    'cp1257': 'windows-1257',
+    'cp1258': 'windows-1258',
+}
 
 
 #----------------------------------------------------------------------
@@ -233,9 +256,8 @@ class EncodingManager:
 
     @staticmethod
     def platform_charset () -> str:
-        if sys.platform == 'win32':
-            return 'gbk'
-        return 'utf-8'
+        raw = locale.getpreferredencoding(False).lower()
+        return _CHARSET_NORMALIZE.get(raw, raw)
 
     @staticmethod
     def build_flags (source_encoding:str) -> list:
@@ -991,6 +1013,21 @@ class ProcessManager (QObject):
             self._timeout_timer.stop()
             self._timeout_timer = None
 
+    def drain_remaining_output (self) -> tuple:
+        """Read and decode remaining stdout/stderr from process.
+        Returns (stdout_text, stderr_text). Called before _cleanup to
+        avoid losing buffered output."""
+        stdout_text = ''
+        stderr_text = ''
+        if self.process:
+            remaining = self.process.readAllStandardOutput()
+            if remaining and bytes(remaining):
+                stdout_text = self._enc_mgr.decode_stdout(bytes(remaining))
+            remaining = self.process.readAllStandardError()
+            if remaining and bytes(remaining):
+                stderr_text = self._enc_mgr.decode_stderr(bytes(remaining))
+        return (stdout_text, stderr_text)
+
     #----- Compile handlers -----
 
     def _on_compile_stderr_ready (self):
@@ -1164,6 +1201,10 @@ class FlowController (QObject):
     status_message = pyqtSignal(str)       # specific result message → override status text
     busy_message_requested = pyqtSignal()  # 弹 busy 提示
     terminal_requested = pyqtSignal(object)  # tab → MainWindow 执行 launch_terminal
+    output_clear = pyqtSignal(object)      # tab → MainWindow clears output buffer + doc + pins to bottom
+    output_append = pyqtSignal(object, object, str)  # tab, color(QColor/None), text → MainWindow appends to buffer
+    run_stdout_ready = pyqtSignal(str)     # forwarded from ProcessManager
+    run_stderr_ready = pyqtSignal(str)     # forwarded from ProcessManager
 
     def __init__ (self, settings, enc_mgr):
         super().__init__()
@@ -1177,6 +1218,10 @@ class FlowController (QObject):
         # Connect ProcessManager signals to self
         self.proc_mgr.compile_finished.connect(self.on_compile_finished)
         self.proc_mgr.run_finished.connect(self.on_run_finished)
+        # Forward stdout/stderr signals so MainWindow doesn't need to
+        # reach into proc_mgr directly
+        self.proc_mgr.run_stdout_ready.connect(self.run_stdout_ready.emit)
+        self.proc_mgr.run_stderr_ready.connect(self.run_stderr_ready.emit)
 
     #----- Entry methods (called by MainWindow._action_*) -----
 
@@ -1219,6 +1264,28 @@ class FlowController (QObject):
     def kill_if_busy (self):
         if self.state in (_FLOW_COMPILING, _FLOW_RUNNING):
             self.proc_mgr.kill_process()
+
+    def cancel_flow (self):
+        """Cancel current flow: kill process, drain remaining output,
+        cleanup, reset to IDLE. Emits output signals for drained data.
+        Returns the tab that was being processed, or None if idle."""
+        if self.state == _FLOW_IDLE:
+            return None
+        tab = self.tab
+        proc_mgr = self.proc_mgr
+        proc_mgr.kill_process()
+        if proc_mgr.process and \
+           proc_mgr.process.state() != QProcess.NotRunning:
+            proc_mgr.process.waitForFinished(500)
+        # Drain remaining output — route all to tab's output regardless
+        stdout_text, stderr_text = proc_mgr.drain_remaining_output()
+        if stdout_text:
+            self.output_append.emit(tab, None, stdout_text)
+        if stderr_text:
+            self.output_append.emit(tab, QColor(128, 128, 128), stderr_text)
+        proc_mgr._cleanup()
+        self.set_state(_FLOW_IDLE)
+        return tab
 
     #----- State management -----
 
@@ -1297,10 +1364,8 @@ class FlowController (QObject):
 
     def clear_and_start_compile (self, tab):
         """Clear output and start compilation."""
-        tab.output_buffer.clear()
-        _output_clear(tab.output_doc)
-        tab.pinned_to_bottom = True
-        tab.output_buffer.append((QColor(128, 128, 128), 'Compiling...\n'))
+        self.output_clear.emit(tab)
+        self.output_append.emit(tab, QColor(128, 128, 128), 'Compiling...\n')
         command = self.build_compile_command(tab)
         work_dir = os.path.dirname(tab.file_path)
         if sys.platform == 'win32':
@@ -1319,9 +1384,7 @@ class FlowController (QObject):
         stdin_text = tab.input_doc.toPlainText()
         stdin_data = self.enc_mgr.encode_stdin(stdin_text)
         env = self.make_process_env()
-        tab.output_buffer.clear()
-        _output_clear(tab.output_doc)
-        tab.pinned_to_bottom = True
+        self.output_clear.emit(tab)
         self.proc_mgr.target_tab = tab
         self.proc_mgr.start_test_run(
             exe_path, work_dir, env, stdin_data,
@@ -1347,47 +1410,34 @@ class FlowController (QObject):
             self.set_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
+            self.output_clear.emit(tab)
             compiler = self.settings.compiler_path
-            tab.output_buffer.append(
-                (QColor(Qt.red),
-                 'Failed to start compiler \'{}\'\n'.format(compiler)))
-            tab.output_buffer.append(
-                (QColor(Qt.red),
-                 'Error: {}\n'.format(stderr_text)))
-            tab.output_buffer.append(
-                (QColor(128, 128, 128),
-                 'Please check Settings to set the correct compiler path.\n'))
+            self.output_append.emit(tab, QColor(Qt.red),
+                'Failed to start compiler \'{}\'\n'.format(compiler))
+            self.output_append.emit(tab, QColor(Qt.red),
+                'Error: {}\n'.format(stderr_text))
+            self.output_append.emit(tab, QColor(128, 128, 128),
+                'Please check Settings to set the correct compiler path.\n')
             self.set_state(_FLOW_IDLE)
             self.status_message.emit('Failed to start compiler')
         elif reason == 'timeout':
             elapsed = time.time() - self.proc_mgr.start_time
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
-            tab.output_buffer.append(
-                (QColor(Qt.red),
-                 'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
-                     self.settings.compile_timeout, elapsed)))
+            self.output_clear.emit(tab)
+            self.output_append.emit(tab, QColor(Qt.red),
+                'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
+                    self.settings.compile_timeout, elapsed))
             self.set_state(_FLOW_IDLE)
             self.status_message.emit('Compilation timeout')
         elif reason == 'killed':
             elapsed = time.time() - self.proc_mgr.start_time
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
-            tab.output_buffer.append(
-                (QColor(128, 128, 128),
-                 'Compilation stopped in {:.3}s\n'.format(elapsed)))
+            self.output_clear.emit(tab)
+            self.output_append.emit(tab, QColor(128, 128, 128),
+                'Compilation stopped in {:.3}s\n'.format(elapsed))
             self.set_state(_FLOW_IDLE)
             self.status_message.emit('Compilation stopped')
         elif exit_code != 0:
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
-            tab.output_buffer.append((QColor(Qt.red), stderr_text))
+            self.output_clear.emit(tab)
+            self.output_append.emit(tab, QColor(Qt.red), stderr_text)
             n = self.count_compile_errors(stderr_text)
             self.set_state(_FLOW_IDLE)
             self.status_message.emit(
@@ -1396,12 +1446,9 @@ class FlowController (QObject):
             # Compile succeeded — check intent
             if self.intent == 'build':
                 elapsed = time.time() - self.proc_mgr.start_time
-                tab.output_buffer.clear()
-                _output_clear(tab.output_doc)
-                tab.pinned_to_bottom = True
-                tab.output_buffer.append(
-                    (QColor(128, 128, 128),
-                     'Build OK in {:.3}s\n'.format(elapsed)))
+                self.output_clear.emit(tab)
+                self.output_append.emit(tab, QColor(128, 128, 128),
+                    'Build OK in {:.3}s\n'.format(elapsed))
                 self.set_state(_FLOW_IDLE)
                 self.status_message.emit('Build successful')
             elif self.intent == 'test':
@@ -1409,12 +1456,9 @@ class FlowController (QObject):
                 self.start_test_run(tab)
             elif self.intent == 'run':
                 elapsed = time.time() - self.proc_mgr.start_time
-                tab.output_buffer.clear()
-                _output_clear(tab.output_doc)
-                tab.pinned_to_bottom = True
-                tab.output_buffer.append(
-                    (QColor(128, 128, 128),
-                     'Build OK in {:.3}s\n'.format(elapsed)))
+                self.output_clear.emit(tab)
+                self.output_append.emit(tab, QColor(128, 128, 128),
+                    'Build OK in {:.3}s\n'.format(elapsed))
                 self.set_state(_FLOW_IDLE)
                 self.terminal_requested.emit(tab)
             else:
@@ -1431,21 +1475,16 @@ class FlowController (QObject):
             self.set_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
-            tab.output_buffer.append(
-                (QColor(Qt.red), 'Failed to start program\n'))
-            tab.output_buffer.append(
-                (QColor(Qt.red), 'Error: {}\n'.format(error_detail)))
+            self.output_clear.emit(tab)
+            self.output_append.emit(tab, QColor(Qt.red), 'Failed to start program\n')
+            self.output_append.emit(tab, QColor(Qt.red), 'Error: {}\n'.format(error_detail))
             self.set_state(_FLOW_IDLE)
             self.status_message.emit('Failed to start program')
         elif reason == 'timeout':
-            tab.output_buffer.append((QColor(Qt.red), '\n'))
-            tab.output_buffer.append(
-                (QColor(Qt.red),
-                 'Timeout after {} seconds (ran {:.3}s)\n'.format(
-                     self.settings.run_timeout, elapsed)))
+            self.output_append.emit(tab, QColor(Qt.red), '\n')
+            self.output_append.emit(tab, QColor(Qt.red),
+                'Timeout after {} seconds (ran {:.3}s)\n'.format(
+                    self.settings.run_timeout, elapsed))
             self.set_state(_FLOW_IDLE)
             self.status_message.emit(
                 'Timeout after {} seconds'.format(
@@ -1453,16 +1492,14 @@ class FlowController (QObject):
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
-                tab.output_buffer.append((QColor(Qt.red), '\n'))
-                tab.output_buffer.append(
-                    (QColor(Qt.red),
-                     'Program crashed: {} (exit code {})\n'.format(
-                         detail, exit_code)))
+                self.output_append.emit(tab, QColor(Qt.red), '\n')
+                self.output_append.emit(tab, QColor(Qt.red),
+                    'Program crashed: {} (exit code {})\n'.format(
+                        detail, exit_code))
             else:
-                tab.output_buffer.append((QColor(128, 128, 128), '\n'))
-                tab.output_buffer.append(
-                    (QColor(128, 128, 128),
-                     'Process stopped in {:.3}s\n'.format(elapsed)))
+                self.output_append.emit(tab, QColor(128, 128, 128), '\n')
+                self.output_append.emit(tab, QColor(128, 128, 128),
+                    'Process stopped in {:.3}s\n'.format(elapsed))
             self.set_state(_FLOW_IDLE)
             if detail:
                 self.status_message.emit(
@@ -1471,12 +1508,12 @@ class FlowController (QObject):
                 self.status_message.emit('Process stopped')
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
-            tab.output_buffer.append((QColor(Qt.red), '\n'))
+            self.output_append.emit(tab, QColor(Qt.red), '\n')
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
             if detail:
                 line = 'Runtime Error: {} (exit code {})\n'.format(
                     detail, exit_code)
-            tab.output_buffer.append((QColor(Qt.red), line))
+            self.output_append.emit(tab, QColor(Qt.red), line)
             self.set_state(_FLOW_IDLE)
             msg = 'Runtime Error (exit code {})'.format(exit_code)
             if detail:
@@ -1487,10 +1524,10 @@ class FlowController (QObject):
             if peak_memory > 0:
                 mem_mb = peak_memory / (1024 * 1024)
                 mem_str = ', {:.1f}MB'.format(mem_mb)
-            tab.output_buffer.append((QColor(128, 128, 128), '\n'))
+            self.output_append.emit(tab, QColor(128, 128, 128), '\n')
             line = 'exit with code {} in {:.3}s{}\n'.format(
                 exit_code, elapsed, mem_str)
-            tab.output_buffer.append((QColor(128, 128, 128), line))
+            self.output_append.emit(tab, QColor(128, 128, 128), line)
             self.set_state(_FLOW_IDLE)
             self.status_message.emit(
                 'Program exited with code 0 in {:.3}s{}'.format(
@@ -3463,12 +3500,16 @@ class MainWindow (QMainWindow):
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
-        # ProcessManager stdout/stderr signals (compile_finished/run_finished
-        # are handled by FlowController internally)
-        self.flow_ctrl.proc_mgr.run_stdout_ready.connect(
+        # FlowController signals (compile_finished/run_finished
+        # are handled by FlowController internally; stdout/stderr are forwarded)
+        self.flow_ctrl.run_stdout_ready.connect(
             self._on_run_stdout_ready)
-        self.flow_ctrl.proc_mgr.run_stderr_ready.connect(
+        self.flow_ctrl.run_stderr_ready.connect(
             self._on_run_stderr_ready)
+        self.flow_ctrl.output_clear.connect(
+            self._on_output_clear)
+        self.flow_ctrl.output_append.connect(
+            self._on_output_append)
 
         # Output panel scroll — detect user scroll-up to deactivate auto-scroll
         self.output_panel.verticalScrollBar().valueChanged.connect(
@@ -3758,11 +3799,9 @@ class MainWindow (QMainWindow):
         if ok:
             self.status_message.setText('Running in terminal')
         else:
-            tab.output_buffer.clear()
-            _output_clear(tab.output_doc)
-            tab.pinned_to_bottom = True
-            tab.output_buffer.append(
-                (QColor(Qt.red), 'Failed to launch terminal\n'))
+            self._on_output_clear(tab)
+            self._on_output_append(
+                tab, QColor(Qt.red), 'Failed to launch terminal\n')
             self.status_message.setText('Failed to launch terminal')
 
     #===== Settings =====
@@ -3899,7 +3938,7 @@ class MainWindow (QMainWindow):
 
     def _flush_output_buffer (self, tab:TabData):
         """Flush output_buffer to output_doc: merge adjacent same-color,
-        write via QTextCursor, clear buffer."""
+        write via QTextCursor, clear buffer. Truncates if size exceeds limit."""
         if not tab.output_buffer:
             return
         # Merge adjacent entries with same color
@@ -3921,6 +3960,28 @@ class MainWindow (QMainWindow):
             cursor.insertText(text)
         cursor.endEditBlock()
         tab.output_buffer.clear()
+        # Truncate from beginning if output exceeds size limit
+        self._truncate_output_if_needed(tab)
+
+    def _truncate_output_if_needed (self, tab:TabData):
+        """Truncate output_doc from the beginning if it exceeds size limit.
+        Removes roughly the first half and inserts a truncation notice."""
+        doc = tab.output_doc
+        if doc.characterCount() <= _OUTPUT_MAX_CHARS:
+            return
+        # Remove from start to approximately half of the document
+        half_pos = doc.characterCount() // 2
+        block = doc.findBlock(half_pos)
+        cursor = QTextCursor(doc)
+        cursor.setPosition(0)
+        cursor.setPosition(block.position(), QTextCursor.KeepAnchor)
+        cursor.removeSelectedText()
+        # Insert truncation notice at the start
+        cursor.movePosition(QTextCursor.Start)
+        notice_fmt = QTextCharFormat()
+        notice_fmt.setForeground(QBrush(QColor(128, 128, 128)))
+        cursor.setCharFormat(notice_fmt)
+        cursor.insertText('[...output truncated...]\n')
 
     def _immediate_flush (self, tab:TabData):
         """Immediately flush output buffer for a tab, then scroll if pinned.
@@ -3957,16 +4018,26 @@ class MainWindow (QMainWindow):
             self.__programmatic_scroll = False
 
     def _on_run_stdout_ready (self, text:str):
-        tab = self.flow_ctrl.proc_mgr.target_tab
+        tab = self.flow_ctrl.tab
         if tab:
             tab.output_buffer.append((None, text))
             self._check_buffer_overflow(tab)
 
     def _on_run_stderr_ready (self, text:str):
-        tab = self.flow_ctrl.proc_mgr.target_tab
+        tab = self.flow_ctrl.tab
         if tab:
             tab.output_buffer.append((QColor(128, 128, 128), text))
             self._check_buffer_overflow(tab)
+
+    def _on_output_clear (self, tab):
+        """Handle FlowController output_clear signal."""
+        tab.output_buffer.clear()
+        _output_clear(tab.output_doc)
+        tab.pinned_to_bottom = True
+
+    def _on_output_append (self, tab, color, text):
+        """Handle FlowController output_append signal."""
+        tab.output_buffer.append((color, text))
 
     #===== Tab Management =====
 
@@ -4070,32 +4141,10 @@ class MainWindow (QMainWindow):
                 if result < 0:
                     return False
 
-        # Kill process and drain remaining output before cleanup
-        # to prevent queued stdout/stderr signals from being dropped
+        # Cancel running flow if this tab is the active target
         if self.flow_ctrl.state != _FLOW_IDLE and self.flow_ctrl.tab is tab:
-            proc_mgr = self.flow_ctrl.proc_mgr
-            proc_mgr.kill_process()
-            # Drain any buffered output before cleanup nulls target_tab
-            if proc_mgr.process and proc_mgr.process.state() != QProcess.NotRunning:
-                proc_mgr.process.waitForFinished(500)
-            if proc_mgr.process:
-                remaining = proc_mgr.process.readAllStandardOutput()
-                if remaining and bytes(remaining):
-                    text = proc_mgr._enc_mgr.decode_stdout(bytes(remaining))
-                    tab.output_buffer.append((None, text))
-                remaining = proc_mgr.process.readAllStandardError()
-                if remaining and bytes(remaining):
-                    if proc_mgr.mode == 'compile':
-                        proc_mgr._stderr_buffer += proc_mgr._enc_mgr.decode_stderr(
-                            bytes(remaining))
-                    else:
-                        text = proc_mgr._enc_mgr.decode_stderr(bytes(remaining))
-                        tab.output_buffer.append(
-                            (QColor(128, 128, 128), text))
-            # Flush remaining output before cleanup
+            self.flow_ctrl.cancel_flow()
             self._flush_output_buffer(tab)
-            proc_mgr._cleanup()
-            self.flow_ctrl.set_state(_FLOW_IDLE)
 
         # Cancel batch highlighting before removing
         tab.highlighter.cancel_batch_highlight()
