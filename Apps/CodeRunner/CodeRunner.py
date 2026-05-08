@@ -2165,7 +2165,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
             if right3 == ' */':
                 return False
         cursor.beginEditBlock()
-        cursor.insertText(' */')
+        cursor.insertText('* */')
         # Move cursor between /* and */
         cursor.movePosition(QTextCursor.Left, QTextCursor.MoveAnchor, 3)
         cursor.endEditBlock()
@@ -2198,11 +2198,10 @@ class CodeEditor (FileDragMixin, QTextEdit):
         """Handle bracket/quote auto-completion. Returns True if handled,
         False if in comment/string context (should use default input)."""
         cursor = self.textCursor()
-        # Skip auto-completion inside comments or string literals
         pos = cursor.position()
-        if self._is_bracket_in_comment_or_string(pos):
-            return False
-        # For quotes: if cursor is inside a matching pair, skip over
+        # For quotes: if cursor is right before a matching quote, skip over
+        # This must precede the comment/string check — skipping over an
+        # existing closing quote is a cursor action, not auto-completion.
         if text in ('"', "'"):
             doc = self.document()
             if pos < doc.characterCount():
@@ -2211,6 +2210,9 @@ class CodeEditor (FileDragMixin, QTextEdit):
                     cursor.movePosition(QTextCursor.Right)
                     self.setTextCursor(cursor)
                     return True
+        # Skip auto-completion inside comments or string literals
+        if self._is_bracket_in_comment_or_string(pos):
+            return False
         # Insert open + close, place cursor between
         close = self._BRACKET_OPEN[text]
         cursor.beginEditBlock()
