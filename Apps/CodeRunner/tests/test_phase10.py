@@ -406,8 +406,8 @@ class TestStdoutStderrBufferAppend (unittest.TestCase):
         index = self.window.tab_manager.add_tab(self.tab)
         self.window.tabbar.addTab(self.tab.tab_name())
         self.window._switch_to_tab(index)
-        # Set target_tab so stdout/stderr handlers can find the tab
-        self.window.flow_ctrl.proc_mgr.target_tab = self.tab
+        # Set flow_ctrl.tab so stdout/stderr handlers can find the tab
+        self.window.flow_ctrl.tab = self.tab
 
     def test_stdout_handler_appends_none_color (self):
         """_on_run_stdout_ready appends (None, text) to buffer."""
