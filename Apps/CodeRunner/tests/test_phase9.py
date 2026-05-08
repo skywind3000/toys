@@ -115,18 +115,18 @@ class TestScrollChangedWithProgrammaticFlag (unittest.TestCase):
         self.window._on_output_scroll_changed()
         self.assertFalse(self.tab.pinned_to_bottom)
 
-    def test_scroll_changed_clears_flag_after_scroll_timer (self):
-        """After programmatic scroll in timer, flag should be reset to False."""
+    def test_flush_timer_resets_flag_after_scroll (self):
+        """After _on_flush_timer, __programmatic_scroll should be reset."""
         self.window._MainWindow__programmatic_scroll = True
-        # Simulate timer completing scroll
-        self.window._on_scroll_output_timer()
+        # Simulate flush timer completing scroll
+        self.window._on_flush_timer()
         self.assertFalse(self.window._MainWindow__programmatic_scroll)
 
-    def test_pinned_remains_true_after_programmatic_scroll (self):
-        """Programmatic scroll to bottom should not change pinned=True."""
+    def test_pinned_remains_true_after_flush_timer_scroll (self):
+        """_on_flush_timer programmatic scroll keeps pinned=True."""
         self.tab.pinned_to_bottom = True
         # Simulate timer doing a programmatic scroll
-        self.window._on_scroll_output_timer()
+        self.window._on_flush_timer()
         self.assertTrue(self.tab.pinned_to_bottom)
 
     def tearDown (self):

@@ -17,7 +17,7 @@
 | 7. 查找替换与收尾 | done |
 | 8. 编辑器增强与体验优化 | done |
 | 9. OutputPanel: pinned_to_bottom 状态重构 | done |
-| 10. OutputPanel: buffer + flush timer 机制 | pending |
+| 10. OutputPanel: buffer + flush timer 机制 | done |
 | 11. OutputPanel: 交互式 flush 与清理 | pending |
 
 ## 阶段 1：骨架与布局 **[done]**

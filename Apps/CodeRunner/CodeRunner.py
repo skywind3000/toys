@@ -770,6 +770,7 @@ class TabData:
         self.compiler_mtime = 0
         self._highlight_pending = True
         self.pinned_to_bottom = True  # auto-scroll when output is at bottom
+        self.output_buffer = []      # [(color, text)] pending output entries
 
         # Set initial content without triggering modificationChanged
         self.editor_doc.blockSignals(True)
@@ -1162,7 +1163,6 @@ class FlowController (QObject):
     state_changed = pyqtSignal(str)        # idle/compiling/running → default status text
     status_message = pyqtSignal(str)       # specific result message → override status text
     busy_message_requested = pyqtSignal()  # 弹 busy 提示
-    scroll_requested = pyqtSignal(object)  # tab → 启动 scroll timer
     terminal_requested = pyqtSignal(object)  # tab → MainWindow 执行 launch_terminal
 
     def __init__ (self, settings, enc_mgr):
@@ -1297,10 +1297,10 @@ class FlowController (QObject):
 
     def clear_and_start_compile (self, tab):
         """Clear output and start compilation."""
+        tab.output_buffer.clear()
         _output_clear(tab.output_doc)
         tab.pinned_to_bottom = True
-        _output_append(tab.output_doc, 'Compiling...\n',
-                       QColor(128, 128, 128))
+        tab.output_buffer.append((QColor(128, 128, 128), 'Compiling...\n'))
         command = self.build_compile_command(tab)
         work_dir = os.path.dirname(tab.file_path)
         if sys.platform == 'win32':
@@ -1309,7 +1309,6 @@ class FlowController (QObject):
         self.proc_mgr.target_tab = tab
         self.proc_mgr.start_compile(
             command, work_dir, env, self.settings.compile_timeout)
-        self.scroll_requested.emit(tab)
 
     def start_test_run (self, tab):
         """Start test run with stdin from InputPanel."""
@@ -1320,6 +1319,7 @@ class FlowController (QObject):
         stdin_text = tab.input_doc.toPlainText()
         stdin_data = self.enc_mgr.encode_stdin(stdin_text)
         env = self.make_process_env()
+        tab.output_buffer.clear()
         _output_clear(tab.output_doc)
         tab.pinned_to_bottom = True
         self.proc_mgr.target_tab = tab
@@ -1347,82 +1347,75 @@ class FlowController (QObject):
             self.set_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
             compiler = self.settings.compiler_path
-            _output_append(
-                tab.output_doc,
-                'Failed to start compiler \'{}\'\n'.format(compiler),
-                QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Error: {}\n'.format(stderr_text),
-                QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Please check Settings to set the correct compiler path.\n',
-                QColor(128, 128, 128))
+            tab.output_buffer.append(
+                (QColor(Qt.red),
+                 'Failed to start compiler \'{}\'\n'.format(compiler)))
+            tab.output_buffer.append(
+                (QColor(Qt.red),
+                 'Error: {}\n'.format(stderr_text)))
+            tab.output_buffer.append(
+                (QColor(128, 128, 128),
+                 'Please check Settings to set the correct compiler path.\n'))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit('Failed to start compiler')
         elif reason == 'timeout':
             elapsed = time.time() - self.proc_mgr.start_time
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
-            _output_append(
-                tab.output_doc,
-                'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
-                    self.settings.compile_timeout, elapsed),
-                QColor(Qt.red))
+            tab.output_buffer.append(
+                (QColor(Qt.red),
+                 'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
+                     self.settings.compile_timeout, elapsed)))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit('Compilation timeout')
         elif reason == 'killed':
             elapsed = time.time() - self.proc_mgr.start_time
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
-            _output_append(
-                tab.output_doc,
-                'Compilation stopped in {:.3}s\n'.format(elapsed),
-                QColor(128, 128, 128))
+            tab.output_buffer.append(
+                (QColor(128, 128, 128),
+                 'Compilation stopped in {:.3}s\n'.format(elapsed)))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit('Compilation stopped')
         elif exit_code != 0:
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
-            _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
+            tab.output_buffer.append((QColor(Qt.red), stderr_text))
             n = self.count_compile_errors(stderr_text)
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit(
                 'Build failed with {} error(s)'.format(n))
         else:
             # Compile succeeded — check intent
             if self.intent == 'build':
                 elapsed = time.time() - self.proc_mgr.start_time
+                tab.output_buffer.clear()
                 _output_clear(tab.output_doc)
                 tab.pinned_to_bottom = True
-                _output_append(
-                    tab.output_doc,
-                    'Build OK in {:.3}s\n'.format(elapsed),
-                    QColor(128, 128, 128))
+                tab.output_buffer.append(
+                    (QColor(128, 128, 128),
+                     'Build OK in {:.3}s\n'.format(elapsed)))
                 self.set_state(_FLOW_IDLE)
-                self.scroll_requested.emit(tab)
                 self.status_message.emit('Build successful')
             elif self.intent == 'test':
                 self.set_state(_FLOW_RUNNING)
                 self.start_test_run(tab)
             elif self.intent == 'run':
                 elapsed = time.time() - self.proc_mgr.start_time
+                tab.output_buffer.clear()
                 _output_clear(tab.output_doc)
                 tab.pinned_to_bottom = True
-                _output_append(
-                    tab.output_doc,
-                    'Build OK in {:.3}s\n'.format(elapsed),
-                    QColor(128, 128, 128))
+                tab.output_buffer.append(
+                    (QColor(128, 128, 128),
+                     'Build OK in {:.3}s\n'.format(elapsed)))
                 self.set_state(_FLOW_IDLE)
-                self.scroll_requested.emit(tab)
                 self.terminal_requested.emit(tab)
             else:
                 # Unknown intent — reset to idle as a safeguard
@@ -1438,45 +1431,39 @@ class FlowController (QObject):
             self.set_state(_FLOW_IDLE)
             return
         if reason == 'failed_to_start':
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
-            _output_append(tab.output_doc,
-                           'Failed to start program\n',
-                           QColor(Qt.red))
-            _output_append(tab.output_doc,
-                           'Error: {}\n'.format(error_detail),
-                           QColor(Qt.red))
+            tab.output_buffer.append(
+                (QColor(Qt.red), 'Failed to start program\n'))
+            tab.output_buffer.append(
+                (QColor(Qt.red), 'Error: {}\n'.format(error_detail)))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit('Failed to start program')
         elif reason == 'timeout':
-            _output_append(tab.output_doc, '\n', QColor(Qt.red))
-            _output_append(
-                tab.output_doc,
-                'Timeout after {} seconds (ran {:.3}s)\n'.format(
-                    self.settings.run_timeout, elapsed),
-                QColor(Qt.red))
+            tab.output_buffer.append((QColor(Qt.red), '\n'))
+            tab.output_buffer.append(
+                (QColor(Qt.red),
+                 'Timeout after {} seconds (ran {:.3}s)\n'.format(
+                     self.settings.run_timeout, elapsed)))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit(
                 'Timeout after {} seconds'.format(
                     self.settings.run_timeout))
         elif reason == 'killed':
             detail = _describe_exit_code(exit_code)
             if detail:
-                _output_append(tab.output_doc, '\n', QColor(Qt.red))
-                _output_append(
-                    tab.output_doc,
-                    'Program crashed: {} (exit code {})\n'.format(
-                        detail, exit_code),
-                    QColor(Qt.red))
+                tab.output_buffer.append((QColor(Qt.red), '\n'))
+                tab.output_buffer.append(
+                    (QColor(Qt.red),
+                     'Program crashed: {} (exit code {})\n'.format(
+                         detail, exit_code)))
             else:
-                _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
-                _output_append(tab.output_doc,
-                               'Process stopped in {:.3}s\n'.format(elapsed),
-                               QColor(128, 128, 128))
+                tab.output_buffer.append((QColor(128, 128, 128), '\n'))
+                tab.output_buffer.append(
+                    (QColor(128, 128, 128),
+                     'Process stopped in {:.3}s\n'.format(elapsed)))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             if detail:
                 self.status_message.emit(
                     'Program crashed: {}'.format(detail))
@@ -1484,14 +1471,13 @@ class FlowController (QObject):
                 self.status_message.emit('Process stopped')
         elif exit_code != 0:
             detail = _describe_exit_code(exit_code)
-            _output_append(tab.output_doc, '\n', QColor(Qt.red))
+            tab.output_buffer.append((QColor(Qt.red), '\n'))
             line = 'Runtime Error (exit code {})\n'.format(exit_code)
             if detail:
                 line = 'Runtime Error: {} (exit code {})\n'.format(
                     detail, exit_code)
-            _output_append(tab.output_doc, line, QColor(Qt.red))
+            tab.output_buffer.append((QColor(Qt.red), line))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             msg = 'Runtime Error (exit code {})'.format(exit_code)
             if detail:
                 msg = 'Runtime Error: {}'.format(detail)
@@ -1501,12 +1487,11 @@ class FlowController (QObject):
             if peak_memory > 0:
                 mem_mb = peak_memory / (1024 * 1024)
                 mem_str = ', {:.1f}MB'.format(mem_mb)
-            _output_append(tab.output_doc, '\n', QColor(128, 128, 128))
+            tab.output_buffer.append((QColor(128, 128, 128), '\n'))
             line = 'exit with code {} in {:.3}s{}\n'.format(
                 exit_code, elapsed, mem_str)
-            _output_append(tab.output_doc, line, QColor(128, 128, 128))
+            tab.output_buffer.append((QColor(128, 128, 128), line))
             self.set_state(_FLOW_IDLE)
-            self.scroll_requested.emit(tab)
             self.status_message.emit(
                 'Program exited with code 0 in {:.3}s{}'.format(
                     elapsed, mem_str))
@@ -2500,6 +2485,14 @@ class InputPanel (_IOPanelBase):
         if event.key() == Qt.Key_Tab:
             cursor = self.textCursor()
             cursor.insertText('\t')
+        elif event.key() in (Qt.Key_Enter, Qt.Key_Return):
+            super().keyPressEvent(event)
+            # Flush current tab's output buffer on Enter for interactive prompt visibility
+            win = self.window()
+            if hasattr(win, 'tab_manager'):
+                tab = win.tab_manager.get_current()
+                if tab and tab.output_buffer:
+                    win._immediate_flush(tab)
         else:
             super().keyPressEvent(event)
 
@@ -2568,7 +2561,7 @@ class OutputPanel (_IOPanelBase):
                     and event.modifiers() == Qt.ControlModifier)):
             self.copy()
             return
-        # END key: re-enter auto-scroll mode and scroll to bottom
+        # END key: re-enter auto-scroll mode, flush buffer, scroll to bottom
         if event.key() == Qt.Key_End:
             super().keyPressEvent(event)
             win = self.window()
@@ -2576,10 +2569,7 @@ class OutputPanel (_IOPanelBase):
                 tab = win.tab_manager.get_current()
                 if tab:
                     tab.pinned_to_bottom = True
-                    win.__programmatic_scroll = True
-                    self.verticalScrollBar().setValue(
-                        self.verticalScrollBar().maximum())
-                    win.__programmatic_scroll = False
+                    win._immediate_flush(tab)
             return
         super().keyPressEvent(event)
 
@@ -3276,15 +3266,15 @@ class MainWindow (QMainWindow):
         self._update_status_from_state(_FLOW_IDLE)
 
     def __init_connections (self):
-        self._scroll_output_timer = QTimer(self)
-        self._scroll_output_timer.setSingleShot(False)
-        self._scroll_output_timer.timeout.connect(
-            self._on_scroll_output_timer)
+        self._flush_output_timer = QTimer(self)
+        self._flush_output_timer.setSingleShot(False)
+        self._flush_output_timer.timeout.connect(
+            self._on_flush_timer)
+        self._flush_output_timer.start(50)  # never-stop timer
         self.__connect_signals()
         self.flow_ctrl.state_changed.connect(self._update_status_from_state)
         self.flow_ctrl.status_message.connect(self._update_status_message)
         self.flow_ctrl.busy_message_requested.connect(self._show_busy_message)
-        self.flow_ctrl.scroll_requested.connect(self._on_flow_scroll_requested)
         self.flow_ctrl.terminal_requested.connect(self._on_terminal_requested)
         self.__setup_tab_switch_shortcuts()
 
@@ -3772,23 +3762,18 @@ class MainWindow (QMainWindow):
             'A process is currently running. '
             'Please wait or press Stop before starting a new operation.')
 
-    def _on_flow_scroll_requested (self, tab):
-        """FlowController requests auto-scroll for a tab's output."""
-        self._maybe_scroll_output(tab)
-
     def _on_terminal_requested (self, tab):
         """FlowController requests launching an external terminal."""
         ok = self._launch_terminal(tab)
         if ok:
             self.status_message.setText('Running in terminal')
         else:
+            tab.output_buffer.clear()
             _output_clear(tab.output_doc)
             tab.pinned_to_bottom = True
-            _output_append(tab.output_doc,
-                           'Failed to launch terminal\n',
-                           QColor(Qt.red))
+            tab.output_buffer.append(
+                (QColor(Qt.red), 'Failed to launch terminal\n'))
             self.status_message.setText('Failed to launch terminal')
-            self._maybe_scroll_output(tab)
 
     #===== Settings =====
 
@@ -3903,13 +3888,6 @@ class MainWindow (QMainWindow):
                     os.environ[key] = orig
         return ok
 
-    def _maybe_scroll_output (self, tab:TabData):
-        """Start scroll timer if auto-scroll is active for this tab.
-        pinned_to_bottom stays True until user scrolls up — don't reset it here."""
-        if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
-            if not self._scroll_output_timer.isActive():
-                self._scroll_output_timer.start(50)
-
     def _is_output_at_bottom (self) -> bool:
         """Check if OutputPanel scrollbar is near the bottom (within 3px)."""
         sb = self.output_panel.verticalScrollBar()
@@ -3928,39 +3906,77 @@ class MainWindow (QMainWindow):
             tab.pinned_to_bottom = True
         else:
             tab.pinned_to_bottom = False
-            self._scroll_output_timer.stop()
 
-    def _on_scroll_output_timer (self):
-        """Batched scroll: scroll to bottom if auto-scroll is active.
-        pinned_to_bottom stays True until user scrolls up — don't reset it.
-        Stop timer when caught up (at bottom after scroll)."""
+    def _flush_output_buffer (self, tab:TabData):
+        """Flush output_buffer to output_doc: merge adjacent same-color,
+        write via QTextCursor, clear buffer."""
+        if not tab.output_buffer:
+            return
+        # Merge adjacent entries with same color
+        merged = []
+        for color, text in tab.output_buffer:
+            if merged and merged[-1][0] == color:
+                merged[-1] = (color, merged[-1][1] + text)
+            else:
+                merged.append((color, text))
+        # Write merged entries to output_doc
+        cursor = QTextCursor(tab.output_doc)
+        cursor.movePosition(QTextCursor.End)
+        cursor.beginEditBlock()
+        for color, text in merged:
+            fmt = QTextCharFormat()
+            if color is not None:
+                fmt.setForeground(QBrush(color))
+            cursor.setCharFormat(fmt)
+            cursor.insertText(text)
+        cursor.endEditBlock()
+        tab.output_buffer.clear()
+
+    def _immediate_flush (self, tab:TabData):
+        """Immediately flush output buffer for a tab, then scroll if pinned.
+        Used for stdin submit and large output protection."""
+        self._flush_output_buffer(tab)
+        if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
+            self.__programmatic_scroll = True
+            self.output_panel.verticalScrollBar().setValue(
+                self.output_panel.verticalScrollBar().maximum())
+            self.__programmatic_scroll = False
+
+    def _check_buffer_overflow (self, tab:TabData):
+        """Flush immediately if buffer exceeds size/count threshold.
+        Prevents high-frequency output from inflating the buffer."""
+        if len(tab.output_buffer) > 200:
+            self._immediate_flush(tab)
+            return
+        if tab.output_buffer:
+            total = sum(len(t) for _, t in tab.output_buffer)
+            if total > 65536:
+                self._immediate_flush(tab)
+
+    def _on_flush_timer (self):
+        """50ms global timer: flush all tab buffers + scroll current if pinned.
+        Timer never stops — empty ticks have negligible overhead."""
+        for tab in self.tab_manager.tabs:
+            self._flush_output_buffer(tab)
+        # Scroll current tab to bottom if pinned
         tab = self.tab_manager.get_current()
         if tab and tab.pinned_to_bottom:
             self.__programmatic_scroll = True
             self.output_panel.verticalScrollBar().setValue(
                 self.output_panel.verticalScrollBar().maximum())
             self.__programmatic_scroll = False
-            # Stop timer when caught up (already at bottom)
-            if self._is_output_at_bottom():
-                self._scroll_output_timer.stop()
-        else:
-            self._scroll_output_timer.stop()
 
     def _on_run_stdout_ready (self, text:str):
         tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
-            _output_append(tab.output_doc, text)
-            if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            tab.output_buffer.append((None, text))
+            self._check_buffer_overflow(tab)
 
     def _on_run_stderr_ready (self, text:str):
         tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
-            _output_append(tab.output_doc, text, QColor(128, 128, 128))
-            if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
-                if not self._scroll_output_timer.isActive():
-                    self._scroll_output_timer.start(50)
+            tab.output_buffer.append((QColor(128, 128, 128), text))
+            self._check_buffer_overflow(tab)
 
     #===== Tab Management =====
 
@@ -4012,6 +4028,9 @@ class MainWindow (QMainWindow):
             # Restore zoom font size
             zoom_size = max(6, self.settings.editor_font_size + new_tab.zoom_font_size)
             self.editor.setFontSize(zoom_size)
+
+            # Flush new tab's buffer so scroll position is correct
+            self._flush_output_buffer(new_tab)
         finally:
             # Unfreeze — document content displayed immediately
             self.editor.setUpdatesEnabled(True)
@@ -4073,7 +4092,7 @@ class MainWindow (QMainWindow):
                 remaining = proc_mgr.process.readAllStandardOutput()
                 if remaining and bytes(remaining):
                     text = proc_mgr._enc_mgr.decode_stdout(bytes(remaining))
-                    _output_append(tab.output_doc, text)
+                    tab.output_buffer.append((None, text))
                 remaining = proc_mgr.process.readAllStandardError()
                 if remaining and bytes(remaining):
                     if proc_mgr.mode == 'compile':
@@ -4081,7 +4100,10 @@ class MainWindow (QMainWindow):
                             bytes(remaining))
                     else:
                         text = proc_mgr._enc_mgr.decode_stderr(bytes(remaining))
-                        _output_append(tab.output_doc, text, QColor(128, 128, 128))
+                        tab.output_buffer.append(
+                            (QColor(128, 128, 128), text))
+            # Flush remaining output before cleanup
+            self._flush_output_buffer(tab)
             proc_mgr._cleanup()
             self.flow_ctrl.set_state(_FLOW_IDLE)
 
@@ -4401,7 +4423,6 @@ class MainWindow (QMainWindow):
         self.output_section.setEnabled(False)
         self.status_info.setText('')
         self._deferred_restore_tab = -1
-        self._scroll_output_timer.stop()
         self.setWindowTitle('CodeRunner')
 
     def _exit_zero_tab_state (self):

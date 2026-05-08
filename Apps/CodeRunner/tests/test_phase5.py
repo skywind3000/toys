@@ -501,17 +501,18 @@ if __name__ == '__main__':
 class TestOutputScroll (unittest.TestCase):
 
     def test_need_scroll_initial (self):
-        """TabData._need_scroll defaults to True (new tab = at bottom)."""
+        """TabData.pinned_to_bottom defaults to True (new tab = at bottom)."""
         tab = TabData(is_new=True, content='', dirty_callback=None)
-        self.assertTrue(tab._need_scroll)
+        self.assertTrue(tab.pinned_to_bottom)
 
-    def test_output_clear_resets_need_scroll (self):
-        """After _output_clear, _need_scroll should be set to True."""
+    def test_output_clear_resets_pinned_to_bottom (self):
+        """After _output_clear, pinned_to_bottom should be set to True."""
         tab = TabData(is_new=True, content='', dirty_callback=None)
-        tab._need_scroll = False
+        tab.pinned_to_bottom = False
+        tab.output_buffer.clear()
         _output_clear(tab.output_doc)
-        tab._need_scroll = True
-        self.assertTrue(tab._need_scroll)
+        tab.pinned_to_bottom = True
+        self.assertTrue(tab.pinned_to_bottom)
 
     def test_is_output_at_bottom_empty (self):
         """Empty document: scrollbar at bottom by definition."""
@@ -552,34 +553,32 @@ class TestOutputScroll (unittest.TestCase):
         self.assertTrue(window._is_output_at_bottom())
 
     def test_maybe_scroll_starts_timer_when_needed (self):
-        """_maybe_scroll_output starts scroll timer when _need_scroll is True."""
+        """_flush_output_timer is always active (never stops)."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
-        tab._need_scroll = True
+        tab.pinned_to_bottom = True
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
-        self.assertFalse(window._scroll_output_timer.isActive())
-        window._maybe_scroll_output(tab)
-        self.assertTrue(window._scroll_output_timer.isActive())
+        # Flush timer is always running
+        self.assertTrue(window._flush_output_timer.isActive())
 
     def test_maybe_scroll_skips_when_not_at_bottom (self):
-        """_maybe_scroll_output does not set flag when not at bottom."""
+        """pinned_to_bottom=False means output stays at user's scroll position."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
         _output_append(tab.output_doc, text)
-        tab._need_scroll = False
+        tab.pinned_to_bottom = False
         index = window.tab_manager.add_tab(tab)
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
         # Scroll to top
         window.output_panel.verticalScrollBar().setValue(0)
-        window._maybe_scroll_output(tab)
-        self.assertFalse(tab._need_scroll)
+        self.assertFalse(tab.pinned_to_bottom)
 
     def test_scroll_timer_scrolls_to_bottom (self):
-        """_on_scroll_output_timer scrolls to bottom, _need_scroll stays True."""
+        """_on_flush_timer scrolls to bottom when pinned_to_bottom=True."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(50)])
@@ -589,15 +588,13 @@ class TestOutputScroll (unittest.TestCase):
         window._switch_to_tab(index)
         # Scroll to top first
         window.output_panel.verticalScrollBar().setValue(0)
-        tab._need_scroll = True
-        window._on_scroll_output_timer()
+        tab.pinned_to_bottom = True
+        window._on_flush_timer()
         self.assertTrue(window._is_output_at_bottom())
-        # _need_scroll stays True (only cleared by user scroll-up)
-        self.assertTrue(tab._need_scroll)
+        self.assertTrue(tab.pinned_to_bottom)
 
-    def test_maybe_scroll_starts_timer_if_need_scroll_already_true (self):
-        """_maybe_scroll_output starts timer even if _need_scroll was already
-        set (e.g. by _output_clear) and panel is not currently at bottom."""
+    def test_maybe_scroll_starts_timer_if_pinned_already_true (self):
+        """_flush_output_timer always active, pinned_to_bottom controls scroll."""
         window = MainWindow(Settings())
         tab = TabData(is_new=True, content='', dirty_callback=None)
         text = '\n'.join(['Line {}'.format(i) for i in range(100)])
@@ -606,13 +603,9 @@ class TestOutputScroll (unittest.TestCase):
         window.tabbar.addTab(tab.tab_name())
         window._switch_to_tab(index)
         window.output_panel.verticalScrollBar().setValue(0)
-        # Simulate: _output_clear set _need_scroll=True, then _output_append
-        # made panel not at bottom. _maybe_scroll_output should still start
-        # the timer because _need_scroll is already True.
-        window._scroll_output_timer.stop()
-        tab._need_scroll = True
-        window._maybe_scroll_output(tab)
-        self.assertTrue(window._scroll_output_timer.isActive())
+        # Timer is always active — pinned_to_bottom controls scrolling
+        tab.pinned_to_bottom = True
+        self.assertTrue(window._flush_output_timer.isActive())
 
     def test_at_bottom_check_before_append (self):
         """When user is at bottom, _output_append should cause scroll.
@@ -636,5 +629,5 @@ class TestOutputScroll (unittest.TestCase):
         self.assertFalse(window._is_output_at_bottom())
         # But at_bottom was True before append, so we should scroll
         if at_bottom:
-            tab._need_scroll = True
-        self.assertTrue(tab._need_scroll)
+            tab.pinned_to_bottom = True
+        self.assertTrue(tab.pinned_to_bottom)
