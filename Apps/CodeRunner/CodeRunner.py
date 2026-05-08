@@ -55,8 +55,14 @@ _FLOW_COMPILING = 'compiling'
 _FLOW_RUNNING = 'running'
 
 # Windows NTSTATUS codes for common crash scenarios
-_DLL_NOT_FOUND = 0xC0000135   # STATUS_DLL_NOT_FOUND (-1073741515)
-_ACCESS_VIOLATION = 0xC0000005  # STATUS_ACCESS_VIOLATION (-1073741819)
+_DLL_NOT_FOUND = 0xC0000135      # STATUS_DLL_NOT_FOUND (-1073741515)
+_ACCESS_VIOLATION = 0xC0000005   # STATUS_ACCESS_VIOLATION (-1073741819)
+_STACK_OVERFLOW = 0xC00000FD     # STATUS_STACK_OVERFLOW (-1073741571)
+_INTEGER_DIVIDE_BY_ZERO = 0xC0000094  # STATUS_INTEGER_DIVIDE_BY_ZERO (-1073741676)
+_INTEGER_OVERFLOW = 0xC0000095  # STATUS_INTEGER_OVERFLOW (-1073741675)
+_FLOAT_DIVIDE_BY_ZERO = 0xC0000090  # STATUS_FLOAT_DIVIDE_BY_ZERO (-1073741680)
+_FLOAT_OVERFLOW = 0xC0000091    # STATUS_FLOAT_OVERFLOW (-1073741679)
+_HEAP_CORRUPTION = 0xC0000374   # STATUS_HEAP_CORRUPTION (-1073740956)
 
 # Common encodings for Reopen/Save with Encoding menu
 _COMMON_ENCODINGS = [
@@ -76,10 +82,22 @@ def _describe_exit_code (exit_code:int) -> str:
         return ''
     if exit_code < 0:
         code = exit_code & 0xFFFFFFFF
-        if code == _DLL_NOT_FOUND:
-            return 'DLL not found'
         if code == _ACCESS_VIOLATION:
             return 'Access violation'
+        if code == _STACK_OVERFLOW:
+            return 'Stack overflow'
+        if code == _INTEGER_DIVIDE_BY_ZERO:
+            return 'Integer divide by zero'
+        if code == _INTEGER_OVERFLOW:
+            return 'Integer overflow'
+        if code == _FLOAT_DIVIDE_BY_ZERO:
+            return 'Float divide by zero'
+        if code == _FLOAT_OVERFLOW:
+            return 'Float overflow'
+        if code == _DLL_NOT_FOUND:
+            return 'DLL not found'
+        if code == _HEAP_CORRUPTION:
+            return 'Heap corruption'
     return ''
 
 
@@ -236,6 +254,9 @@ def _read_file (path:str) -> tuple:
 #----------------------------------------------------------------------
 _CHARSET_NORMALIZE = {
     'cp936': 'gbk',
+    'cp932': 'shift_jis',
+    'cp949': 'euc-kr',
+    'cp950': 'big5',
     'cp1252': 'windows-1252',
     'cp1250': 'windows-1250',
     'cp1251': 'windows-1251',
@@ -1040,7 +1061,7 @@ class ProcessManager (QObject):
             self._stderr_buffer += text
 
     def _on_compile_finished (self, exit_code:int, exit_status):
-        if self._finished_emitted:
+        if self._finished_emitted or self.process is None:
             return
         self._finished_emitted = True
         self._stop_timeout_timer()
@@ -1111,7 +1132,7 @@ class ProcessManager (QObject):
             self.run_stderr_ready.emit(text)
 
     def _on_run_finished (self, exit_code:int, exit_status):
-        if self._finished_emitted:
+        if self._finished_emitted or self.process is None:
             return
         self._finished_emitted = True
         self._stop_timeout_timer()
