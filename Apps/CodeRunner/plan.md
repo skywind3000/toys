@@ -2,7 +2,7 @@
 
 ## 总览
 
-分 8 个阶段实施，每个阶段产出可独立运行的程序。阶段完成后需用户手工确认验收通过，才能进入下一阶段。
+分 11 个阶段实施，每个阶段产出可独立运行的程序。阶段完成后需用户手工确认验收通过，才能进入下一阶段。
 
 每个阶段可在新会话中实施：新会话读 prd.md → spec.md → plan.md → 当前 CodeRunner.py，找到第一个 `pending` 阶段开始工作。完成后将该阶段状态改为 `done`，用户验收确认后才能推进下一阶段。
 
@@ -16,6 +16,9 @@
 | 6. 设置与持久化 | done |
 | 7. 查找替换与收尾 | done |
 | 8. 编辑器增强与体验优化 | done |
+| 9. OutputPanel: pinned_to_bottom 状态重构 | pending |
+| 10. OutputPanel: buffer + flush timer 机制 | pending |
+| 11. OutputPanel: 交互式 flush 与清理 | pending |
 
 ## 阶段 1：骨架与布局 **[done]**
 
@@ -363,3 +366,107 @@
 - [ ] 保存文件时行尾空白被自动清理
 - [ ] 编辑器右键菜单包含 Comment/Uncomment、Indent、Unindent、Duplicate Line、Delete Line
 - [ ] Edit 菜单包含新增的所有动作项
+
+---
+
+## 阶段 9：OutputPanel — pinned_to_bottom 状态重构 **[pending]**
+
+**目标**：将 `_need_scroll` 替换为语义更清晰的 `pinned_to_bottom`，引入 `__programmatic_scroll` 标志区分用户与程序滚动，改进 tab 切换时的输出面板 scroll 位置恢复。此阶段不引入 buffer 机制，输出仍直接写入 document。
+
+**具体内容**：
+
+1. TabData：`_need_scroll` → `pinned_to_bottom`（初始 True）
+2. 所有 `tab._need_scroll = True` 赋值点 → `tab.pinned_to_bottom = True`（约 15 处）
+3. 所有 `tab._need_scroll` 读取点 → `tab.pinned_to_bottom`
+4. MainWindow：新增 `__programmatic_scroll = False` 属性
+5. `_on_output_scroll_changed`：`__programmatic_scroll` 为 True 时忽略；不在底部 → pinned=False；在底部 → pinned=True
+6. `_on_scroll_output_timer` → `_on_scroll_output_timer`（名称暂不变），程序性滚动前设 `__programmatic_scroll=True`，滚动后设 `False`
+7. `_switch_to_tab`：恢复 output_scroll 时，pinned=True → setValue(maximum)；pinned=False → setValue(saved_output_scroll)
+8. 程序启动（进入 compiling / running 状态时）重置 `pinned_to_bottom = True`
+9. OutputPanel.keyPressEvent End 键：设置 pinned=True + 启动 scroll timer + 滚到底部
+10. `_output_clear` + `pinned_to_bottom=True` 组合保持不变（清空后视为在底部）
+
+**不改的部分**：
+- `_output_append` 仍直接写入 document（buffer 机制在阶段 10）
+- `_scroll_output_timer` 仍用 start/stop（永不停 timer 在阶段 10）
+- `scroll_requested` 信号暂不移除（阶段 10 移除）
+
+**手动验收清单**：
+- [ ] 编译/运行输出自动滚到底部，新输出持续跟随
+- [ ] 手动将输出滚动条往上拉 → 新输出不再自动滚动（pinned=False）
+- [ ] 滚动条拉回底部 → 新输出恢复自动滚动（pinned=True）
+- [ ] 按 End 键 → 滚到底部 + 恢复自动跟随
+- [ ] 编译/运行开始时自动重置为 pinned=True
+- [ ] pinned=False 时切换到其他 tab 再切回 → 输出面板恢复到之前看的位置（不是底部）
+- [ ] pinned=True 时切换 tab 再切回 → 输出面板在底部
+- [ ] 程序性滚动不误触发 pinned 状态变化
+
+---
+
+## 阶段 10：OutputPanel — buffer + flush timer 机制 **[pending]**
+
+**目标**：引入 output_buffer 和永不停止的全局 flush timer，所有输出通过 buffer → merge → flush 写入 document，移除旧的 scroll_requested 信号。
+
+**前置依赖**：阶段 9 完成（pinned_to_bottom 机制已就位）
+
+**具体内容**：
+
+1. TabData：新增 `output_buffer = []` 字段
+2. 所有 `_output_append(tab.output_doc, text, color)` 调用 → `tab.output_buffer.append((color, text))`（约 15 处）
+3. `_output_clear(tab.output_doc)` 调用点 → 附加 `tab.output_buffer.clear()` + `tab.pinned_to_bottom = True`
+4. FlowController 中直接 `_output_append` 写入 output_doc 的地方（编译错误行、退出状态行等）→ 改为 `tab.output_buffer.append((color, text))`
+5. 新增 `_flush_output_buffer(tab)` 方法：合并相邻同 color → QTextCursor 逐条写入 output_doc → 清空 buffer
+6. `_scroll_output_timer` → `_flush_output_timer`：改为永不停（__init_connections 中 start，不再 start/stop）
+7. `_on_scroll_output_timer` → `_on_flush_timer`：每 tick 遍历所有 tab，buffer 非空则 flush；当前 tab 且 pinned=True 则程序性滚动到底部
+8. 移除 `scroll_requested` 信号及 `_on_flow_scroll_requested` 连接
+9. FlowController 中所有 `self.scroll_requested.emit(tab)` → 移除（滚动由 timer tick 统一负责）
+10. 移除 `_maybe_scroll_output` 方法
+11. 大输出保护：buffer 超 64KB 或 200 条时，立即调用 `_flush_output_buffer(tab)` + scroll
+12. InputPanel stdin 提交（Enter 发送）时，立即 flush 当前 tab（不等 tick）
+
+**不改的部分**：
+- `_output_append` 函数保留，仅供 `_flush_output_buffer` 内部调用（外部入口全部改用 buffer）
+- `_output_clear` 函数保留
+- pinned_to_bottom 逻辑不变（阶段 9 已完成）
+
+**手动验收清单**：
+- [ ] 编译输出（错误信息红色）正确显示
+- [ ] Test 运行 stdout/stderr 输出正确，颜色区分
+- [ ] 高频输出（循环 print 1000+ 行）不卡顿
+- [ ] 交互式程序（scanf + printf）prompt 快速显示
+- [ ] 非当前 tab 运行中切回 → 输出完整显示
+- [ ] pinned=True 时新输出自动滚底
+- [ ] pinned=False 时新输出不滚底
+- [ ] 编译/运行开始时 pinned 重置为 True
+- [ ] Timer 永不停，不出现 isActive/start/stop 调用
+
+---
+
+## 阶段 11：OutputPanel — 交互式 flush 与清理 **[pending]**
+
+**目标**：完善交互式程序的即时 flush，清理废弃代码，运行质量检查。
+
+**前置依赖**：阶段 10 完成（buffer + flush 机制已就位）
+
+**具体内容**：
+
+1. stdin 提交即时 flush：确认 InputPanel Enter 键提交时调用 `_immediate_flush(current_tab)`，flush 后若 pinned=True 则立即 scroll
+2. 清理废弃代码：
+   - 移除 `_output_append` 函数（如果 `_flush_output_buffer` 已内联了 cursor 逻辑，则 `_output_append` 不再有任何调用者）
+   - 移除 `_maybe_scroll_output`（阶段 10 已移除则跳过）
+   - 确认所有 `_need_scroll` 引用已消失
+   - 确认 `scroll_requested` 信号和 `_on_flow_scroll_requested` 已移除
+3. 代码质量检查：
+   - pylint：排除 PyQt5 动态导入误报、E211/E231/E252/E265 等
+   - flake8：排除项目规定风格
+   - pyflakes：未使用导入和变量
+4. 同步更新文档：
+   - 确认 refactor_draft.md 内容与代码一致
+   - 确认 spec.md 内容与代码一致
+
+**手动验收清单**：
+- [ ] 交互式程序（scanf 等待输入）prompt 立即显示，不等 50ms
+- [ ] 所有原有功能正常（编译/Test/Run/Stop/Build/清空/颜色/滚动）
+- [ ] pylint/flake8/pyflakes 无实际问题（仅风格争议可忽略）
+- [ ] 代码中无 `_need_scroll` / `scroll_requested` / `_maybe_scroll_output` 残留
+- [ ] spec.md 与代码一致

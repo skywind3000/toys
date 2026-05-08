@@ -19,7 +19,7 @@
 | LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor | 1555 |
 | CodeEditor | FileDragMixin, QTextEdit | 代码编辑器（setAcceptRichText=False） | 1571 |
 | InputPanel | _IOPanelBase | 输入面板（setAcceptRichText=False） | 2462 |
-| OutputPanel | _IOPanelBase | 输出面板（只读，支持多色富文本） | 2528 |
+| OutputPanel | _IOPanelBase | 输出面板（只读，buffer+flush 机制，pinned_to_bottom 滚动） | 2528 |
 | SettingsDialog | QDialog | 设置面板（三页 Tab） | 2589 |
 | FindDialog | QDialog | 非模态查找对话框 | 2933 |
 | ReplaceDialog | QDialog | 非模态替换对话框 | 3012 |
@@ -43,7 +43,7 @@
 | `_auto_detect_compiler()` | 搜索常见路径+PATH 查找 g++/gcc |
 | `_describe_exit_code(code)` | Windows NTSTATUS 码可读描述 |
 | `_output_clear(doc)` | 清空 QTextDocument 内容 |
-| `_output_append(doc, text, color)` | 追加文本（可选颜色）到 QTextDocument |
+| `_output_append(doc, text, color)` | 追加文本（可选颜色）到 QTextDocument（仅供内部 flush 使用，外部入口改用 output_buffer） |
 | `_strip_trailing_whitespace(text)` | 字符串级行尾空白清理 |
 | `_strip_trailing_whitespace_in_doc(doc)` | QTextDocument 内 cursor 操作原地清理行尾空白 |
 | `_icon_canvas(dpi)` | 创建 icon pixmap+painter |
@@ -94,14 +94,13 @@
 ProcessManager ───────────────────────────────────────────────
   compile_finished(exit_code, stderr, reason)  ──→  FlowController.on_compile_finished
   run_finished(exit_code, elapsed, peak, reason, error_detail) ──→  FlowController.on_run_finished
-  run_stdout_ready(text)  ──→  MainWindow._on_run_stdout_ready ──→  _output_append + start scroll timer
-  run_stderr_ready(text)  ──→  MainWindow._on_run_stderr_ready ──→  _output_append + start scroll timer
+  run_stdout_ready(text)  ──→  MainWindow._on_run_stdout_ready ──→  tab.output_buffer.append((None, text))
+  run_stderr_ready(text)  ──→  MainWindow._on_run_stderr_ready ──→  tab.output_buffer.append((gray, text))
 
 FlowController ──────────────────────────────────────────────
   state_changed(str)         ──→  MainWindow._update_status_from_state
   status_message(str)        ──→  MainWindow._update_status_message
   busy_message_requested()   ──→  MainWindow._show_busy_message
-  scroll_requested(TabData)  ──→  MainWindow._on_flow_scroll_requested
   terminal_requested(TabData)──→  MainWindow._on_terminal_requested
 
 TabData ──────────────────────────────────────────────────────
@@ -112,7 +111,8 @@ MainWindow ───────────────────────
   tabbar.tabCloseRequested    ──→  _on_tab_close_requested ──→  _handle_close_tab
   tabbar.tabMoved             ──→  _on_tab_moved ──→  TabManager.reorder_tabs
   editor.cursorPositionChanged──→  _on_cursor_position_changed ──→  _update_status_info
-  output_panel.vScrollBar.valueChanged──→  _on_output_scroll_changed ──→  tab._need_scroll = False
+  output_panel.vScrollBar.valueChanged──→  _on_output_scroll_changed ──→  pinned_to_bottom 管理
+  _flush_output_timer (50ms, never stops) ──→  _on_flush_timer ──→  扫描各 tab: flush buffer + scroll if pinned
 ```
 
 ### 0.5 MainWindow 方法索引
@@ -147,16 +147,16 @@ MainWindow ───────────────────────
 | **Flow 信号** | `_update_status_from_state` | idle→Ready, compiling→Compiling..., running→Running... |
 | | `_update_status_message` | 覆盖 status bar 左侧 |
 | | `_show_busy_message` | QMessageBox.information |
-| | `_on_flow_scroll_requested` | → `_maybe_scroll_output` |
 | | `_on_terminal_requested` | → `_launch_terminal` + error handling |
 | **Settings** | `_action_settings` | SettingsDialog → `_apply_settings` |
 | | `_apply_settings` | 更新所有 widget 字体/缩进/wrap/compiler_mtime |
 | | `_launch_terminal` | 创建 bat/env → QProcess.startDetached |
-| **Output 滚动** | `_maybe_scroll_output` | 启动 50ms scroll timer |
+| **Output 滚动** | `_on_flush_timer` | 50ms 全局 timer，扫描各 tab flush buffer + scroll if pinned |
+| | `_flush_output_buffer` | 合并相邻同色条目 → 写入 output_doc |
+| | `_immediate_flush` | 立即 flush 当前 tab（stdin 提交 / 大输出保护时调用） |
 | | `_is_output_at_bottom` | sb.maximum() - sb.value() ≤ 3 |
-| | `_on_output_scroll_changed` | 用户 scroll-up → _need_scroll=False |
-| | `_on_scroll_output_timer` | 批量滚动到底部 |
-| | `_on_run_stdout/stderr_ready` | `_output_append` + scroll timer |
+| | `_on_output_scroll_changed` | 用户 scroll-up → pinned=False；scroll to bottom → pinned=True |
+| | `_on_run_stdout/stderr_ready` | `tab.output_buffer.append((color, text))` |
 | **Tab 管理** | `_save_widget_state` | cursor/scroll/input_cursor/input_scroll/output_scroll → tab |
 | | `_switch_to_tab` | 保存旧/交换文档/恢复 IO/延迟恢复 editor |
 | | `_handle_close_tab` | dirty确认/disconnect/remove/零标签切换/进程清理 |
@@ -225,7 +225,8 @@ class TabData:
     zoom_font_size: int         # 字号偏移量（非绝对字号），会话级不持久化
     compiler_mtime: float       # 上次编译时的参数修改时间戳
     _highlight_pending: bool    # 分批高亮尚未完成
-    _need_scroll: bool          # 输出面板自动滚动标志
+    pinned_to_bottom: bool      # 输出面板是否自动跟随最新输出（替代旧 _need_scroll）
+    output_buffer: list         # [(color, text)] 缓冲列表，由 flush timer 定期写入 output_doc
     _dirty_callback: callable   # dirty 变化时回调 MainWindow
     highlighter: CppHighlighter # 挂载在 editor_doc 上
 ```
@@ -262,7 +263,7 @@ class TabManager:
 5. 恢复 IO 面板光标（小文档，无延迟）
 6. 恢复 zoom 字号
 7. `setUpdatesEnabled(True)` 解冻 — 文档内容瞬间显示
-8. 恢复输出面板滚动位置（`_need_scroll` 时滚到底部，否则恢复保存值）
+8. 恢复输出面板滚动位置（pinned_to_bottom=True 时滚到底部，否则恢复保存的 output_scroll）
 9. 设置 tabbar currentIndex（`_tab_switching=True` 阻止 currentChanged 信号）
 10. `QTimer.singleShot(0)` 延迟恢复编辑器光标和滚动位置（避免 setTextCursor 的全文档布局开销）
 11. 延迟回调检查标签索引是否仍是当前标签，防止快速切换竞态
@@ -293,7 +294,8 @@ class MainWindow(QMainWindow):
     empty_output_doc: QTextDocument
     _find_dialog: FindDialog          # 惰性创建，初始 None
     _replace_dialog: ReplaceDialog    # 惰性创建，初始 None
-    _scroll_output_timer: QTimer      # 输出滚动 timer（50ms）
+    _flush_output_timer: QTimer     # 输出 flush timer（50ms，永不停止）
+    __programmatic_scroll: bool     # True 时忽略 scrollbar valueChanged
     _tab_switching: bool              # True 时阻止 currentChanged 信号
     _deferred_restore_tab: int        # 延迟恢复标签索引，-1 = 无
     _last_file_dir: str               # 最近文件目录
@@ -307,7 +309,7 @@ class MainWindow(QMainWindow):
 QTextEdit 始终持有一个 QTextDocument，不能为 null。采用**初始 document 占位**策略：
 
 - MainWindow.__init_widgets 创建三个独立的空 QTextDocument 作为占位（`self.empty_editor_doc = QTextDocument(self)` 等），设置 MainWindow 为 parent
-- 进入零标签状态：切回空 document，editor `setEnabled(False)` + `setExtraSelections([])` + 隐藏行号区域，input/output section `setEnabled(False)` 灰显，状态栏右侧清空，停止 scroll timer
+- 进入零标签状态：切回空 document，editor `setEnabled(False)` + `setExtraSelections([])` + 隐藏行号区域，input/output section `setEnabled(False)` 灰显，状态栏右侧清空
 - 恢复：切回新标签 document，面板 `setEnabled(True)`，editor 行号区域 show
 
 ### 2.5 Settings
@@ -493,7 +495,24 @@ Mixin 类（非 QObject），三个方法 override：`dragEnterEvent`、`dragMov
 
 继承 `_IOPanelBase`（只读），外层 `_make_io_section` 包装（QWidget + QLabel "OUTPUT"）。setDocument() 由基类提供。支持多色富文本。
 
-**自动滚动**：仅当 `_need_scroll` 标志为 True 时才自动跟随新输出。用户翻看历史输出时 scroll-up 触发 `_on_output_scroll_changed` 设 `_need_scroll=False` 并停止 timer。END 键恢复 `_need_scroll=True` 并启动 scroll timer（OutputPanel.keyPressEvent 处理）。滚动通过 per-tab 的 `_need_scroll` 标志和 50ms 共享 `_scroll_output_timer` 批量执行，避免逐行滚动影响性能。每次 `_output_clear` 后视为"在底部"（`_need_scroll=True`），新内容开始后默认自动跟踪。`_is_output_at_bottom()` 判断滚动条距离底部不超过 3px 即视为在底部。Copy 操作支持 Ctrl+C 和 Ctrl+Insert。
+**输出机制**：所有输出数据不直接写入 output_doc，而是追加到 TabData 的 `output_buffer` 列表（`(color, text)` 元组）。全局 `_flush_output_timer`（50ms 间隔，永不停止）定期扫描每个 tab 的 buffer：
+
+1. buffer 非空时：合并相邻同 color 条目 → 逐条用 QTextCursor 写入 output_doc → 清空 buffer
+2. 当前 tab 且 `pinned_to_bottom=True` 时：滚动到最后一行
+3. 非当前 tab：仅 flush，不滚动
+4. tab 切换时：若新 tab `pinned_to_bottom=True` 则滚到底部，否则恢复保存的 `output_scroll`
+
+**大输出保护**：buffer 积累超过 64KB 或 200 条时，立即执行 flush + scroll（不等 tick）。stdin 提交时也立即 flush 当前 tab，保证交互式程序 prompt 快速显示。
+
+**pinned_to_bottom 状态管理**：
+
+- 初始化 / 清空 OutputPanel / 程序启动（进入 compiling/running）时设为 True
+- 用户将滚动条往上拉（离开最后一行）时设为 False
+- 用户将滚动条拉回最后一行时设为 True
+- End 键：设为 True 并立即滚到底部（OutputPanel.keyPressEvent 处理 `Qt.Key_End`）
+- `_is_output_at_bottom()` 判断距离底部不超过 3px 即视为在底部
+
+**区分用户滚动与程序滚动**：Timer tick 中的程序性滚动会触发 scrollbar valueChanged。引入 `MainWindow.__programmatic_scroll` 布尔标志，程序性滚动前设为 True，完成后设为 False。`_on_output_scroll_changed` 检测到 `__programmatic_scroll=True` 时忽略，不改变 pinned 状态。
 
 **颜色规范**：
 
@@ -580,7 +599,6 @@ class FlowController(QObject):
         state_changed(str)        # 状态名 → MainWindow._update_status_from_state
         status_message(str)       # 具体结果消息 → MainWindow._update_status_message
         busy_message_requested()  # → MainWindow._show_busy_message
-        scroll_requested(TabData) # → MainWindow._on_flow_scroll_requested
         terminal_requested(TabData) # → MainWindow._on_terminal_requested
 ```
 
@@ -597,13 +615,13 @@ class FlowController(QObject):
 | get_exe_path(tab) | 源文件同目录 + .exe（Windows）/ 无扩展名（其他） |
 | build_compile_command(tab) | [resolved_compiler] [编码flags] [用户flags] source.cpp -o source.exe -lstdc++ |
 | make_process_env() | QProcessEnvironment.systemEnvironment + env_vars + bin_dir PATH prepend |
-| clear_and_start_compile(tab) | _output_clear + "Compiling..." + start_compile + scroll_requested |
-| start_test_run(tab) | _output_clear + start_test_run + stdin from input_doc |
+| clear_and_start_compile(tab) | output_buffer.clear + _output_clear + "Compiling..." + pinned_to_bottom=True + start_compile |
+| start_test_run(tab) | output_buffer.clear + _output_clear + pinned_to_bottom=True + start_test_run + stdin from input_doc |
 | count_compile_errors(stderr) | 统计 `: error:` 行数，无则返回 1 或 0 |
 | on_compile_finished(exit_code, stderr, reason) | 编译完成回调：状态转移 + 写 output_doc + emit signal |
 | on_run_finished(exit_code, elapsed, peak, reason, error_detail) | 运行完成回调：状态转移 + 写 output_doc + emit signal |
 
-**信号分工**：FlowController 直接操作 `tab.output_doc`（QTextDocument 是纯数据），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。`run_stdout_ready/run_stderr_ready` 由 MainWindow 接收后直接调用 `_output_append` 写入 output_doc，并启动 scroll timer（如果 `_need_scroll` 且当前标签页匹配）。
+**信号分工**：FlowController 直接操作 `tab.output_buffer`（追加 (color, text) 元组）和 `tab.output_doc`（清空、写入编译/运行结果行），需要 Widget 的操作通过 signal 委托 MainWindow。`state_changed` 发出状态名（idle/compiling/running）用于 status bar 默认文本；`status_message` 发出具体结果文本覆盖 status bar。`run_stdout_ready/run_stderr_ready` 由 MainWindow 接收后追加到对应 tab 的 `output_buffer`，全局 `_flush_output_timer` 定期 flush 到 output_doc 并处理滚动。
 
 **状态机**：FlowController 使用显式状态机：`state`（IDLE/COMPILING/RUNNING）、`intent`（build/test/run）、`tab`。
 
@@ -950,3 +968,10 @@ def main():
 | 编译器路径验证 | SettingsDialog OK 时检查绝对/相对路径是否存在，裸名不检查（由 PATH 展开），不阻止保存 |
 | About 对话框 | Help 菜单 About 项，显示作者和时间 |
 | MainWindow 冗余 IDLE 检查 | _action_build/run/test 在调 FlowController 前先检查 IDLE 状态，FlowController 入口方法也检查，双重保护 |
+| output_buffer + flush timer | 输出先追加到 per-tab buffer，全局 50ms timer 定期 merge+flush 到 output_doc，减少高频输出的 cursor 操作 |
+| pinned_to_bottom 替代 _need_scroll | 语义更清晰：True=自动跟随新输出，False=用户在看老输出 |
+| 全局 timer 永不停 | 不需要 start/stop，每 tick 只做有意义的操作，空循环开销极低 |
+| 相邻同色合并 flush | 连续相同 color 的 buffer 条目合并为一条 cursor insert，减少 QTextCharFormat 切换次数 |
+| __programmatic_scroll 标志 | 区分 timer 的程序性滚动与用户手动滚动，避免程序性滚动误改 pinned 状态 |
+| stdin 提交即时 flush | 交互式程序 stdin 按回车后立即 flush buffer，prompt 不等 50ms tick |
+| 大输出保护 | buffer 超 64KB/200 条立即 flush，防止高频输出 buffer 膨胀 |
