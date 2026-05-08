@@ -155,7 +155,7 @@ MainWindow ───────────────────────
 | | `_flush_output_buffer` | 合并相邻同色条目 → 写入 output_doc |
 | | `_immediate_flush` | 立即 flush 当前 tab（stdin 提交 / 大输出保护时调用） |
 | | `_is_output_at_bottom` | sb.maximum() - sb.value() ≤ 3 |
-| | `_on_output_scroll_changed` | 用户 scroll-up → pinned=False；scroll to bottom → pinned=True |
+| | `_on_output_scroll_changed` | __programmatic_scroll=True → 忽略；用户 scroll-up → pinned=False；scroll to bottom → pinned=True |
 | | `_on_run_stdout/stderr_ready` | `tab.output_buffer.append((color, text))` |
 | **Tab 管理** | `_save_widget_state` | cursor/scroll/input_cursor/input_scroll/output_scroll → tab |
 | | `_switch_to_tab` | 保存旧/交换文档/恢复 IO/延迟恢复 editor |

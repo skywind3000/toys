@@ -16,7 +16,7 @@
 | 6. 设置与持久化 | done |
 | 7. 查找替换与收尾 | done |
 | 8. 编辑器增强与体验优化 | done |
-| 9. OutputPanel: pinned_to_bottom 状态重构 | pending |
+| 9. OutputPanel: pinned_to_bottom 状态重构 | done |
 | 10. OutputPanel: buffer + flush timer 机制 | pending |
 | 11. OutputPanel: 交互式 flush 与清理 | pending |
 
@@ -369,7 +369,7 @@
 
 ---
 
-## 阶段 9：OutputPanel — pinned_to_bottom 状态重构 **[pending]**
+## 阶段 9：OutputPanel — pinned_to_bottom 状态重构 **[done]**
 
 **目标**：将 `_need_scroll` 替换为语义更清晰的 `pinned_to_bottom`，引入 `__programmatic_scroll` 标志区分用户与程序滚动，改进 tab 切换时的输出面板 scroll 位置恢复。此阶段不引入 buffer 机制，输出仍直接写入 document。
 

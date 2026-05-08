@@ -769,7 +769,7 @@ class TabData:
         self.zoom_font_size = 0
         self.compiler_mtime = 0
         self._highlight_pending = True
-        self._need_scroll = True  # auto-scroll when output is at bottom
+        self.pinned_to_bottom = True  # auto-scroll when output is at bottom
 
         # Set initial content without triggering modificationChanged
         self.editor_doc.blockSignals(True)
@@ -1298,7 +1298,7 @@ class FlowController (QObject):
     def clear_and_start_compile (self, tab):
         """Clear output and start compilation."""
         _output_clear(tab.output_doc)
-        tab._need_scroll = True
+        tab.pinned_to_bottom = True
         _output_append(tab.output_doc, 'Compiling...\n',
                        QColor(128, 128, 128))
         command = self.build_compile_command(tab)
@@ -1321,7 +1321,7 @@ class FlowController (QObject):
         stdin_data = self.enc_mgr.encode_stdin(stdin_text)
         env = self.make_process_env()
         _output_clear(tab.output_doc)
-        tab._need_scroll = True
+        tab.pinned_to_bottom = True
         self.proc_mgr.target_tab = tab
         self.proc_mgr.start_test_run(
             exe_path, work_dir, env, stdin_data,
@@ -1348,7 +1348,7 @@ class FlowController (QObject):
             return
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             compiler = self.settings.compiler_path
             _output_append(
                 tab.output_doc,
@@ -1368,7 +1368,7 @@ class FlowController (QObject):
         elif reason == 'timeout':
             elapsed = time.time() - self.proc_mgr.start_time
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             _output_append(
                 tab.output_doc,
                 'Compilation timeout after {} seconds (ran {:.3}s)\n'.format(
@@ -1380,7 +1380,7 @@ class FlowController (QObject):
         elif reason == 'killed':
             elapsed = time.time() - self.proc_mgr.start_time
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             _output_append(
                 tab.output_doc,
                 'Compilation stopped in {:.3}s\n'.format(elapsed),
@@ -1390,7 +1390,7 @@ class FlowController (QObject):
             self.status_message.emit('Compilation stopped')
         elif exit_code != 0:
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             _output_append(tab.output_doc, stderr_text, QColor(Qt.red))
             n = self.count_compile_errors(stderr_text)
             self.set_state(_FLOW_IDLE)
@@ -1402,7 +1402,7 @@ class FlowController (QObject):
             if self.intent == 'build':
                 elapsed = time.time() - self.proc_mgr.start_time
                 _output_clear(tab.output_doc)
-                tab._need_scroll = True
+                tab.pinned_to_bottom = True
                 _output_append(
                     tab.output_doc,
                     'Build OK in {:.3}s\n'.format(elapsed),
@@ -1416,7 +1416,7 @@ class FlowController (QObject):
             elif self.intent == 'run':
                 elapsed = time.time() - self.proc_mgr.start_time
                 _output_clear(tab.output_doc)
-                tab._need_scroll = True
+                tab.pinned_to_bottom = True
                 _output_append(
                     tab.output_doc,
                     'Build OK in {:.3}s\n'.format(elapsed),
@@ -1439,7 +1439,7 @@ class FlowController (QObject):
             return
         if reason == 'failed_to_start':
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             _output_append(tab.output_doc,
                            'Failed to start program\n',
                            QColor(Qt.red))
@@ -2568,15 +2568,18 @@ class OutputPanel (_IOPanelBase):
                     and event.modifiers() == Qt.ControlModifier)):
             self.copy()
             return
-        # END key: re-enter auto-scroll mode (mark current tab for scroll)
+        # END key: re-enter auto-scroll mode and scroll to bottom
         if event.key() == Qt.Key_End:
             super().keyPressEvent(event)
             win = self.window()
             if hasattr(win, 'tab_manager'):
                 tab = win.tab_manager.get_current()
                 if tab:
-                    tab._need_scroll = True
-                    win._scroll_output_timer.start(50)
+                    tab.pinned_to_bottom = True
+                    win.__programmatic_scroll = True
+                    self.verticalScrollBar().setValue(
+                        self.verticalScrollBar().maximum())
+                    win.__programmatic_scroll = False
             return
         super().keyPressEvent(event)
 
@@ -3222,6 +3225,7 @@ class MainWindow (QMainWindow):
     def __init_core_state (self):
         self.tab_manager = TabManager()
         self._tab_switching = False
+        self.__programmatic_scroll = False
         self._last_file_dir = ''
         self._deferred_restore_tab = -1
         self._recent_files = []
@@ -3779,7 +3783,7 @@ class MainWindow (QMainWindow):
             self.status_message.setText('Running in terminal')
         else:
             _output_clear(tab.output_doc)
-            tab._need_scroll = True
+            tab.pinned_to_bottom = True
             _output_append(tab.output_doc,
                            'Failed to launch terminal\n',
                            QColor(Qt.red))
@@ -3901,8 +3905,8 @@ class MainWindow (QMainWindow):
 
     def _maybe_scroll_output (self, tab:TabData):
         """Start scroll timer if auto-scroll is active for this tab.
-        _need_scroll stays True until user scrolls up — don't reset it here."""
-        if tab is self.tab_manager.get_current() and tab._need_scroll:
+        pinned_to_bottom stays True until user scrolls up — don't reset it here."""
+        if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
             if not self._scroll_output_timer.isActive():
                 self._scroll_output_timer.start(50)
 
@@ -3912,23 +3916,30 @@ class MainWindow (QMainWindow):
         return sb.maximum() - sb.value() <= 3
 
     def _on_output_scroll_changed (self):
-        """Detect user scrolling up in output panel — deactivate auto-scroll.
-        Programmatic scrolls (from _on_scroll_output_timer) land at bottom,
-        so _is_output_at_bottom() is True and _need_scroll stays True.
-        Only a genuine user scroll-up makes _is_output_at_bottom() False."""
+        """Detect user scrolling in output panel — update pinned state.
+        __programmatic_scroll=True means timer did the scroll, ignore it.
+        User scroll away from bottom → pinned=False; scroll to bottom → pinned=True."""
+        if self.__programmatic_scroll:
+            return
         tab = self.tab_manager.get_current()
-        if tab and not self._is_output_at_bottom():
-            tab._need_scroll = False
+        if not tab:
+            return
+        if self._is_output_at_bottom():
+            tab.pinned_to_bottom = True
+        else:
+            tab.pinned_to_bottom = False
             self._scroll_output_timer.stop()
 
     def _on_scroll_output_timer (self):
         """Batched scroll: scroll to bottom if auto-scroll is active.
-        _need_scroll stays True until user scrolls up — don't reset it.
+        pinned_to_bottom stays True until user scrolls up — don't reset it.
         Stop timer when caught up (at bottom after scroll)."""
         tab = self.tab_manager.get_current()
-        if tab and tab._need_scroll:
+        if tab and tab.pinned_to_bottom:
+            self.__programmatic_scroll = True
             self.output_panel.verticalScrollBar().setValue(
                 self.output_panel.verticalScrollBar().maximum())
+            self.__programmatic_scroll = False
             # Stop timer when caught up (already at bottom)
             if self._is_output_at_bottom():
                 self._scroll_output_timer.stop()
@@ -3939,7 +3950,7 @@ class MainWindow (QMainWindow):
         tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text)
-            if tab is self.tab_manager.get_current() and tab._need_scroll:
+            if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
                 if not self._scroll_output_timer.isActive():
                     self._scroll_output_timer.start(50)
 
@@ -3947,7 +3958,7 @@ class MainWindow (QMainWindow):
         tab = self.flow_ctrl.proc_mgr.target_tab
         if tab:
             _output_append(tab.output_doc, text, QColor(128, 128, 128))
-            if tab is self.tab_manager.get_current() and tab._need_scroll:
+            if tab is self.tab_manager.get_current() and tab.pinned_to_bottom:
                 if not self._scroll_output_timer.isActive():
                     self._scroll_output_timer.start(50)
 
@@ -4008,9 +4019,11 @@ class MainWindow (QMainWindow):
             self.output_panel.setUpdatesEnabled(True)
 
             # Restore output scroll position
-            if new_tab._need_scroll:
+            if new_tab.pinned_to_bottom:
+                self.__programmatic_scroll = True
                 self.output_panel.verticalScrollBar().setValue(
                     self.output_panel.verticalScrollBar().maximum())
+                self.__programmatic_scroll = False
             else:
                 self.output_panel.verticalScrollBar().setValue(
                     new_tab.output_scroll)
