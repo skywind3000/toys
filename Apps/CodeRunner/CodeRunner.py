@@ -52,7 +52,7 @@ except ImportError:
 #----------------------------------------------------------------------
 CR_VERSION_MAJOR = 1
 CR_VERSION_MINOR = 0
-CR_VERSION_PATCH = 0
+CR_VERSION_PATCH = 1
 
 CR_VERSION_TEXT = '{}.{}.{}'.format(
     CR_VERSION_MAJOR, CR_VERSION_MINOR, CR_VERSION_PATCH)
@@ -3274,7 +3274,7 @@ class MainWindow (QMainWindow):
             settings.load()
             _init_font_defaults(settings)
         self.settings = settings
-        self.setWindowTitle('CodeRunner')
+        self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
         self.resize(1000, 650)
         # Center window on screen
         screen = QApplication.primaryScreen()
@@ -3849,8 +3849,8 @@ class MainWindow (QMainWindow):
     def _action_about (self):
         QMessageBox.about(
             self, 'About CodeRunner',
-            'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
-                time.strftime('%Y/%m/%d %H:%M:%S')))
+            'CodeRunner {}\n\nAuthor: skywind3000\n{}'.format(
+                CR_VERSION_TEXT, time.strftime('%Y/%m/%d %H:%M:%S')))
 
     #===== Flow state signal handlers =====
 
@@ -4401,14 +4401,14 @@ class MainWindow (QMainWindow):
         """Update main window title based on current tab state."""
         tab = self.tab_manager.get_current()
         if tab is None or tab.is_new:
-            self.setWindowTitle('CodeRunner')
+            self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
         else:
             name = os.path.basename(tab.file_path)
             dir_path = os.path.dirname(tab.file_path)
             if sys.platform == 'win32':
                 dir_path = dir_path.replace('/', '\\')
             self.setWindowTitle(
-                '{} ({}) - CodeRunner'.format(name, dir_path))
+                '{} ({}) - CodeRunner {}'.format(name, dir_path, CR_VERSION_TEXT))
 
     #===== File Save & Confirm Dialogs =====
 
@@ -4542,7 +4542,7 @@ class MainWindow (QMainWindow):
         self.output_section.setEnabled(False)
         self.status_info.setText('')
         self._deferred_restore_tab = -1
-        self.setWindowTitle('CodeRunner')
+        self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
