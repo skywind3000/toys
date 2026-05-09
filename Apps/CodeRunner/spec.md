@@ -19,7 +19,7 @@
 | LineNumberArea | QWidget | 行号区域，paintEvent 委托给 CodeEditor | 1615 |
 | CodeEditor | FileDragMixin, QTextEdit | 代码编辑器（setAcceptRichText=False） | 1631 |
 | InputPanel | _IOPanelBase | 输入面板（setAcceptRichText=False） | 2538 |
-| OutputPanel | _IOPanelBase | 输出面板（只读，buffer+flush 机制，pinned_to_bottom 滚动） | 2600 |
+| OutputPanel | _IOPanelBase | 输出面板（只读，buffer+flush 机制，pinned_to_bottom 滚动，双击错误跳转） | 2600 |
 | SettingsDialog | QDialog | 设置面板（三页 Tab） | 2661 |
 | FindDialog | QDialog | 非模态查找对话框 | 3033 |
 | ReplaceDialog | QDialog | 非模态替换对话框 | 3112 |
@@ -113,6 +113,7 @@ MainWindow ───────────────────────
   tabbar.tabMoved             ──→  _on_tab_moved ──→  TabManager.reorder_tabs
   editor.cursorPositionChanged──→  _on_cursor_position_changed ──→  _update_status_info
   output_panel.vScrollBar.valueChanged──→  _on_output_scroll_changed ──→  pinned_to_bottom 管理
+  output_panel.error_jump_requested(filename, line, col)──→  _goto_error_line ──→  ensureCursorVisible + setFocus
   _flush_output_timer (50ms, never stops) ──→  _on_flush_timer ──→  扫描各 tab: flush buffer + truncate if needed + scroll if pinned
 ```
 
@@ -158,6 +159,7 @@ MainWindow ───────────────────────
 | | `_immediate_flush` | 立即 flush 当前 tab（stdin 提交 / 大输出保护时调用） |
 | | `_check_buffer_overflow` | buffer 超 200 条或 64KB 时立即 flush |
 | | `_is_output_at_bottom` | sb.maximum() - sb.value() ≤ 3 |
+| | `_goto_error_line` | OutputPanel 双击编译错误 → basename 校验 + clamp行列 + setTextCursor + ensureCursorVisible + setFocus |
 | | `_on_output_scroll_changed` | __programmatic_scroll=True → 忽略；用户 scroll-up → pinned=False；scroll to bottom → pinned=True |
 | | `_on_output_clear(tab)` | FlowController.output_clear 信号 → buffer.clear + _output_clear(doc) + pinned=True |
 | | `_on_output_append(tab, color, text)` | FlowController.output_append 信号 → buffer.append |
@@ -529,6 +531,10 @@ Mixin 类（非 QObject），三个方法 override：`dragEnterEvent`、`dragMov
 - End 键：设为 True 并立即滚到底部（OutputPanel.keyPressEvent 处理 `Qt.Key_End`）
 - `_is_output_at_bottom()` 判断距离底部不超过 3px 即视为在底部
 
+**双击跳转编译错误**：OutputPanel 定义 `pyqtSignal(str, int, int)` 信号 `error_jump_requested`（filename, line, col）。`mouseDoubleClickEvent` 中用 `cursorForPosition` 获取点击位置的文本行，正则 `^([^:\s]+):(\d+):(?:(\d+):)?\s*(?:error|warning)` 匹配 gcc 错误格式。匹配成功时 emit 信号并 `return`（跳过 QTextEdit 默认选词），匹配失败时调用 `super().mouseDoubleClickEvent` 正常选词。MainWindow 在 `__connect_signals` 中连接信号到 `_goto_error_line`。
+
+`_goto_error_line(filename, line, col)`：获取当前 tab，校验 `os.path.normcase(basename)` 匹配 filename（防止跳到错误文件），clamp 行列到文档有效范围，`setTextCursor` + `ensureCursorVisible` + `setFocus`。
+
 **区分用户滚动与程序滚动**：Timer tick 中的程序性滚动会触发 scrollbar valueChanged。引入 `MainWindow.__programmatic_scroll` 布尔标志，程序性滚动前设为 True，完成后设为 False。`_on_output_scroll_changed` 检测到 `__programmatic_scroll=True` 时忽略，不改变 pinned 状态。
 
 **颜色规范**：
@@ -639,7 +645,7 @@ class FlowController(QObject):
 | set_state(state, tab, intent) | 状态转移 + emit state_changed |
 | need_recompile(tab) | exe 不存在 / exe_mtime < source_mtime / exe_mtime < tab.compiler_mtime |
 | get_exe_path(tab) | 源文件同目录 + .exe（Windows）/ 无扩展名（其他） |
-| build_compile_command(tab) | [resolved_compiler] [编码flags] [用户flags] source.cpp -o source.exe -lstdc++ |
+| build_compile_command(tab) | [resolved_compiler] [编码flags] [用户flags] basename.cpp -o basename.exe -lstdc++ |
 | make_process_env() | QProcessEnvironment.systemEnvironment + env_vars + bin_dir PATH prepend |
 | clear_and_start_compile(tab) | emit output_clear + emit output_append(Compiling...) + start_compile |
 | start_test_run(tab) | emit output_clear + start_test_run + stdin from input_doc |
@@ -695,14 +701,15 @@ RUNNING +killed(无描述)        → IDLE（灰色 "Process stopped in Xs"）
 `FlowController.build_compile_command` 生成的完整命令：
 
 ```
-[resolved_compiler] [编码flags] [用户compiler_flags] source.cpp -o source.exe -lstdc++
+[resolved_compiler] [编码flags] [用户compiler_flags] basename.cpp -o basename.exe -lstdc++
 ```
 
 - `resolved_compiler`：通过 `_resolve_compiler_path` 解析 compiler_path（裸名→原值，绝对路径→原值+取bin_dir，相对路径→基于 __file__ resolve 成绝对路径+取bin_dir）
 - 编码 flags 由 EncodingManager.build_flags 生成（详见第 5 节）
 - 用户 `compiler_flags` 使用 `shlex.split()` 解析为 argv 列表，支持带引号参数和带空格路径；shlex 解析失败时 fallback 到 `split()`
 - `-lstdc++` 末尾固定追加，确保误选 gcc 时也能链接 C++ 标准库
-- Windows 下 source.cpp 和 exe 路径使用反斜杠
+- 源文件名和 exe 名使用相对路径（`os.path.basename()` 取纯文件名），cwd 已设为源文件目录，gcc 报错信息简短
+- 不再对文件路径做 `/` → `\\` 转换，`os.path.basename()` 已返回平台本地文件名
 
 ### 4.4 PATH 注入
 
@@ -821,7 +828,7 @@ OK 时：验证 → apply_from(copy) → save JSON → compiler_path/flags/env_v
 
 ### 6.4 GotoLineDialog
 
-`QInputDialog.getInt()` 弹出，输入行号（1 ~ 文档总行数），确认后移动光标到目标行首并 `centerCursor()` 居中滚动。快捷键 Ctrl+G。
+`QInputDialog.getInt()` 弹出，输入行号（1 ~ 文档总行数），确认后移动光标到目标行首并 `ensureCursorVisible()` 滚动到可见位置。快捷键 Ctrl+G。
 
 ### 6.5 About 对话框
 
@@ -1008,3 +1015,7 @@ def main():
 | __programmatic_scroll 标志 | 区分 timer 的程序性滚动与用户手动滚动，避免程序性滚动误改 pinned 状态 |
 | stdin 提交即时 flush | 交互式程序 stdin 按回车后立即 flush buffer，prompt 不等 50ms tick |
 | 大输出保护 | buffer 超 64KB/200 条立即 flush，防止高频输出 buffer 膨胀 |
+| 编译命令用相对文件名 | cwd 已设为源文件目录，传 basename 给 gcc 使报错信息简短（`hello.cpp:3:5: error:` 而非绝对路径） |
+| QProcess.start 两参数形式 | `start(exe_path, [])` 防止含空格路径被单参数形式拆解为"命令+参数" |
+| OutputPanel 双击跳转编译错误 | `error_jump_requested` 信号 + `_goto_error_line`，basename 校验 + clamp 行列保护 + ensureCursorVisible |
+| QTextEdit 使用 ensureCursorVisible | `centerCursor()` 是 QPlainTextEdit 方法，QTextEdit 无此方法，调用导致 segfault |

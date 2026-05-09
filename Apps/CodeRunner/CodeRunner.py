@@ -2608,6 +2608,10 @@ def _strip_trailing_whitespace (text:str) -> str:
 #----------------------------------------------------------------------
 class OutputPanel (_IOPanelBase):
 
+    _ERROR_RE = re.compile(
+        r'^([^:\s]+):(\d+):(?:(\d+):)?\s*(?:error|warning)')
+    error_jump_requested = pyqtSignal(str, int, int)  # filename, line, col
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -2629,6 +2633,20 @@ class OutputPanel (_IOPanelBase):
                     win._immediate_flush(tab)
             return
         super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent (self, event):
+        if event.button() == Qt.LeftButton:
+            cursor = self.cursorForPosition(event.pos())
+            line_text = cursor.block().text().strip()
+            m = self._ERROR_RE.match(line_text)
+            if m:
+                filename = m.group(1)
+                line = int(m.group(2))
+                col = int(m.group(3)) if m.group(3) else 1
+                self.error_jump_requested.emit(filename, line, col)
+                return
+        super().mouseDoubleClickEvent(event)
+        super().mouseDoubleClickEvent(event)
 
 
 #----------------------------------------------------------------------
@@ -3530,6 +3548,10 @@ class MainWindow (QMainWindow):
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
+        # OutputPanel double-click on compile error -> jump to line
+        self.output_panel.error_jump_requested.connect(
+            self._goto_error_line)
+
         # FlowController signals (compile_finished/run_finished
         # are handled by FlowController internally; stdout/stderr are forwarded)
         self.flow_ctrl.run_stdout_ready.connect(
@@ -3758,7 +3780,35 @@ class MainWindow (QMainWindow):
             cursor = self.editor.textCursor()
             cursor.setPosition(block.position())
             self.editor.setTextCursor(cursor)
-            self.editor.centerCursor()
+            self.editor.ensureCursorVisible()
+
+    def _goto_error_line (self, filename, line, col=1):
+        """Jump to line:col in editor for compile error/warning."""
+        tab = self.tab_manager.get_current()
+        if tab is None or not tab.file_path:
+            return
+        if os.path.normcase(os.path.basename(tab.file_path)) != \
+                os.path.normcase(filename):
+            return
+        doc = self.editor.document()
+        total_lines = doc.blockCount()
+        if total_lines == 0:
+            return
+        # Clamp line to valid range
+        if line < 1 or line > total_lines:
+            line = max(1, min(total_lines, line))
+        block = doc.findBlockByNumber(line - 1)
+        if not block.isValid():
+            return
+        # Clamp col to valid range within the line
+        line_len = max(1, block.length() - 1)
+        if col < 1 or col > line_len:
+            col = max(1, min(line_len, col))
+        cursor = self.editor.textCursor()
+        cursor.setPosition(block.position() + col - 1)
+        self.editor.setTextCursor(cursor)
+        self.editor.ensureCursorVisible()
+        self.editor.setFocus()
 
     def _action_build (self):
         if self.flow_ctrl.state != _FLOW_IDLE:
