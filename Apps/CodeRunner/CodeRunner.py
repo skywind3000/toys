@@ -1371,13 +1371,11 @@ class FlowController (QObject):
             except ValueError:
                 # shlex can fail on unmatched quotes; fall back to plain split
                 command.extend(self.settings.compiler_flags.split())
-        source_path = tab.file_path
-        if sys.platform == 'win32':
-            source_path = source_path.replace('/', '\\')
-            exe_path = exe_path.replace('/', '\\')
-        command.append(source_path)
+        source_name = os.path.basename(tab.file_path)
+        exe_name = os.path.basename(exe_path)
+        command.append(source_name)
         command.append('-o')
-        command.append(exe_path)
+        command.append(exe_name)
         command.append('-lstdc++')
         return command
 
