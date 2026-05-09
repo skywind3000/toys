@@ -996,7 +996,7 @@ class ProcessManager (QObject):
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_run_timeout)
         self._timeout_timer.start(timeout * 1000)
-        self.process.start(exe_path)
+        self.process.start(exe_path, [])
 
     def kill_process (self):
         """Kill current process. finished signal will arrive with reason='killed'."""
@@ -1645,7 +1645,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
     _LINE_NUM_BG = QColor(235, 235, 235)
 
     _BRACKET_OPEN = {'(': ')', '{': '}', '[': ']', '"': '"', "'": "'"}
-    _BRACKET_CLOSE = {')': '(', '}': '{', ']': '['}
+    _BRACKET_CLOSE = {')': '(', '}': '{', ']': '[', '>': '<'}
     _CURRENT_LINE_COLOR = QColor(245, 245, 220)
     _BRACKET_MATCH_COLOR = QColor(180, 220, 255)
 
