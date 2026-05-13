@@ -132,5 +132,6 @@ dmypy.json
 /.qoder/*
 /.claude/*
 /.opencode/*
+/publish/*
 
 nul
