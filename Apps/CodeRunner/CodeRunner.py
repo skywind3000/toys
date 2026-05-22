@@ -52,7 +52,7 @@ except ImportError:
 #----------------------------------------------------------------------
 CR_VERSION_MAJOR = 1
 CR_VERSION_MINOR = 0
-CR_VERSION_PATCH = 1
+CR_VERSION_PATCH = 2
 
 CR_VERSION_TEXT = '{}.{}.{}'.format(
     CR_VERSION_MAJOR, CR_VERSION_MINOR, CR_VERSION_PATCH)
