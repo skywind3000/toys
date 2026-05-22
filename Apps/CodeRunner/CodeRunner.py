@@ -598,18 +598,20 @@ class CppHighlighter (QSyntaxHighlighter):
         if self._deferred:
             self.__track_multiline_state(text)
             return
-        # First: apply single-line rules (first-match-wins)
+        # Multi-line comments FIRST so their format spans occupy positions
+        # before single-line rules. Qt's format overlay uses "first-format-wins":
+        # later setFormat calls cannot override already-set formats. By applying
+        # comment format first, positions inside /* */ get green; then
+        # __format_if_free sees them as non-free and skips, preserving green.
+        self.__highlight_multiline_comments(text)
+        # Single-line rules (first-match-wins, skip comment positions)
         for regex, fmt in self._rules:
             it = regex.globalMatch(text)
             while it.hasNext():
                 match = it.next()
                 start = match.capturedStart()
                 length = match.capturedLength()
-                # Only apply if not already formatted by a higher-priority rule
                 self.__format_if_free(start, length, fmt)
-
-        # Multi-line comment handling
-        self.__highlight_multiline_comments(text)
 
     def __format_if_free (self, start:int, length:int, fmt):
         """Apply format only to unformatted positions (first-match-wins).
@@ -668,17 +670,12 @@ class CppHighlighter (QSyntaxHighlighter):
         start_state = self.previousBlockState()
         start_idx = 0
         if start_state != 1:
-            # Find first /* not masked by higher-priority rules (strings, //)
-            match = self._multi_start.match(text)
-            while match.hasMatch():
-                idx = match.capturedStart()
-                fg = self.format(idx).foreground()
-                is_free = not fg.style() or fg.color() == QColor()
-                if is_free:
-                    start_idx = idx
-                    break
-                match = self._multi_start.match(text, match.capturedEnd())
-            if not match.hasMatch():
+            # Find first /* not masked by string/char/SL comment (regex-based
+            # check since we run BEFORE single-line rules, no format spans yet)
+            match = self.__find_free_multi_start(text)
+            if match:
+                start_idx = match.capturedStart()
+            else:
                 self.setCurrentBlockState(0)
                 return
         end_match = self._multi_end.match(text, start_idx)
@@ -690,16 +687,10 @@ class CppHighlighter (QSyntaxHighlighter):
             # Loop: continue looking for more /* */ pairs after closing */
             search_from = end_idx
             while True:
-                next_start = self._multi_start.match(text, search_from)
-                if not next_start.hasMatch():
+                next_start = self.__find_free_multi_start(text, search_from)
+                if not next_start:
                     break
                 ns = next_start.capturedStart()
-                # Skip /* inside already-formatted regions
-                fg = self.format(ns).foreground()
-                is_free = not fg.style() or fg.color() == QColor()
-                if not is_free:
-                    search_from = next_start.capturedEnd()
-                    continue
                 next_end = self._multi_end.match(text, ns)
                 if next_end.hasMatch():
                     ne = next_end.capturedEnd()

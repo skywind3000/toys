@@ -461,14 +461,14 @@ _SETTINGS_DEFAULTS = {
 | 6 | 数字（含十六进制、二进制） | 复合正则 | 深蓝色 `QColor(0, 0, 128)` |
 | 7 | 符号/运算符 | C++ 运算符复合正则 | 深青色 `QColor(0, 128, 128)` |
 
-规则顺序决定优先级（first-match-wins）。单行规则通过 `__format_if_free` 方法应用，只格式化未被更高优先级规则覆盖的"空闲"位置（`format(i)` 前景色为空或默认色），实现真正的 first-match-wins 而非简单覆盖。多行注释在单行规则之后由 `__highlight_multiline_comments` 单独处理，同样检查"空闲"位置后才覆盖格式（`/*` 在字符串内不会被误判为注释开头）。多行注释使用 `setCurrentBlockState/previousBlockState` 跟踪跨块状态（0=正常，1=在注释内）。highlightBlock 中还处理多行注释内字符串的 `"` 匹配，避免字符串颜色覆盖注释颜色。
+规则顺序决定优先级（first-match-wins）。多行注释**优先于**单行规则处理——`highlightBlock` 中先调用 `__highlight_multiline_comments` 再执行单行规则，原因是 Qt 的 format overlay 采用"first-format-wins"语义：先覆盖某位置的 format span 优先，后到的 `setFormat` 无法覆盖已设格式。若单行规则先运行，关键字/字符串等会占据注释内的位置，多行注释的绿色就无法覆盖。改为多行注释先运行后，注释内的位置先拿到绿色格式，后续 `__format_if_free` 检查时发现这些位置非"空闲"就自动跳过，保留绿色。`__highlight_multiline_comments` 查找 `/*` 时使用 `__is_position_masked`（regex 方式）而非 `self.format(idx)` 判断空闲，因为多行注释先运行时尚无 format spans 可查。多行注释使用 `setCurrentBlockState/previousBlockState` 跟踪跨块状态（0=正常，1=在注释内）。
 
 **First-match-wins 实现细节**：
 
 - `__format_if_free(start, length, fmt)`：遍历范围内的每个位置，检查 `self.format(i)` 的前景色——空或默认色（`QColor()`）视为"空闲"，仅在空闲位置设置格式，跳过已被更高优先级规则占据的位置。连续空闲段合并为一次 `setFormat` 调用。
-- `__is_position_masked(text, pos)`：deferred 模式下 `format()` 未产生 format spans，此方法通过 regex 模拟 first-match-wins 语义——收集字符串/字符字面量范围，再收集不在字符串内的 `//` 注释范围，检查 pos 是否落入任一范围。
-- `__find_free_multi_start(text, offset)`：deferred 模式下查找下一个不被字符串/字符/单行注释遮蔽的 `/*`，使用 `__is_position_masked` 逐个跳过被遮蔽的匹配。
-- `__highlight_multiline_comments(text)`：非 deferred 模式的多行注释处理，查找 `/*` 时同样检查 `format(i)` 是否空闲，只有空闲位置才启动注释区间。找到匹配的 `*/` 后格式化整段，然后继续搜索后续 `/* */` 对。
+- `__is_position_masked(text, pos)`：通过 regex 模拟 first-match-wins 语义——收集字符串/字符字面量范围，再收集不在字符串内的 `//` 注释范围，检查 pos 是否落入任一范围。在 deferred 模式和非 deferred 模式（多行注释先运行、尚无 format spans）下均使用此方法判断 `/*` 是否在字符串/单行注释内。
+- `__find_free_multi_start(text, offset)`：查找下一个不被字符串/字符/单行注释遮蔽的 `/*`，使用 `__is_position_masked` 逐个跳过被遮蔽的匹配。deferred 和非 deferred 模式统一使用此方法。
+- `__highlight_multiline_comments(text)`：非 deferred 模式的多行注释处理，使用 `__find_free_multi_start` 查找不被字符串/单行注释遮蔽的 `/*`。找到匹配的 `*/` 后格式化整段（直接 `setFormat`，不检查空闲——注释内容应全部绿色），然后继续搜索后续 `/* */` 对。
 - `__track_multiline_state(text)`：deferred 模式的多行注释状态追踪，使用 `__find_free_multi_start` 替代 raw regex match，确保字符串内的 `/*` 不触发注释状态转移。
 
 **延迟+分批高亮**：
