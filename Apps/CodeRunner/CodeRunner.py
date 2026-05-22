@@ -52,7 +52,7 @@ except ImportError:
 #----------------------------------------------------------------------
 CR_VERSION_MAJOR = 1
 CR_VERSION_MINOR = 0
-CR_VERSION_PATCH = 0
+CR_VERSION_PATCH = 1
 
 CR_VERSION_TEXT = '{}.{}.{}'.format(
     CR_VERSION_MAJOR, CR_VERSION_MINOR, CR_VERSION_PATCH)
@@ -987,7 +987,7 @@ class ProcessManager (QObject):
         self._timeout_timer.setSingleShot(True)
         self._timeout_timer.timeout.connect(self._on_run_timeout)
         self._timeout_timer.start(timeout * 1000)
-        self.process.start(exe_path)
+        self.process.start(exe_path, [])
 
     def kill_process (self):
         """Kill current process. finished signal will arrive with reason='killed'."""
@@ -1362,13 +1362,11 @@ class FlowController (QObject):
             except ValueError:
                 # shlex can fail on unmatched quotes; fall back to plain split
                 command.extend(self.settings.compiler_flags.split())
-        source_path = tab.file_path
-        if sys.platform == 'win32':
-            source_path = source_path.replace('/', '\\')
-            exe_path = exe_path.replace('/', '\\')
-        command.append(source_path)
+        source_name = os.path.basename(tab.file_path)
+        exe_name = os.path.basename(exe_path)
+        command.append(source_name)
         command.append('-o')
-        command.append(exe_path)
+        command.append(exe_name)
         command.append('-lstdc++')
         return command
 
@@ -1636,7 +1634,7 @@ class CodeEditor (FileDragMixin, QTextEdit):
     _LINE_NUM_BG = QColor(235, 235, 235)
 
     _BRACKET_OPEN = {'(': ')', '{': '}', '[': ']', '"': '"', "'": "'"}
-    _BRACKET_CLOSE = {')': '(', '}': '{', ']': '['}
+    _BRACKET_CLOSE = {')': '(', '}': '{', ']': '[', '>': '<'}
     _CURRENT_LINE_COLOR = QColor(245, 245, 220)
     _BRACKET_MATCH_COLOR = QColor(180, 220, 255)
 
@@ -2601,6 +2599,10 @@ def _strip_trailing_whitespace (text:str) -> str:
 #----------------------------------------------------------------------
 class OutputPanel (_IOPanelBase):
 
+    _ERROR_RE = re.compile(
+        r'^([^:\s]+):(\d+):(?:(\d+):)?\s*(?:error|warning)')
+    error_jump_requested = pyqtSignal(str, int, int)  # filename, line, col
+
     def __init__ (self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -2622,6 +2624,20 @@ class OutputPanel (_IOPanelBase):
                     win._immediate_flush(tab)
             return
         super().keyPressEvent(event)
+
+    def mouseDoubleClickEvent (self, event):
+        if event.button() == Qt.LeftButton:
+            cursor = self.cursorForPosition(event.pos())
+            line_text = cursor.block().text().strip()
+            m = self._ERROR_RE.match(line_text)
+            if m:
+                filename = m.group(1)
+                line = int(m.group(2))
+                col = int(m.group(3)) if m.group(3) else 1
+                self.error_jump_requested.emit(filename, line, col)
+                return
+        super().mouseDoubleClickEvent(event)
+        super().mouseDoubleClickEvent(event)
 
 
 #----------------------------------------------------------------------
@@ -3249,7 +3265,7 @@ class MainWindow (QMainWindow):
             settings.load()
             _init_font_defaults(settings)
         self.settings = settings
-        self.setWindowTitle('CodeRunner')
+        self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
         self.resize(1000, 650)
         # Center window on screen
         screen = QApplication.primaryScreen()
@@ -3523,6 +3539,10 @@ class MainWindow (QMainWindow):
         self.editor.cursorPositionChanged.connect(
             self._on_cursor_position_changed)
 
+        # OutputPanel double-click on compile error -> jump to line
+        self.output_panel.error_jump_requested.connect(
+            self._goto_error_line)
+
         # FlowController signals (compile_finished/run_finished
         # are handled by FlowController internally; stdout/stderr are forwarded)
         self.flow_ctrl.run_stdout_ready.connect(
@@ -3751,7 +3771,35 @@ class MainWindow (QMainWindow):
             cursor = self.editor.textCursor()
             cursor.setPosition(block.position())
             self.editor.setTextCursor(cursor)
-            self.editor.centerCursor()
+            self.editor.ensureCursorVisible()
+
+    def _goto_error_line (self, filename, line, col=1):
+        """Jump to line:col in editor for compile error/warning."""
+        tab = self.tab_manager.get_current()
+        if tab is None or not tab.file_path:
+            return
+        if os.path.normcase(os.path.basename(tab.file_path)) != \
+                os.path.normcase(filename):
+            return
+        doc = self.editor.document()
+        total_lines = doc.blockCount()
+        if total_lines == 0:
+            return
+        # Clamp line to valid range
+        if line < 1 or line > total_lines:
+            line = max(1, min(total_lines, line))
+        block = doc.findBlockByNumber(line - 1)
+        if not block.isValid():
+            return
+        # Clamp col to valid range within the line
+        line_len = max(1, block.length() - 1)
+        if col < 1 or col > line_len:
+            col = max(1, min(line_len, col))
+        cursor = self.editor.textCursor()
+        cursor.setPosition(block.position() + col - 1)
+        self.editor.setTextCursor(cursor)
+        self.editor.ensureCursorVisible()
+        self.editor.setFocus()
 
     def _action_build (self):
         if self.flow_ctrl.state != _FLOW_IDLE:
@@ -3792,8 +3840,8 @@ class MainWindow (QMainWindow):
     def _action_about (self):
         QMessageBox.about(
             self, 'About CodeRunner',
-            'CodeRunner\n\nAuthor: skywind3000\n{}'.format(
-                time.strftime('%Y/%m/%d %H:%M:%S')))
+            'CodeRunner {}\n\nAuthor: skywind3000\n{}'.format(
+                CR_VERSION_TEXT, time.strftime('%Y/%m/%d %H:%M:%S')))
 
     #===== Flow state signal handlers =====
 
@@ -4344,14 +4392,14 @@ class MainWindow (QMainWindow):
         """Update main window title based on current tab state."""
         tab = self.tab_manager.get_current()
         if tab is None or tab.is_new:
-            self.setWindowTitle('CodeRunner')
+            self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
         else:
             name = os.path.basename(tab.file_path)
             dir_path = os.path.dirname(tab.file_path)
             if sys.platform == 'win32':
                 dir_path = dir_path.replace('/', '\\')
             self.setWindowTitle(
-                '{} ({}) - CodeRunner'.format(name, dir_path))
+                '{} ({}) - CodeRunner {}'.format(name, dir_path, CR_VERSION_TEXT))
 
     #===== File Save & Confirm Dialogs =====
 
@@ -4485,7 +4533,7 @@ class MainWindow (QMainWindow):
         self.output_section.setEnabled(False)
         self.status_info.setText('')
         self._deferred_restore_tab = -1
-        self.setWindowTitle('CodeRunner')
+        self.setWindowTitle('CodeRunner {}'.format(CR_VERSION_TEXT))
 
     def _exit_zero_tab_state (self):
         self.editor.setEnabled(True)
