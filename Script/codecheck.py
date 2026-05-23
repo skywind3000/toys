@@ -284,6 +284,42 @@ def foo():
 
 
 #----------------------------------------------------------------------
+# getopt: returns (options, args)
+#----------------------------------------------------------------------
+def getopt (argv, shortopts = ''):
+    args = []
+    options = {}
+    if argv is None:
+        argv = sys.argv[1:]
+    index = 0
+    count = len(argv)
+    while index < count:
+        arg = argv[index]
+        if arg != '':
+            head = arg[:1]
+            if head != '-':
+                break
+            if arg in ('-', '--'):
+                index += 1
+                break
+            if (not arg.startswith('--')) and (len(arg) == 2):
+                name = arg[1]
+                if (name in shortopts) and (index + 1 < count):
+                    nextarg = argv[index + 1]
+                    options[name] = nextarg
+                    index += 2
+                    continue
+            name = arg.lstrip('-')
+            key, _, val = name.partition('=')
+            options[key.strip()] = val.strip()
+        index += 1
+    while index < count:
+        args.append(argv[index])
+        index += 1
+    return options, args
+
+
+#----------------------------------------------------------------------
 # configure
 #----------------------------------------------------------------------
 class configure (object):
@@ -300,6 +336,7 @@ class configure (object):
         if 'default' not in self._config:
             self._config['default'] = {}
         self.win32 = (sys.platform[:3] == 'win') and True or False
+        self.PATH = os.environ.get('PATH', '')
         self._locate_binary()
 
     # load content
@@ -459,6 +496,32 @@ class configure (object):
             print('Error executing command: %s' % str(e))
         return (-1, '', '')
 
+    # check source file type by extension
+    def check_source_type (self, filename):
+        extname = os.path.splitext(filename)[-1].lower()
+        if extname in ('.c',):
+            return 'c'
+        elif extname in ('.cpp', '.cc', '.cxx', '.c++'):
+            return 'cpp'
+        elif extname in ('.py', '.pyw'):
+            return 'python'
+        return ''
+
+    # extract comments from source file, 
+    # returns a list of (line, comment) pairs
+    def extract_comments (self, filename):
+        source_type = self.check_source_type(filename)
+        if not source_type:
+            return None
+        content = self.load_file_text(filename)
+        if content is None:
+            return None
+        if source_type in ('c', 'cpp'):
+            return extract_cpp_comments(content)
+        elif source_type == 'python':
+            return extract_python_comments(content)
+        return None
+
 
 '''
 @input:
@@ -467,6 +530,35 @@ class configure (object):
 @output:
 15
 '''
+
+
+#----------------------------------------------------------------------
+# code checker class
+#----------------------------------------------------------------------
+class checker (object):
+
+    def __init__ (self, srcname):
+        self.config = configure()
+        if '~' in srcname:
+            srcname = os.path.expanduser(srcname)
+        self.srcname = os.path.abspath(srcname)
+        self.srctype = self.config.check_source_type(srcname)
+        if self.srctype not in ('c', 'cpp', 'python'):
+            raise ValueError('Unsupported source type: %s' % self.srctype)
+        comments = self.config.extract_comments(srcname)
+        self.comments = []
+        for line, comment in comments:
+            self.comments.append(comment)
+        self._check_requirement()
+
+    def _check_requirement (self):
+        if self.srctype in ('c', 'cpp'):
+            if 'cc' not in self.config._binary:
+                raise ValueError('C/C++ compiler not found')
+        elif self.srctype == 'python':
+            if 'python' not in self.config._binary:
+                raise ValueError('Python interpreter not found')
+        return 0
 
 
 #----------------------------------------------------------------------
