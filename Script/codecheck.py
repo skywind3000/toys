@@ -15,6 +15,12 @@ import re
 
 
 #----------------------------------------------------------------------
+# version
+#----------------------------------------------------------------------
+VERSION = '0.1.0'
+
+
+#----------------------------------------------------------------------
 # tokenize
 #----------------------------------------------------------------------
 def tokenize(code, specs, eof = None):
@@ -274,6 +280,152 @@ def foo():
     pass
 '''
 
+
+#----------------------------------------------------------------------
+# configure
+#----------------------------------------------------------------------
+class configure (object):
+
+    def __init__ (self, ininame = None):
+        self._config = {}
+        self._binary = {}
+        if not ininame:
+            ininame = os.path.expanduser('~/.config/codecheck.ini')
+        if os.path.isfile(ininame):
+            self._ininame = os.path.abspath(ininame)
+            self._inibase = os.path.dirname(self._ininame)
+            self._config = self.load_ini(self._ininame)
+        if 'default' not in self._config:
+            self._config['default'] = {}
+        self.win32 = (sys.platform[:3] == 'win') and True or False
+        self._locate_binary()
+
+    # load content
+    def load_file_content (self, filename, mode = 'r'):
+        if hasattr(filename, 'read'):
+            try: content = filename.read()
+            except: content = None
+            return content
+        try:
+            if '~' in filename:
+                filename = os.path.expanduser(filename)
+            fp = open(filename, mode)
+            content = fp.read()
+            fp.close()
+        except:
+            content = None
+        return content
+
+    # load file and guess encoding
+    def load_file_text (self, filename, encoding = None):
+        content = self.load_file_content(filename, 'rb')
+        if content is None:
+            return None
+        if content[:3] == b'\xef\xbb\xbf':
+            text = content[3:].decode('utf-8')
+        elif encoding is not None:
+            text = content.decode(encoding, 'ignore')
+        else:
+            text = None
+            guess = [sys.getdefaultencoding(), 'utf-8']
+            if sys.stdout and sys.stdout.encoding:
+                guess.append(sys.stdout.encoding)
+            try:
+                import locale
+                guess.append(locale.getpreferredencoding())
+            except:
+                pass
+            visit = {}
+            for name in guess + ['gbk', 'ascii', 'latin1']:
+                if name in visit:
+                    continue
+                visit[name] = 1
+                try:
+                    text = content.decode(name)
+                    break
+                except:
+                    pass
+            if text is None:
+                text = content.decode('utf-8', 'ignore')
+        return text
+
+    # load ini without ConfigParser
+    def load_ini (self, filename, encoding = None):
+        text = self.load_file_text(filename, encoding)
+        config = {}
+        sect = 'default'
+        if text is None:
+            return None
+        for line in text.split('\n'):
+            line = line.strip('\r\n\t ')
+            # pylint: disable-next=no-else-continue
+            if not line:   # noqa
+                continue
+            elif line[:1] in ('#', ';'):
+                continue
+            elif line.startswith('['):
+                if line.endswith(']'):
+                    sect = line[1:-1].strip('\r\n\t ')
+                    if sect not in config:
+                        config[sect] = {}
+            else:
+                pos = line.find('=')
+                if pos >= 0:
+                    key = line[:pos].rstrip('\r\n\t ')
+                    val = line[pos + 1:].lstrip('\r\n\t ')
+                    if sect not in config:
+                        config[sect] = {}
+                    config[sect][key] = val
+        return config
+
+    def _locate_binary (self):
+        self._locate_cc()
+        self._locate_python()
+        return 0
+
+    def which (self, executable, PATH = None):
+        if not PATH:
+            PATH = os.environ.get('PATH', '')
+        for path in PATH.split(os.pathsep):
+            if not path:
+                continue
+            if self.win32:
+                for ext in ('.exe', '.cmd', '.bat', '.py', '.pyw'):
+                    filename = os.path.join(path, executable + ext)
+                    if os.path.isfile(filename) and os.access(filename, os.X_OK):
+                        return filename
+            else:
+                filename = os.path.join(path, executable)
+                if os.path.isfile(filename) and os.access(filename, os.X_OK):
+                    return filename
+        return None
+
+    def _locate_cc (self):
+        cc = ''
+        if 'cc' in self._config['default']:
+            cc = self._config['default']['cc']
+            cc = cc.strip('\r\n\t ')
+            if '~' in cc:
+                cc = os.path.expanduser(cc)
+            if os.path.isabs(cc):
+                if not os.path.isfile(cc) or not os.access(cc, os.X_OK):
+                    cc = ''
+            else:
+                PATH = os.environ.get('PATH', '')
+                PATH = self._inibase + os.pathsep + PATH
+                cc = self.which(cc, PATH)
+        if not cc:
+            for name in ('gcc', 'clang', 'cc'):
+                cc = self.which(name)
+                break
+        if cc:
+            self._binary['cc'] = os.path.abspath(cc)
+        return 0
+
+    def _locate_python (self):
+        return 0
+
+
 #----------------------------------------------------------------------
 # testing suit
 #----------------------------------------------------------------------
@@ -290,10 +442,18 @@ if __name__ == '__main__':
         for line, comment in extract_python_comments(code_sample_python2):
             print('Line %d: %s' % (line, comment))
         return 0
-    test1()
-    print('---')
-    test2()
-    print('---')
-    test3()
+    def test4():
+        test1()
+        print('---')
+        test2()
+        print('---')
+        test3()
+        return 0
+    def test5():
+        cfg = configure()
+        print(cfg._binary)
+        return 0
+
+    test5()
 
 
