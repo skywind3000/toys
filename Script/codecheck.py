@@ -432,6 +432,7 @@ class configure (object):
     def execute (self, args, cwd = None, env = None, timeout = None):
         try:
             result = subprocess.run(args, cwd = cwd, env = env, 
+                                    shell = False,
                                     timeout = timeout)
             return result.returncode
         except Exception as e:
@@ -440,16 +441,23 @@ class configure (object):
 
     # execute command and capture output, returns (exit code, stdout, stderr)
     def call (self, args, cwd = None, env = None, timeout = None, stdin = None):
+        if stdin:
+            if isinstance(stdin, str):
+                stdin = stdin.encode('utf-8', 'ignore')
         try:
+            print('Executing command: %s' % ' '.join(args))
             result = subprocess.run(args, cwd = cwd, env = env, 
                                     timeout = timeout, 
+                                    shell = False,
                                     stdin = stdin, 
                                     stdout = subprocess.PIPE, 
                                     stderr = subprocess.PIPE)
-            return (result.returncode, result.stdout, result.stderr)
+            stdout = result.stdout.decode('utf-8', 'ignore')
+            stderr = result.stderr.decode('utf-8', 'ignore')
+            return (result.returncode, stdout, stderr)
         except Exception as e:
             print('Error executing command: %s' % str(e))
-        return (-1, b'', b'')
+        return (-1, '', '')
 
 
 '''
@@ -487,9 +495,9 @@ if __name__ == '__main__':
     def test5():
         cfg = configure()
         print(cfg._binary)
-        print(cfg.call(['python', '--version']))
+        print(cfg.call(['python', '-c', 'print("hello", input())'], stdin = 'world'))
         return 0
 
-    test4()
+    test5()
 
 
