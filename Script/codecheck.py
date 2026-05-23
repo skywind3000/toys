@@ -87,6 +87,80 @@ PATTERN_STRING2 = r'"(?:\\.|[^"\\])*"'
 PATTERN_NUMBER = r'\d+(\.\d*)?'
 PATTERN_CINTEGER = r'(0x)?\d+[uUlLbB]*'
 PATTERN_MISMATCH = r'.'
+PATTERN_PY_COMMENT = r'\#.*'
+PATTERN_PY_STRING3D = r'"""(?:[^"\\]|\\.|"(?!""))*"""'
+PATTERN_PY_STRING3S = r"'''(?:[^'\\]|\\.|'(?!''))*'''"
+PATTERN_PY_PSTR3D = r'[bBfFrR]{1,2}"""(?:[^"\\]|\\.|"(?!""))*"""'
+PATTERN_PY_PSTR3S = r"[bBfFrR]{1,2}'''(?:[^'\\]|\\.|'(?!''))*'''"
+PATTERN_PY_PSTR1 = r"[bBfFrR]{1,2}'(?:\\.|[^'\\\r\n])*'"
+PATTERN_PY_PSTR2 = r'[bBfFrR]{1,2}"(?:\\.|[^"\\\r\n])*"'
+PATTERN_PY_STR1 = r"'(?:\\.|[^'\\\r\n])*'"
+PATTERN_PY_STR2 = r'"(?:\\.|[^"\\\r\n])*"'
+PATTERN_PY_MISMATCH = r'.'
+
+
+#----------------------------------------------------------------------
+# returns a list of (line, comment) pairs for python
+#----------------------------------------------------------------------
+def extract_python_comments(code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('PY_COMMENT', PATTERN_PY_COMMENT),
+        ('PY_STRING3D', PATTERN_PY_STRING3D),
+        ('PY_STRING3S', PATTERN_PY_STRING3S),
+        ('PY_PSTR3D', PATTERN_PY_PSTR3D),
+        ('PY_PSTR3S', PATTERN_PY_PSTR3S),
+        ('PY_PSTR1', PATTERN_PY_PSTR1),
+        ('PY_PSTR2', PATTERN_PY_PSTR2),
+        ('PY_STR1', PATTERN_PY_STR1),
+        ('PY_STR2', PATTERN_PY_STR2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('PY_MISMATCH', PATTERN_PY_MISMATCH)
+    ]
+    comments = {}
+    for name, value, lnum, column in tokenize(code, specs):
+        if name == 'PY_COMMENT':
+            comment = value.strip('\r\n\t ')
+            if comment.startswith('#'):
+                comment = comment[1:].strip()
+            if comment:
+                if lnum not in comments:
+                    comments[lnum] = []
+                comments[lnum].append(comment)
+        elif name in ('PY_STRING3D', 'PY_STRING3S'):
+            text = value[3:-3].strip('\r\n\t ')
+            line = lnum
+            for part in text.split('\n'):
+                part = part.strip('\r\n\t ')
+                if part:
+                    if line not in comments:
+                        comments[line] = []
+                    comments[line].append(part)
+                line += 1
+        elif name in ('PY_PSTR3D', 'PY_PSTR3S'):
+            # prefix triple-quoted: strip prefix + quotes
+            idx = value.index('"') if '"' in value[:4] else value.index("'")
+            text = value[idx + 3:-3].strip('\r\n\t ')
+            line = lnum
+            for part in text.split('\n'):
+                part = part.strip('\r\n\t ')
+                if part:
+                    if line not in comments:
+                        comments[line] = []
+                    comments[line].append(part)
+                line += 1
+    output = []
+    lines = list(comments.keys())
+    lines.sort()
+    for lnum in lines:
+        comment = comments[lnum]
+        text = ' '.join(comment)
+        text = text.strip('\r\n\t ')
+        if not text:
+            continue
+        output.append((lnum, text))
+    return output
 
 
 #----------------------------------------------------------------------
@@ -164,7 +238,7 @@ test1
 #----------------------------------------------------------------------
 # sample code in python
 #----------------------------------------------------------------------
-code_sample_python r'''
+code_sample_python = r'''
 # My first Python program
 def main():
     x = 10
@@ -172,11 +246,32 @@ def main():
     print("Hello, World !!")
     # test1
     # test2
+    s = r"# not a comment"
+    t = r"raw string with \""
+    u = f"formatted {x}"
     return 0
 """
 docstring test1
 docstring test2
 """
+'''
+
+code_sample_python2 = r'''
+# header comment
+import os  # inline comment
+r = 5  # r as variable, not raw prefix
+path = r"C:\Users\test"  # raw string, \ not escape
+msg = r"he said \"hello\""  # raw string with escaped quote
+regex = r"\d+\.\d*"  # regex pattern
+label = f"name: {name}"  # f-string
+data = b"bytes here"  # byte string
+doc = r"""
+raw docstring line1
+raw docstring line2
+"""
+def foo():
+    """normal docstring"""
+    pass
 '''
 
 #----------------------------------------------------------------------
@@ -187,6 +282,18 @@ if __name__ == '__main__':
         for line, comment in extract_cpp_comments(code_sample_cpp):
             print('Line %d: %s' % (line, comment))
         return 0
+    def test2():
+        for line, comment in extract_python_comments(code_sample_python):
+            print('Line %d: %s' % (line, comment))
+        return 0
+    def test3():
+        for line, comment in extract_python_comments(code_sample_python2):
+            print('Line %d: %s' % (line, comment))
+        return 0
     test1()
+    print('---')
+    test2()
+    print('---')
+    test3()
 
 
