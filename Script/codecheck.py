@@ -446,11 +446,11 @@ class configure (object):
                 stdin = stdin.encode('utf-8', 'ignore')
         try:
             print('Executing command: %s' % ' '.join(args))
-            result = subprocess.run(args, cwd = cwd, env = env, 
-                                    timeout = timeout, 
+            result = subprocess.run(args, cwd = cwd, env = env,
+                                    timeout = timeout,
                                     shell = False,
-                                    stdin = stdin, 
-                                    stdout = subprocess.PIPE, 
+                                    input = stdin,
+                                    stdout = subprocess.PIPE,
                                     stderr = subprocess.PIPE)
             stdout = result.stdout.decode('utf-8', 'ignore')
             stderr = result.stderr.decode('utf-8', 'ignore')
