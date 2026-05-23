@@ -12,6 +12,8 @@ import sys
 import os
 import time
 import re
+import shutil
+import subprocess
 
 
 #----------------------------------------------------------------------
@@ -383,23 +385,6 @@ class configure (object):
         self._locate_python()
         return 0
 
-    def which (self, executable, PATH = None):
-        if not PATH:
-            PATH = os.environ.get('PATH', '')
-        for path in PATH.split(os.pathsep):
-            if not path:
-                continue
-            if self.win32:
-                for ext in ('.exe', '.cmd', '.bat', '.py', '.pyw'):
-                    filename = os.path.join(path, executable + ext)
-                    if os.path.isfile(filename) and os.access(filename, os.X_OK):
-                        return filename
-            else:
-                filename = os.path.join(path, executable)
-                if os.path.isfile(filename) and os.access(filename, os.X_OK):
-                    return filename
-        return None
-
     def _locate_cc (self):
         cc = ''
         if 'cc' in self._config['default']:
@@ -416,14 +401,64 @@ class configure (object):
                 cc = self.which(cc, PATH)
         if not cc:
             for name in ('gcc', 'clang', 'cc'):
-                cc = self.which(name)
-                break
+                cc = shutil.which(name)
+                if cc:
+                    break
         if cc:
             self._binary['cc'] = os.path.abspath(cc)
         return 0
 
     def _locate_python (self):
+        py = ''
+        if 'python' in self._config['default']:
+            py = self._config['default']['python']
+            py = py.strip('\r\n\t ')
+            if '~' in py:
+                py = os.path.expanduser(py)
+            if os.path.isabs(py):
+                if not os.path.isfile(py) or not os.access(py, os.X_OK):
+                    py = ''
+            else:
+                PATH = os.environ.get('PATH', '')
+                PATH = self._inibase + os.pathsep + PATH
+                py = shutil.which(py, path = PATH)
+        if not py:
+            py = sys.executable
+        if py:
+            self._binary['python'] = os.path.abspath(py)
         return 0
+
+    # execute command without capture, returns exit code
+    def execute (self, args, cwd = None, env = None, timeout = None):
+        try:
+            result = subprocess.run(args, cwd = cwd, env = env, 
+                                    timeout = timeout)
+            return result.returncode
+        except Exception as e:
+            print('Error executing command: %s' % str(e))
+        return -1
+
+    # execute command and capture output, returns (exit code, stdout, stderr)
+    def call (self, args, cwd = None, env = None, timeout = None, stdin = None):
+        try:
+            result = subprocess.run(args, cwd = cwd, env = env, 
+                                    timeout = timeout, 
+                                    stdin = stdin, 
+                                    stdout = subprocess.PIPE, 
+                                    stderr = subprocess.PIPE)
+            return (result.returncode, result.stdout, result.stderr)
+        except Exception as e:
+            print('Error executing command: %s' % str(e))
+        return (-1, b'', b'')
+
+
+'''
+@input:
+3 5
+1 2 3 4 5
+@output:
+15
+'''
 
 
 #----------------------------------------------------------------------
@@ -452,8 +487,9 @@ if __name__ == '__main__':
     def test5():
         cfg = configure()
         print(cfg._binary)
+        print(cfg.call(['python', '--version']))
         return 0
 
-    test5()
+    test4()
 
 
