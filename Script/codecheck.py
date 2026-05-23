@@ -467,6 +467,10 @@ class configure (object):
 
     # execute command without capture, returns exit code
     def execute (self, args, cwd = None, env = None, timeout = None):
+        if env:
+            envcopy = os.environ.copy()
+            envcopy.update(env)
+            env = envcopy
         try:
             result = subprocess.run(args, cwd = cwd, env = env, 
                                     shell = False,
@@ -478,6 +482,10 @@ class configure (object):
 
     # execute command and capture output, returns (exit code, stdout, stderr)
     def call (self, args, cwd = None, env = None, timeout = None, stdin = None):
+        if env:
+            envcopy = os.environ.copy()
+            envcopy.update(env)
+            env = envcopy
         if stdin:
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
@@ -545,10 +553,7 @@ class checker (object):
         self.srctype = self.config.check_source_type(srcname)
         if self.srctype not in ('c', 'cpp', 'python'):
             raise ValueError('Unsupported source type: %s' % self.srctype)
-        comments = self.config.extract_comments(srcname)
-        self.comments = []
-        for line, comment in comments:
-            self.comments.append(comment)
+        self.comments = self.config.extract_comments(srcname)
         self._check_requirement()
 
     def _check_requirement (self):
