@@ -1026,18 +1026,6 @@ class CommentParser (object):
 
 
 #----------------------------------------------------------------------
-# code checker
-#----------------------------------------------------------------------
-class CodeCheck (object):
-
-    def __init__ (self, srcname):
-        self.foundation: foundation = foundation(srcname)
-        self.config: configure = self.foundation.config
-        self.parser: CommentParser = CommentParser()
-
-
-
-#----------------------------------------------------------------------
 # code sample
 #----------------------------------------------------------------------
 sample_cpp_code_1 = r'''
