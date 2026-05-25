@@ -835,14 +835,58 @@ class CommentParser (object):
         self.reset()
         for lnum, comment in comments:
             text = comment.rstrip('\r\n\t ')
-            head = text.lstrip('#*\r\n\t ')
+            test = text.lstrip('#*\r\n\t ')
+            head = self._check_head(test)
+            if head is not None:
+                self._unit_head(head[0], head[1])
+        return 0
+
+    # start of a unit
+    def _unit_head (self, name, opts):
+        self._unit_end()
+        self.index += 1
+        if not name:
+            name = 'test%d' % self.index
+        self.state = 1
+        self.input = []
+        self.output = []
+        return 0
+
+    # end of unit
+    def _unit_end (self):
         return 0
 
     # returns (name, opts)
     def _check_head (self, text):
         head = text.strip('#*\r\n\t ')
+        if not head.startswith('@'):
+            return None
         if head == '@input':
-            return (None, None)
+            return ('', None)
+        m = self.pattern1.match(head)
+        if not m:
+            return None
+        meta = m.group(1)
+        name = ''
+        opts = {}
+        if meta:
+            meta = meta.strip(':\r\n\t ')
+            part = meta.split(' ')
+            for n in part:
+                t = n.strip('\r\n\t ')
+                if not t:
+                    continue
+                if '=' not in t:
+                    if not name:
+                        name = t
+                else:
+                    k, _, v = t.partition('=')
+                    k = k.strip('\r\n\t ')
+                    if k:
+                        opts[k] = v.strip('\r\n\t ')
+            return (name, opts and opts or None)
+        return ('', None)
+
 
 
 
@@ -898,7 +942,23 @@ if __name__ == '__main__':
         f.launch(capture = False, timeout = 3, stdin = '10 20')
     def test7():
         cp = CommentParser()
-        print(cp.pattern1.match('  @ input :'))
+        test_strings = [
+            "@input",
+            "@ input",
+            "@  input  ",
+            "@input:",
+            "@ input :",
+            "@  input  :",
+            "@  input : sdf adf ",
+            "  @ input : test1  k1=v1  k2=v2  k3=v3  ",
+            "  @ input ",
+            "  @ input",
+            '@input:t1',
+            "not matching",
+            "@output"
+        ]
+        for test in test_strings:
+            print(cp._check_head(test))
     test7()
 
 
