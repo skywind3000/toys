@@ -23,6 +23,7 @@
 #   codecheck.py -c -1 hello.c      # check only the 1st test case
 #   codecheck.py -d hello.c         # debug run (no output compare)
 #   codecheck.py -d -2 hello.c      # debug the 2nd test case
+#   codecheck.py -a hello.c         # compile and run with @args
 #
 # Embedding test cases in C/C++ source:
 #   // @input: test1
