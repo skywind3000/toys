@@ -706,10 +706,14 @@ class foundation (object):
             try:
                 os.remove(self.exename)
             except Exception as e:
-                print('Error removing old executable: %s' % str(e))
+                self.echo(CC_BAD, 'Error removing old executable: %s' % str(e))
                 return False
         self.echo(CC_NOTICE, 'Compiling %s ...' % os.path.split(self.srcname)[-1])
-        hr = self.compile()
+        try:
+            hr = self.compile()
+        except Exception as e:
+            hr = False
+            self.echo(CC_BAD, 'ERROR: ' + str(e))
         if not hr:
             return False
         return True
@@ -747,9 +751,9 @@ if __name__ == '__main__':
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
         # f.config.gcc(['--version'])
+        f.ensure_executable()
         for i in range(16):
             f.echo(i, 'This is a test message with color %d' % i)
-        f.ensure_executable()
     test6()
 
 
