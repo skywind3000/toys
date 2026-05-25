@@ -543,6 +543,72 @@ class configure (object):
         env['PATH'] = dirname + os.pathsep + os.environ.get('PATH', '')
         return self.execute(cmd, cwd = cwd, env = env, timeout = timeout)
 
+    # set terminal color
+    def console (self, color):
+        if sys.platform[:3] != 'win':
+            if color >= 0:
+                foreground = color & 7
+                background = (color >> 4) & 7
+                bold = color & 8
+                if background != 0:
+                    sys.stdout.write("\033[%s3%d;4%dm"%(bold and "01;" or "", foreground, background))
+                else:
+                    sys.stdout.write("\033[%s3%dm"%(bold and "01;" or "", foreground))
+                sys.stdout.flush()
+            else:
+                sys.stdout.write("\033[0m")
+                sys.stdout.flush()
+            return 0
+        if '_console_handle' not in self.__dict__:
+            import ctypes
+            self.kernel32 = ctypes.windll.LoadLibrary('kernel32.dll')
+            GetStdHandle = self.kernel32.GetStdHandle
+            SetConsoleTextAttribute = self.kernel32.SetConsoleTextAttribute
+            GetStdHandle.argtypes = [ ctypes.c_uint32 ]
+            GetStdHandle.restype = ctypes.c_size_t
+            SetConsoleTextAttribute.argtypes = [ ctypes.c_size_t, ctypes.c_uint16 ]
+            SetConsoleTextAttribute.restype = ctypes.c_long
+            self._console_handle = GetStdHandle(0xfffffff5)
+            self.SetConsoleTextAttribute = SetConsoleTextAttribute
+        if color < 0: color = 7
+        result = 0
+        if (color & 1): result |= 4
+        if (color & 2): result |= 2
+        if (color & 4): result |= 1
+        if (color & 8): result |= 8
+        if (color & 16): result |= 64
+        if (color & 32): result |= 32
+        if (color & 64): result |= 16
+        if (color & 128): result |= 128
+        self.SetConsoleTextAttribute(self._console_handle, result)
+        return 0
+
+    def echo (self, color, text):
+        self.console(color)
+        print(text)
+        self.console(-1)
+        return 0
+
+
+#----------------------------------------------------------------------
+# TERMINAL COLOR CONSTANTS
+#----------------------------------------------------------------------
+COLOR_BLACK         = 0
+COLOR_RED           = 1
+COLOR_GREEN         = 2
+COLOR_YELLOW        = 3
+COLOR_BLUE          = 4
+COLOR_MAGENTA       = 5
+COLOR_CYAN          = 6
+COLOR_WHITE         = 7
+COLOR_BOLD          = 8
+COLOR_BOLD_RED      = 9
+COLOR_BOLD_GREEN    = 10
+COLOR_BOLD_YELLO    = 11
+COLOR_BOLD_BLUE     = 12
+COLOR_BOLD_MAGENTA  = 13
+COLOR_BOLD_CYAN     = 14
+COLOR_BOLD_WHITE    = 15
 
 
 '''
@@ -667,6 +733,8 @@ if __name__ == '__main__':
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
         # f.config.gcc(['--version'])
+        f.config.echo(2, 'Hello, World !!')
+        f.config.echo(COLOR_BOLD_GREEN, 'Hello, World !!')
         f.compile()
     test6()
 
