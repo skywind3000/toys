@@ -321,6 +321,26 @@ def getopt (argv, shortopts = ''):
 
 
 #----------------------------------------------------------------------
+# stripping leading/trailing whitespace and empty lines
+#----------------------------------------------------------------------
+def text_normalize(text):
+    output = []
+    firstline = True
+    for line in text.rstrip('\r\n\t ').split('\n'):
+        line = line.rstrip('\r\n\t ')
+        if firstline:
+            if not line:
+                continue
+            firstline = False
+        output.append(line)
+    while len(output) > 0:
+        if output[-1]:
+            break
+        output.pop()
+    return '\n'.join(output)
+
+
+#----------------------------------------------------------------------
 # configure
 #----------------------------------------------------------------------
 class configure (object):
@@ -779,6 +799,61 @@ class foundation (object):
 
 
 #----------------------------------------------------------------------
+# parse comment
+#----------------------------------------------------------------------
+def parse_comment(comments):
+    output = []
+    state = 0
+    stdin = []
+    stdout = []
+    name = ''
+    flags = {}
+    index = 0
+    for lnum, line in comments:
+        text = line.rstrip('\r\n\t ')
+        head = text.lstrip('#*\r\n\t ')
+        if state == 0:
+            if head == '@input' or head.startswith('@input:'):
+                stdin.clear()
+                stdout.clear()
+                flags.clear()
+                index += 1
+                name = 'test%d' % index
+                if head.startswith('@input:'):
+                    text = head[len('@input:'):].strip('\r\n\t ')
+    return output
+
+
+#----------------------------------------------------------------------
+# unit test class
+#----------------------------------------------------------------------
+class UnitTest (object):
+    def __init__ (self, name, stdin, stdout, timeout = None):
+        self.name = name
+        self.stdin = stdin
+        self.stdout = stdout
+        self.timeout = timeout
+    def check (self, output):
+        output = text_normalize(output)
+        expect = text_normalize(self.stdout)
+        return output == expect
+
+
+#----------------------------------------------------------------------
+# check code
+#----------------------------------------------------------------------
+class CodeCheck (object):
+
+    def __init__ (self, srcname):
+        self.foundation = foundation(srcname)
+        self.config = self.foundation.config
+        self._comment_parse()
+
+    def _comment_parse (self):
+        return 0
+
+
+#----------------------------------------------------------------------
 # testing suit
 #----------------------------------------------------------------------
 if __name__ == '__main__':
@@ -813,6 +888,8 @@ if __name__ == '__main__':
         # f.config.gcc(['--version'])
         f.ensure_executable(True)
         f.launch(capture = False, timeout = 3, stdin = '10 20')
-    test6()
+    def test7():
+        cc = CodeCheck('e:/lab/workshop/scratch/cpp/noi01.c')
+    test7()
 
 
