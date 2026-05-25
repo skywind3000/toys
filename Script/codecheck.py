@@ -583,9 +583,9 @@ class configure (object):
         self.SetConsoleTextAttribute(self._console_handle, result)
         return 0
 
-    def echo (self, color, text):
+    def echo (self, color, *args):
         self.console(color)
-        print(text)
+        print(*args)
         self.console(-1)
         return 0
 
@@ -611,13 +611,14 @@ COLOR_BOLD_CYAN     = 14
 COLOR_BOLD_WHITE    = 15
 
 
-'''
-@input:
-3 5
-1 2 3 4 5
-@output:
-15
-'''
+#----------------------------------------------------------------------
+# color constants for codecheck
+#----------------------------------------------------------------------
+CC_NOTICE = COLOR_BOLD_CYAN
+CC_GOOD = COLOR_BOLD_GREEN
+CC_BAD = COLOR_BOLD_RED
+CC_HIGHLIGHT = COLOR_BOLD_WHITE
+CC_GRAY = COLOR_BOLD
 
 
 #----------------------------------------------------------------------
@@ -647,6 +648,10 @@ class foundation (object):
         elif self.srctype == 'python':
             if 'python' not in self.config._binary:
                 raise ValueError('Python interpreter not found')
+        return 0
+
+    def echo (self, color, *args):
+        self.config.echo(color, *args)
         return 0
 
     def compile (self):
@@ -698,6 +703,15 @@ class foundation (object):
             stime = os.path.getmtime(self.srcname)
             if ftime >= stime:
                 return True
+            try:
+                os.remove(self.exename)
+            except Exception as e:
+                print('Error removing old executable: %s' % str(e))
+                return False
+        self.echo(CC_NOTICE, 'Compiling %s ...' % os.path.split(self.srcname)[-1])
+        hr = self.compile()
+        if not hr:
+            return False
         return True
 
 
@@ -733,9 +747,9 @@ if __name__ == '__main__':
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
         # f.config.gcc(['--version'])
-        f.config.echo(2, 'Hello, World !!')
-        f.config.echo(COLOR_BOLD_GREEN, 'Hello, World !!')
-        f.compile()
+        for i in range(16):
+            f.echo(i, 'This is a test message with color %d' % i)
+        f.ensure_executable()
     test6()
 
 
