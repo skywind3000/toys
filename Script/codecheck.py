@@ -799,32 +799,6 @@ class foundation (object):
 
 
 #----------------------------------------------------------------------
-# parse comment
-#----------------------------------------------------------------------
-def parse_comment(comments):
-    output = []
-    state = 0
-    stdin = []
-    stdout = []
-    name = ''
-    flags = {}
-    index = 0
-    for lnum, line in comments:
-        text = line.rstrip('\r\n\t ')
-        head = text.lstrip('#*\r\n\t ')
-        if state == 0:
-            if head == '@input' or head.startswith('@input:'):
-                stdin.clear()
-                stdout.clear()
-                flags.clear()
-                index += 1
-                name = 'test%d' % index
-                if head.startswith('@input:'):
-                    text = head[len('@input:'):].strip('\r\n\t ')
-    return output
-
-
-#----------------------------------------------------------------------
 # unit test class
 #----------------------------------------------------------------------
 class UnitTest (object):
@@ -837,6 +811,40 @@ class UnitTest (object):
         output = text_normalize(output)
         expect = text_normalize(self.stdout)
         return output == expect
+
+
+#----------------------------------------------------------------------
+# comment parser
+#----------------------------------------------------------------------
+class CommentParser (object):
+
+    def __init__ (self):
+        self.units = []
+        self.pattern1 = re.compile(r'^\s*@\s*input\s*(:.*)?$', re.IGNORECASE)
+        self.pattern2 = re.compile(r'^\s*@\s*output\s*(:.*)?$', re.IGNORECASE)
+
+    def reset (self):
+        self.units = []
+        self.state = 0
+        self.input = []
+        self.output = []
+        self.name = ''
+        self.index = 0
+
+    def process (self, comments):
+        self.reset()
+        for lnum, comment in comments:
+            text = comment.rstrip('\r\n\t ')
+            head = text.lstrip('#*\r\n\t ')
+        return 0
+
+    # returns (name, opts)
+    def _check_head (self, text):
+        head = text.strip('#*\r\n\t ')
+        if head == '@input':
+            return (None, None)
+
+
 
 
 #----------------------------------------------------------------------
@@ -889,7 +897,8 @@ if __name__ == '__main__':
         f.ensure_executable(True)
         f.launch(capture = False, timeout = 3, stdin = '10 20')
     def test7():
-        cc = CodeCheck('e:/lab/workshop/scratch/cpp/noi01.c')
+        cp = CommentParser()
+        print(cp.pattern1.match('  @ input :'))
     test7()
 
 
