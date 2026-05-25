@@ -319,6 +319,7 @@ def text_normalize(text):
     firstline = True
     for line in text.rstrip('\r\n\t ').split('\n'):
         line = line.rstrip('\r\n\t ')
+        line = line.lstrip('\r\n\t ')
         if firstline:
             if not line:
                 continue
@@ -782,6 +783,9 @@ class foundation (object):
         except subprocess.TimeoutExpired as e:
             self.echo(CC_BAD, 'ERROR: Timeout expired after %d seconds' % e.timeout)
             return (-3, '', '')
+        except KeyboardInterrupt as e:
+            self.echo(CC_BAD, 'ERROR: Execution interrupted by user')
+            return (-4, '', '')
         except Exception as e:
             hr = (-1, '', '')
             self.echo(CC_BAD, 'ERROR: ' + str(e))
@@ -1001,9 +1005,68 @@ class CodeCheck (object):
         if not comments:
             return -1
         self.parser.process(comments)
+        index = 1
         for unit in self.parser.units:
+            unit.index = index
             self.units.append(unit)
-            unit.print()
+            index += 1
+            # unit.print()
+        return 0
+
+    # call launch in foundation
+    def _launch (self, capture, stdin, timeout):
+        hr = self.foundation.launch(capture, stdin, timeout)
+        return hr
+
+    def color (self, color):
+        self.config.console(color)
+
+    def echo (self, color, *args):
+        self.config.echo(color, *args)
+
+    # start without capture, returns exit code
+    def start (self):
+        r = self._launch(False, None, None)
+        return r
+
+    # check each unit test, returns a list of (unit, result) pairs
+    def check (self, enabled = None):
+        if not self.foundation.ensure_executable():
+            return 1
+        for unit in self.units:
+            if enabled and unit.name not in enabled:
+                continue
+            timeout = None
+            if unit.opts and 'timeout' in unit.opts:
+                try:
+                    timeout = int(unit.opts['timeout'])
+                except:
+                    pass
+            self.color(CC_NOTICE)
+            sys.stdout.write('[%d/%d] Running unit test: %s ... ' % 
+                             (unit.index, len(self.units), unit.name))
+            self.color(-1)
+            sys.stdout.flush()
+            hr = self._launch(True, unit.stdin, timeout)
+            code, stdout, stderr = hr
+            if code < 0:
+                break
+            expect = text_normalize(unit.stdout)
+            output = text_normalize(stdout)
+            if output == expect:
+                self.echo(CC_GOOD, 'PASS')
+            else:
+                self.echo(CC_BAD, 'FAIL')
+                self.echo(CC_HIGHLIGHT, 'Expected output:')
+                self.echo(COLOR_WHITE, expect)
+                self.echo(CC_HIGHLIGHT, 'Actual output:')
+                self.echo(COLOR_WHITE, stdout)
+                if stderr:
+                    text = stderr.rstrip('\r\n\t ')
+                    if text:
+                        self.echo(CC_HIGHLIGHT, 'Error output:')
+                        self.echo(CC_GRAY, text)
+                break
         return 0
 
 
@@ -1077,6 +1140,7 @@ if __name__ == '__main__':
             print('---')
     def test9():
         cc = CodeCheck('e:/lab/workshop/scratch/cpp/noi01.c')
+        cc.check()
         return 0
     test9()
 
