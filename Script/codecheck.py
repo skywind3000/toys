@@ -695,13 +695,13 @@ class foundation (object):
             raise RuntimeError('Compilation failed with code %d' % retcode)
         return True
 
-    def ensure_executable (self):
+    def ensure_executable (self, force = False):
         if self.srctype not in ('c', 'cpp'):
             return False
         if os.path.exists(self.exename):
             ftime = os.path.getmtime(self.exename)
             stime = os.path.getmtime(self.srcname)
-            if ftime >= stime:
+            if ftime >= stime and (not force):
                 return True
             try:
                 os.remove(self.exename)
@@ -717,6 +717,11 @@ class foundation (object):
         if not hr:
             return False
         return True
+
+    # start the program
+    def start (self, timeout = None, capture = False, stdin = None):
+        return 0
+
 
 
 #----------------------------------------------------------------------
@@ -751,9 +756,7 @@ if __name__ == '__main__':
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
         # f.config.gcc(['--version'])
-        f.ensure_executable()
-        for i in range(16):
-            f.echo(i, 'This is a test message with color %d' % i)
+        f.ensure_executable(True)
     test6()
 
 
