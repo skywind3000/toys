@@ -5,7 +5,7 @@
 # codecheck.py - 
 #
 # Created by skywind on 2026/05/23
-# Last Modified: 2026/05/23 20:54:47
+# Last Modified: 2026/05/25 22:56:37
 #
 #======================================================================
 import sys
@@ -443,6 +443,10 @@ class configure (object):
             cc = cc.strip('\r\n\t ')
             if '~' in cc:
                 cc = os.path.expanduser(cc)
+            if self.win32:
+                extname = os.path.splitext(cc)[-1].lower()
+                if not extname:
+                    cc += '.exe'
             if os.path.isabs(cc):
                 if not os.path.isfile(cc) or not os.access(cc, os.X_OK):
                     cc = ''
@@ -480,14 +484,18 @@ class configure (object):
         return 0
 
     # execute command without capture, returns exit code
-    def execute (self, args, cwd = None, env = None, timeout = None):
+    def execute (self, args, cwd = None, env = None, timeout = None, stdin = None):
         if env:
             envcopy = os.environ.copy()
             envcopy.update(env)
             env = envcopy
+        if stdin:
+            if isinstance(stdin, str):
+                stdin = stdin.encode('utf-8', 'ignore')
         try:
             result = subprocess.run(args, cwd = cwd, env = env, 
                                     shell = False,
+                                    input = stdin,
                                     timeout = timeout)
             return result.returncode
         except Exception as e:
@@ -495,7 +503,7 @@ class configure (object):
         return -1
 
     # execute command and capture output, returns (exit code, stdout, stderr)
-    def call (self, args, cwd = None, env = None, timeout = None, stdin = None):
+    def capture (self, args, cwd = None, env = None, timeout = None, stdin = None):
         if env:
             envcopy = os.environ.copy()
             envcopy.update(env)
@@ -552,6 +560,7 @@ class configure (object):
         cmd = [self._binary['cc']] + args
         env = {}
         env['PATH'] = dirname + os.pathsep + os.environ.get('PATH', '')
+        # print('cc:', cmd)
         return self.execute(cmd, cwd = cwd, env = env, timeout = timeout)
 
     def toolchain_path (self):
@@ -633,7 +642,9 @@ COLOR_BOLD_WHITE    = 15
 #----------------------------------------------------------------------
 # color constants for codecheck
 #----------------------------------------------------------------------
-CC_NOTICE = COLOR_BOLD_CYAN
+CC_NOTICE = COLOR_BOLD_YELLO
+CC_INFO = COLOR_WHITE
+CC_UNIT = COLOR_BOLD_CYAN
 CC_GOOD = COLOR_BOLD_GREEN
 CC_BAD = COLOR_BOLD_RED
 CC_HIGHLIGHT = COLOR_BOLD_WHITE
@@ -659,6 +670,7 @@ class foundation (object):
         if self.srctype not in ('c', 'cpp', 'python'):
             raise ValueError('Unsupported source type: %s' % self.srctype)
         self.comments = self.config.extract_comments(srcname)
+        self.compiled = False
         self._check_requirement()
 
     def _check_requirement (self):
@@ -736,6 +748,7 @@ class foundation (object):
             self.echo(CC_BAD, 'ERROR: ' + str(e))
         if not hr:
             return False
+        self.compiled = True
         return True
 
     # start the program, returns (exit code, stdout, stderr)
@@ -761,20 +774,18 @@ class foundation (object):
                 code = self.config.execute(args, cwd, env, timeout)
                 return (code, '', '')
             else:
-                hr = self.config.call(args, cwd, env, timeout, stdin)
-                code, stdout, stderr = hr
-                if stderr:
-                    self.echo(CC_GRAY, stderr)
-                if stdout:
-                    self.echo(COLOR_WHITE, stdout)
+                code = self.config.execute(args, cwd, env, timeout, stdin)
                 return (code, '', '')
-        hr = self.config.call(args, cwd, env, timeout, stdin)
+        hr = self.config.capture(args, cwd, env, timeout, stdin)
         code, stdout, stderr = hr
         return (code, stdout, stderr)
 
     def launch (self, capture = False, stdin = None, timeout = None):
         if not self.ensure_executable():
             return False
+        if not capture:
+            if self.compiled:
+                self.echo(CC_NOTICE, 'Running %s ...' % os.path.split(self.exename)[-1])
         try:
             hr = self.start(capture, stdin, timeout)
         except FileNotFoundError as e:
@@ -1026,15 +1037,48 @@ class CodeCheck (object):
 
     # start without capture, returns exit code
     def start (self):
+        if not self.foundation.ensure_executable():
+            return 1
         r = self._launch(False, None, None)
-        return r
+        if not r:
+            return 2
+        return 0
+
+    # start a unit test by index (1-based) without compare output
+    def debug (self, index = None):
+        if not self.foundation.ensure_executable():
+            return 1
+        if len(self.units) == 0:
+            self.echo(CC_NOTICE, 'No unit tests found in comments, start without debug ...')
+            self.start()
+            return 0
+        if not index:
+            unit = self.units[0]
+        else:
+            idx = int(index) - 1
+            if idx < 0 or idx >= len(self.units):
+                self.echo(CC_BAD, 'Invalid unit test index: %s' % index)
+                return 1
+            unit = self.units[idx]
+        timeout = None
+        if unit.opts and 'timeout' in unit.opts:
+            try:
+                timeout = int(unit.opts['timeout'])
+            except:
+                pass
+        hr = self._launch(False, unit.stdin, timeout)
+        return 0
 
     # check each unit test, returns a list of (unit, result) pairs
     def check (self, enabled = None):
         if not self.foundation.ensure_executable():
             return 1
+        if len(self.units) == 0:
+            self.echo(CC_NOTICE, 'No unit tests found in comments.')
+            return 0
+        passed = 0
         for unit in self.units:
-            if enabled and unit.name not in enabled:
+            if enabled and unit.index not in enabled:
                 continue
             timeout = None
             if unit.opts and 'timeout' in unit.opts:
@@ -1042,7 +1086,7 @@ class CodeCheck (object):
                     timeout = int(unit.opts['timeout'])
                 except:
                     pass
-            self.color(CC_NOTICE)
+            self.color(CC_UNIT)
             sys.stdout.write('[%d/%d] Running unit test: %s ... ' % 
                              (unit.index, len(self.units), unit.name))
             self.color(-1)
@@ -1055,19 +1099,76 @@ class CodeCheck (object):
             output = text_normalize(stdout)
             if output == expect:
                 self.echo(CC_GOOD, 'PASS')
+                passed += 1
             else:
                 self.echo(CC_BAD, 'FAIL')
                 self.echo(CC_HIGHLIGHT, 'Expected output:')
                 self.echo(COLOR_WHITE, expect)
                 self.echo(CC_HIGHLIGHT, 'Actual output:')
                 self.echo(COLOR_WHITE, stdout)
-                if stderr:
-                    text = stderr.rstrip('\r\n\t ')
-                    if text:
-                        self.echo(CC_HIGHLIGHT, 'Error output:')
-                        self.echo(CC_GRAY, text)
+                log = stderr.rstrip('\r\n\t ')
+                if log:
+                    self.echo(CC_HIGHLIGHT, 'Error output:')
+                    self.echo(CC_GRAY, log)
                 break
+        required = len(self.units)
+        if enabled:
+            required = len(enabled)
+        if passed == required:
+            self.echo(CC_NOTICE, '[result] All %d unit tests passed!' % passed)
+        else:
+            self.echo(CC_BAD, '[result] %d/%d unit tests passed.' % (passed, required))
         return 0
+
+
+#----------------------------------------------------------------------
+# show message
+#----------------------------------------------------------------------
+def help():
+    fn = os.path.basename(sys.argv[0])
+    print('Usage: python %s [options] <source-file>' % fn)
+    print('options:')
+    print('  -h, --help     show this help message and exit')
+    print('  -c, --check    check the source file with unit tests')
+    print('  -d, --debug    debug the source file without compare output')
+    print('  -{num}         check only the unit test with the given index (1-based)')
+    return 0
+
+
+#----------------------------------------------------------------------
+# main function
+#----------------------------------------------------------------------
+def main(argv = None):
+    argv = argv and argv or sys.argv[1:]
+    args = [n for n in argv]
+    options, args = getopt(args)
+    enabled = {}
+    for k in options.keys():
+        if k.isdigit():
+            index = int(k)
+            enabled[index] = True
+    if 'h' in options or 'help' in options:
+        return help()
+    if len(args) == 0:
+        print('Error: No source file specified, use -h for help.')
+        return 1
+    srcname = args[0]
+    if not os.path.exists(srcname):
+        print('Error: Source file not found: %s' % srcname)
+        return 1
+    cc = CodeCheck(srcname)
+    if 'c' in options or 'check' in options:
+        return cc.check(enabled and enabled or None)
+    elif 'd' in options or 'debug' in options:
+        keys = list(enabled.keys())
+        keys.sort()
+        first = None
+        if keys:
+            first = keys[0]
+        return cc.debug(first)
+    else:
+        cc.start()
+    return 0
 
 
 #----------------------------------------------------------------------
@@ -1087,25 +1188,18 @@ if __name__ == '__main__':
             print('Line %d: %s' % (line, comment))
         return 0
     def test4():
-        test1()
-        print('---')
-        test2()
-        print('---')
-        test3()
-        return 0
-    def test5():
         cfg = configure()
         print(cfg._binary)
         print(cfg.call(['python', '-c', 'print("hello", input())'], stdin = 'world'))
         return 0
-    def test6():
+    def test5():
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
         print(f.dirname)
         # f.config.gcc(['--version'])
         f.ensure_executable(True)
         f.launch(capture = False, timeout = 3, stdin = '10 20')
-    def test7():
+    def test6():
         cp = CommentParser()
         test_strings = [
             "@input",
@@ -1128,7 +1222,7 @@ if __name__ == '__main__':
         print('--')
         for test in test_strings:
             print(cp._check_output(test))
-    def test8():
+    def test7():
         parser = CommentParser()
         comments = extract_cpp_comments(sample_cpp_code_1)
         parser.process(comments)
@@ -1138,10 +1232,19 @@ if __name__ == '__main__':
             print('Output:\n%s' % unit.stdout)
             print('Opts: %s' % str(unit.opts))
             print('---')
-    def test9():
+    def test8():
         cc = CodeCheck('e:/lab/workshop/scratch/cpp/noi01.c')
-        cc.check()
+        cc.debug()
+        return 0
+    def test9():
+        f = 'e:/lab/workshop/scratch/cpp/noi01.cpp'
+        args = [f]
+        args = ['-c', f]
+        # args = ['-c', '-1', '-2', f]
+        # args = ['-d', f]
+        main(args)
         return 0
     test9()
+    # main()
 
 
