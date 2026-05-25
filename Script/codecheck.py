@@ -825,10 +825,10 @@ class CommentParser (object):
 
     def reset (self):
         self.units = []
-        self.state = 0
+        self.name = ''
         self.input = []
         self.output = []
-        self.name = ''
+        self.state = 0
         self.index = 0
 
     def process (self, comments):
@@ -847,9 +847,11 @@ class CommentParser (object):
         self.index += 1
         if not name:
             name = 'test%d' % self.index
-        self.state = 1
+        self.name = name
         self.input = []
         self.output = []
+        self.opts = opts
+        self.state = 1
         return 0
 
     # end of unit
