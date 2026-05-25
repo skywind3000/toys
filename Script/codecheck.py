@@ -133,19 +133,17 @@ def extract_python_comments(code):
             comment = value.strip('\r\n\t ')
             if comment.startswith('#'):
                 comment = comment[1:].strip()
-            if comment:
-                if lnum not in comments:
-                    comments[lnum] = []
-                comments[lnum].append(comment)
+            if lnum not in comments:
+                comments[lnum] = []
+            comments[lnum].append(comment)
         elif name in ('PY_STRING3D', 'PY_STRING3S'):
             text = value[3:-3].strip('\r\n\t ')
             line = lnum
             for part in text.split('\n'):
                 part = part.strip('\r\n\t ')
-                if part:
-                    if line not in comments:
-                        comments[line] = []
-                    comments[line].append(part)
+                if line not in comments:
+                    comments[line] = []
+                comments[line].append(part)
                 line += 1
         elif name in ('PY_PSTR3D', 'PY_PSTR3S'):
             # prefix triple-quoted: strip prefix + quotes
@@ -154,10 +152,9 @@ def extract_python_comments(code):
             line = lnum
             for part in text.split('\n'):
                 part = part.strip('\r\n\t ')
-                if part:
-                    if line not in comments:
-                        comments[line] = []
-                    comments[line].append(part)
+                if line not in comments:
+                    comments[line] = []
+                comments[line].append(part)
                 line += 1
     output = []
     lines = list(comments.keys())
@@ -166,8 +163,6 @@ def extract_python_comments(code):
         comment = comments[lnum]
         text = ' '.join(comment)
         text = text.strip('\r\n\t ')
-        if not text:
-            continue
         output.append((lnum, text))
     return output
 
@@ -193,10 +188,9 @@ def extract_cpp_comments(code):
             comment = value.strip('\r\n\t ')
             if comment.startswith('//'):
                 comment = comment[2:].strip()
-            if comment:
-                if lnum not in comments:
-                    comments[lnum] = []
-                comments[lnum].append(comment)
+            if lnum not in comments:
+                comments[lnum] = []
+            comments[lnum].append(comment)
         elif name == 'COMMENT2':
             comment = value.strip('\r\n\t ')
             if comment.startswith('/*'):
@@ -207,10 +201,9 @@ def extract_cpp_comments(code):
             line = lnum
             for text in comment.split('\n'):
                 text = text.strip('\r\n\t ')
-                if text:
-                    if line not in comments:
-                        comments[line] = []
-                    comments[line].append(text)
+                if line not in comments:
+                    comments[line] = []
+                comments[line].append(text)
                 line += 1
     output = []
     lines = list(comments.keys())
@@ -219,8 +212,6 @@ def extract_cpp_comments(code):
         comment = comments[lnum]
         text = ' '.join(comment)
         text = text.strip('\r\n\t ')
-        if not text:
-            continue
         output.append((lnum, text))
     return output
 
@@ -357,8 +348,8 @@ class configure (object):
             self._config = self.load_ini(self._ininame)
         if 'default' not in self._config:
             self._config['default'] = {}
-        self.win32 = (sys.platform[:3] == 'win') and True or False
-        self.PATH = os.environ.get('PATH', '')
+        self.win32: bool = (sys.platform[:3] == 'win') and True or False
+        self.PATH: str = os.environ.get('PATH', '')
         self._locate_binary()
 
     # load content
@@ -654,8 +645,8 @@ CC_GRAY = COLOR_BOLD
 class foundation (object):
 
     def __init__ (self, srcname):
-        self.config = configure()
-        self.win32 = self.config.win32
+        self.config: configure = configure()
+        self.win32: bool = self.config.win32
         if '~' in srcname:
             srcname = os.path.expanduser(srcname)
         self.srcname = os.path.abspath(srcname)
@@ -802,15 +793,28 @@ class foundation (object):
 # unit test class
 #----------------------------------------------------------------------
 class UnitTest (object):
-    def __init__ (self, name):
-        self.name = name
-        self.stdin = ''
-        self.stdout = ''
+    def __init__ (self, name: str):
+        self.name: str = name
+        self.stdin: str = ''
+        self.stdout: str = ''
         self.opts = None
     def check (self, output):
         output = text_normalize(output)
         expect = text_normalize(self.stdout)
         return output == expect
+    def __repr__ (self):
+        return '<UnitTest name=%s>' % self.name
+    def print (self):
+        print('<UnitTest: %s>' % self.name)
+        print('Input:')
+        print(self.stdin)
+        print('Output:')
+        print(self.stdout)
+        if self.opts:
+            print('Options:')
+            for k, v in self.opts.items():
+                print('  %s = %s' % (k, v))
+        return 0
 
 
 #----------------------------------------------------------------------
@@ -819,7 +823,7 @@ class UnitTest (object):
 class CommentParser (object):
 
     def __init__ (self):
-        self.units = []
+        self.units: UnitTest = []
         self.pattern1 = re.compile(r'^\s*@\s*input\s*(:.*)?$', re.IGNORECASE)
         self.pattern2 = re.compile(r'^\s*@\s*output\s*(:.*)?$', re.IGNORECASE)
 
@@ -933,7 +937,51 @@ class CommentParser (object):
         return False
 
 
+#----------------------------------------------------------------------
+# code checker
+#----------------------------------------------------------------------
+class CodeCheck (object):
 
+    def __init__ (self, srcname):
+        self.foundation: foundation = foundation(srcname)
+        self.config: configure = self.foundation.config
+        self.parser: CommentParser = CommentParser()
+
+
+
+#----------------------------------------------------------------------
+# code sample
+#----------------------------------------------------------------------
+sample_cpp_code_1 = r'''
+#include <stdio.h>
+// @input:
+// 10 20
+// @output:
+// 30
+
+// not an output line, because it is not consequtive
+int main() {
+    int a, b;
+    // add two numbers
+    scanf("%d%d", &a, &b);
+    printf("%d\n", a + b);
+    return 0;
+}
+/*
+@input: haha
+5 7
+
+@output:
+12
+
+@input:
+9 2
+*/
+
+/**/
+/*
+*/
+'''
 
 
 #----------------------------------------------------------------------
@@ -942,11 +990,20 @@ class CommentParser (object):
 class CodeCheck (object):
 
     def __init__ (self, srcname):
-        self.foundation = foundation(srcname)
-        self.config = self.foundation.config
-        self._comment_parse()
+        self.foundation: foundation = foundation(srcname)
+        self.config: configure = self.foundation.config
+        self.parser: CommentParser = CommentParser()
+        self.units: UnitTest = []
+        self._parse_comment()
 
-    def _comment_parse (self):
+    def _parse_comment (self):
+        comments = self.config.extract_comments(self.foundation.srcname)
+        if not comments:
+            return -1
+        self.parser.process(comments)
+        for unit in self.parser.units:
+            self.units.append(unit)
+            unit.print()
         return 0
 
 
@@ -1008,6 +1065,19 @@ if __name__ == '__main__':
         print('--')
         for test in test_strings:
             print(cp._check_output(test))
-    test7()
+    def test8():
+        parser = CommentParser()
+        comments = extract_cpp_comments(sample_cpp_code_1)
+        parser.process(comments)
+        for unit in parser.units:
+            print('Unit: %s' % unit.name)
+            print('Input:\n%s' % unit.stdin)
+            print('Output:\n%s' % unit.stdout)
+            print('Opts: %s' % str(unit.opts))
+            print('---')
+    def test9():
+        cc = CodeCheck('e:/lab/workshop/scratch/cpp/noi01.c')
+        return 0
+    test9()
 
 
