@@ -802,11 +802,11 @@ class foundation (object):
 # unit test class
 #----------------------------------------------------------------------
 class UnitTest (object):
-    def __init__ (self, name, stdin, stdout, timeout = None):
+    def __init__ (self, name):
         self.name = name
-        self.stdin = stdin
-        self.stdout = stdout
-        self.timeout = timeout
+        self.stdin = ''
+        self.stdout = ''
+        self.opts = None
     def check (self, output):
         output = text_normalize(output)
         expect = text_normalize(self.stdout)
@@ -828,21 +828,42 @@ class CommentParser (object):
         self.name = ''
         self.input = []
         self.output = []
+        self.opts = None
         self.state = 0
         self.index = 0
+        self.next = 0
 
     def process (self, comments):
         self.reset()
         for lnum, comment in comments:
             text = comment.rstrip('\r\n\t ')
             test = text.lstrip('#*\r\n\t ')
-            head = self._check_head(test)
+            head = self._check_input(test)
             if head is not None:
-                self._unit_head(head[0], head[1])
+                self._unit_start(head[0], head[1])
+                self.next = lnum + 1
+                continue
+            if self._check_output(test):
+                self.state = 2
+                self.next = lnum + 1
+                continue
+            if self.state == 1:
+                if lnum == self.next:
+                    self.next += 1
+                    self.input.append(text)
+                else:
+                    self.state = 0
+            elif self.state == 2:
+                if lnum == self.next:
+                    self.next += 1
+                    self.output.append(text)
+                else:
+                    self.state = 0
+        self._unit_end()
         return 0
 
     # start of a unit
-    def _unit_head (self, name, opts):
+    def _unit_start (self, name, opts):
         self._unit_end()
         self.index += 1
         if not name:
@@ -856,10 +877,20 @@ class CommentParser (object):
 
     # end of unit
     def _unit_end (self):
+        if self.name != '':
+            unit = UnitTest(self.name)
+            unit.stdin = '\n'.join(self.input)
+            unit.stdout = '\n'.join(self.output)
+            unit.opts = self.opts
+            self.units.append(unit)
+            self.name = ''
+            self.input = []
+            self.output = []
+            self.opts = None
         return 0
 
     # returns (name, opts)
-    def _check_head (self, text):
+    def _check_input (self, text):
         head = text.strip('#*\r\n\t ')
         if not head.startswith('@'):
             return None
@@ -888,6 +919,18 @@ class CommentParser (object):
                         opts[k] = v.strip('\r\n\t ')
             return (name, opts and opts or None)
         return ('', None)
+
+    # check if the comment is an output directive
+    def _check_output (self, text):
+        head = text.strip('#*\r\n\t ')
+        if not head.startswith('@'):
+            return False
+        if head == '@output':
+            return True
+        m = self.pattern2.match(head)
+        if m:
+            return True
+        return False
 
 
 
@@ -957,10 +1000,14 @@ if __name__ == '__main__':
             "  @ input",
             '@input:t1',
             "not matching",
-            "@output"
+            "@output",
+            "  @ output  : ",
         ]
         for test in test_strings:
-            print(cp._check_head(test))
+            print(cp._check_input(test))
+        print('--')
+        for test in test_strings:
+            print(cp._check_output(test))
     test7()
 
 
