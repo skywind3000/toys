@@ -14,6 +14,7 @@ import time
 import re
 import shutil
 import subprocess
+import shlex
 
 
 #----------------------------------------------------------------------
@@ -325,6 +326,7 @@ def getopt (argv, shortopts = ''):
 class configure (object):
 
     def __init__ (self, ininame = None):
+        t = time.time()
         self._config = {}
         self._binary = {}
         if not ininame:
@@ -435,7 +437,7 @@ class configure (object):
             else:
                 PATH = os.environ.get('PATH', '')
                 PATH = self._inibase + os.pathsep + PATH
-                cc = self.which(cc, PATH)
+                cc = shutil.which(cc, path = PATH)
         if not cc:
             for name in ('gcc', 'clang', 'cc'):
                 cc = shutil.which(name)
@@ -530,6 +532,18 @@ class configure (object):
             return extract_python_comments(content)
         return None
 
+    def gcc (self, args, cwd = None, timeout = None):
+        if 'cc' not in self._binary:
+            sys.stderr.write('C/C++ compiler not found\n')
+            sys.exit(1)
+        cc = self._binary['cc']
+        dirname = os.path.dirname(os.path.abspath(cc))
+        cmd = [self._binary['cc']] + args
+        env = {}
+        env['PATH'] = dirname + os.pathsep + os.environ.get('PATH', '')
+        return self.execute(cmd, cwd = cwd, env = env, timeout = timeout)
+
+
 
 '''
 @input:
@@ -541,15 +555,19 @@ class configure (object):
 
 
 #----------------------------------------------------------------------
-# code checker class
+# foundation class
 #----------------------------------------------------------------------
-class checker (object):
+class foundation (object):
 
     def __init__ (self, srcname):
         self.config = configure()
+        self.win32 = self.config.win32
         if '~' in srcname:
             srcname = os.path.expanduser(srcname)
         self.srcname = os.path.abspath(srcname)
+        self.exename = os.path.splitext(self.srcname)[0]
+        if self.win32:
+            self.exename += '.exe'
         self.srctype = self.config.check_source_type(srcname)
         if self.srctype not in ('c', 'cpp', 'python'):
             raise ValueError('Unsupported source type: %s' % self.srctype)
@@ -564,6 +582,57 @@ class checker (object):
             if 'python' not in self.config._binary:
                 raise ValueError('Python interpreter not found')
         return 0
+
+    def compile (self):
+        if 'cc' not in self.config._binary:
+            raise ValueError('C/C++ compiler not found')
+        if self.srctype not in ('c', 'cpp'):
+            raise ValueError('Source type is not C/C++')
+        args = [self.srcname, '-o', self.exename]
+        if self.srctype == 'cpp':
+            cc = self.config._binary['cc']
+            if '++' not in cc:
+                if 'gcc' in cc:
+                    args.append('-lstdc++')
+                elif 'clang' in cc:
+                    args.append('-lc++')
+        args.insert(0, '-D_CODECHECK=1')
+        flags = []
+        for name in ('flags', 'cflags', 'cxxflags', 'ldflags'):
+            if name not in self.config._config['default']:
+                continue
+            value = self.config._config['default'].get(name, '')
+            value = value.strip('\r\n\t ')
+            if not value:
+                continue
+            if name in ('flags', 'ldflags'):
+                flags.append(value)
+            elif name == 'cflags' and self.srctype == 'c':
+                flags.append(value)
+            elif name == 'cxxflags' and self.srctype == 'cpp':
+                flags.append(value)
+        text = ' '.join(flags)
+        text = text.strip('\r\n\t ')
+        if text:
+            import shlex
+            args += shlex.split(text)
+        else:
+            args = ['-O2', '-g', '-Wall'] + args + ['-lm']
+        cwd = os.path.dirname(self.srcname)
+        retcode = self.config.gcc(args, cwd = cwd)
+        if retcode != 0:
+            raise RuntimeError('Compilation failed with code %d' % retcode)
+        return True
+
+    def ensure_executable (self):
+        if self.srctype not in ('c', 'cpp'):
+            return False
+        if os.path.exists(self.exename):
+            ftime = os.path.getmtime(self.exename)
+            stime = os.path.getmtime(self.srcname)
+            if ftime >= stime:
+                return True
+        return True
 
 
 #----------------------------------------------------------------------
@@ -594,7 +663,11 @@ if __name__ == '__main__':
         print(cfg._binary)
         print(cfg.call(['python', '-c', 'print("hello", input())'], stdin = 'world'))
         return 0
-
-    test5()
+    def test6():
+        f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
+        print(f.exename)
+        # f.config.gcc(['--version'])
+        f.compile()
+    test6()
 
 
