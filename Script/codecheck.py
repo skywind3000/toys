@@ -479,7 +479,7 @@ class configure (object):
                                     timeout = timeout)
             return result.returncode
         except Exception as e:
-            print('Error executing command: %s' % str(e))
+            raise e
         return -1
 
     # execute command and capture output, returns (exit code, stdout, stderr)
@@ -492,7 +492,6 @@ class configure (object):
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
         try:
-            print('Executing command: %s' % ' '.join(args))
             result = subprocess.run(args, cwd = cwd, env = env,
                                     timeout = timeout,
                                     shell = False,
@@ -503,7 +502,7 @@ class configure (object):
             stderr = result.stderr.decode('utf-8', 'ignore')
             return (result.returncode, stdout, stderr)
         except Exception as e:
-            print('Error executing command: %s' % str(e))
+            raise e
         return (-1, '', '')
 
     # check source file type by extension
@@ -542,6 +541,14 @@ class configure (object):
         env = {}
         env['PATH'] = dirname + os.pathsep + os.environ.get('PATH', '')
         return self.execute(cmd, cwd = cwd, env = env, timeout = timeout)
+
+    def toolchain_path (self):
+        PATH = os.environ.get('PATH', '')
+        cc = self._binary.get('cc', '')
+        if not cc:
+            return PATH
+        dirname = os.path.dirname(os.path.abspath(cc))
+        return dirname + os.pathsep + PATH
 
     # set terminal color
     def console (self, color):
@@ -632,6 +639,7 @@ class foundation (object):
         if '~' in srcname:
             srcname = os.path.expanduser(srcname)
         self.srcname = os.path.abspath(srcname)
+        self.dirname = os.path.dirname(self.srcname)
         self.exename = os.path.splitext(self.srcname)[0]
         if self.win32:
             self.exename += '.exe'
@@ -718,10 +726,56 @@ class foundation (object):
             return False
         return True
 
-    # start the program
-    def start (self, timeout = None, capture = False, stdin = None):
-        return 0
+    # start the program, returns (exit code, stdout, stderr)
+    def start (self, capture = False, stdin = None, timeout = None):
+        cwd = self.dirname
+        env = None
+        args = []
+        if self.srctype in ('c', 'cpp'):
+            env = {}
+            env['PATH'] = self.config.toolchain_path()
+            exename = os.path.split(self.exename)[-1]
+            if self.win32:
+                args.append(self.exename)
+            else:
+                args.append(self.exename)
+        elif self.srctype == 'python':
+            args.append(self.config._binary['python'])
+            args.append(os.path.split(self.srcname)[-1])
+        else:
+            return (-1, '', '')
+        if not capture:
+            if not stdin:
+                code = self.config.execute(args, cwd, env, timeout)
+                return (code, '', '')
+            else:
+                hr = self.config.call(args, cwd, env, timeout, stdin)
+                code, stdout, stderr = hr
+                if stderr:
+                    self.echo(CC_GRAY, stderr)
+                if stdout:
+                    self.echo(COLOR_WHITE, stdout)
+                return (code, '', '')
+        hr = self.config.call(args, cwd, env, timeout, stdin)
+        code, stdout, stderr = hr
+        return (code, stdout, stderr)
 
+    def launch (self, capture = False, stdin = None, timeout = None):
+        if not self.ensure_executable():
+            return False
+        try:
+            hr = self.start(capture, stdin, timeout)
+        except FileNotFoundError as e:
+            self.echo(CC_BAD, 'ERROR: Executable not found: %s' % str(e))
+            return (-2, '', '')
+        except subprocess.TimeoutExpired as e:
+            self.echo(CC_BAD, 'ERROR: Timeout expired after %d seconds' % e.timeout)
+            return (-3, '', '')
+        except Exception as e:
+            hr = (-1, '', '')
+            self.echo(CC_BAD, 'ERROR: ' + str(e))
+            raise e
+        return hr
 
 
 #----------------------------------------------------------------------
@@ -755,8 +809,10 @@ if __name__ == '__main__':
     def test6():
         f = foundation('e:/lab/workshop/scratch/cpp/noi01.c')
         print(f.exename)
+        print(f.dirname)
         # f.config.gcc(['--version'])
         f.ensure_executable(True)
+        f.launch(capture = False, timeout = 3, stdin = '10 20')
     test6()
 
 
