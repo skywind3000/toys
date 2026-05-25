@@ -1244,7 +1244,7 @@ if __name__ == '__main__':
         # args = ['-d', f]
         main(args)
         return 0
-    test9()
-    # main()
+    # test9()
+    main()
 
 
