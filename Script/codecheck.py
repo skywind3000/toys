@@ -2,7 +2,48 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# codecheck.py - 
+# codecheck.py - Extract @input/@output test cases from source 
+#                comments and auto-verify
+#
+# Description:
+#   This tool scans C/C++/Python source files for comments marked 
+#   with @input and @output, compiles (C/C++) or directly runs the 
+#   source, feeds @input content as stdin, and compares actual output
+#   against @output expectations, enabling inline automated unit 
+#   testing within source code.
+#
+#   Three run modes are supported:
+#     start  - compile and run the source file (default)
+#     debug  - run a test case without comparing output
+#     check  - run test cases one by one and compare output
+#
+# Usage examples:
+#   codecheck.py hello.c            # compile and run
+#   codecheck.py -c hello.c         # check all test cases
+#   codecheck.py -c -1 hello.c      # check only the 1st test case
+#   codecheck.py -d hello.c         # debug run (no output compare)
+#   codecheck.py -d -2 hello.c      # debug the 2nd test case
+#
+# Embedding test cases in C/C++ source:
+#   // @input: test1
+#   // 10 20
+#   // @output:
+#   // 30 
+#
+# Embedding test cases in Python source:
+#   # @input: test1
+#   # 10 20
+#   # @output:
+#   # 30
+#
+# Config file: ~/.config/codecheck.ini
+#   [default]
+#   cc = /usr/bin/gcc          # C/C++ compiler path
+#   python = /usr/bin/python3  # Python interpreter path
+#   flags = -O2 -g -Wall       # default compile flags
+#   cflags = ...               # C-specific compile flags
+#   cxxflags = ...             # C++-specific compile flags
+#   ldflags = ...              # linker flags
 #
 # Created by skywind on 2026/05/23
 # Last Modified: 2026/05/25 22:56:37
@@ -449,6 +490,9 @@ class configure (object):
                     cc += '.exe'
             if os.path.isabs(cc):
                 if not os.path.isfile(cc) or not os.access(cc, os.X_OK):
+                    sys.stderr.write('Warning: C/C++ compiler not found at %s\n' % cc)
+                    sys.stderr.write('Check your config file %s\n' % self._ininame)
+                    sys.exit(1)
                     cc = ''
             else:
                 PATH = os.environ.get('PATH', '')
