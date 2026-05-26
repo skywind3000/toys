@@ -2,20 +2,21 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# codecheck.py - Extract @input/@output test cases from source 
-#                comments and auto-verify
+# codecheck.py - Extract @input/@output/@args/@timeout test directives
+#                from source comments and verify expected output
 #
 # Description:
-#   This tool scans C/C++/Python source files for comments marked 
-#   with @input and @output, compiles (C/C++) or directly runs the 
-#   source, feeds @input content as stdin, and compares actual output
-#   against @output expectations, enabling inline automated unit 
-#   testing within source code.
+#   This tool scans C/C++/Python source files for embedded test 
+#   directives (@input, @output, @args, @timeout) in comments, 
+#   compiles (for C/C++) or directly runs (for Python) the source, 
+#   feeds @input as stdin, and compares actual output against @output
+#   expectations — enabling automated unit testing embedded directly
+#   in source code comments.
 #
 #   Three run modes are supported:
-#     start  - compile and run the source file (default)
-#     debug  - run a test case without comparing output
-#     check  - run test cases one by one and compare output
+#     start  - compile and run the source file (default, no test verification)
+#     debug  - run a test case with @input as stdin but without output comparison
+#     check  - run test cases one by one and verify output against @output
 #
 # Usage examples:
 #   codecheck.py hello.c            # compile and run
@@ -52,7 +53,6 @@
 #======================================================================
 import sys
 import os
-import time
 import re
 import shutil
 import subprocess
@@ -380,14 +380,13 @@ def text_normalize(text):
 class configure (object):
 
     def __init__ (self, ininame = None):
-        t = time.time()
         self._config = {}
         self._binary = {}
         if not ininame:
             ininame = os.path.expanduser('~/.config/codecheck.ini')
+        self._ininame = os.path.abspath(ininame)
+        self._inibase = os.path.dirname(self._ininame)
         if os.path.isfile(ininame):
-            self._ininame = os.path.abspath(ininame)
-            self._inibase = os.path.dirname(self._ininame)
             self._config = self.load_ini(self._ininame)
         if 'default' not in self._config:
             self._config['default'] = {}
@@ -399,7 +398,7 @@ class configure (object):
     def load_file_content (self, filename, mode = 'r'):
         if hasattr(filename, 'read'):
             try: content = filename.read()
-            except: content = None
+            except Exception: content = None
             return content
         try:
             if '~' in filename:
@@ -407,7 +406,7 @@ class configure (object):
             fp = open(filename, mode)
             content = fp.read()
             fp.close()
-        except:
+        except Exception:
             content = None
         return content
 
@@ -428,7 +427,7 @@ class configure (object):
             try:
                 import locale
                 guess.append(locale.getpreferredencoding())
-            except:
+            except Exception:
                 pass
             visit = {}
             for name in guess + ['gbk', 'ascii', 'latin1']:
@@ -438,7 +437,7 @@ class configure (object):
                 try:
                     text = content.decode(name)
                     break
-                except:
+                except (UnicodeDecodeError, LookupError):
                     pass
             if text is None:
                 text = content.decode('utf-8', 'ignore')
@@ -528,6 +527,23 @@ class configure (object):
             self._binary['python'] = os.path.abspath(py)
         return 0
 
+    # read config
+    def read_config (self, section, key, default = None):
+        if section not in self._config:
+            return default
+        return self._config[section].get(key, default)
+
+    # read config value as int
+    def read_int (self, section, key, default = -1):
+        val = self.read_config(section, key, None)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except ValueError:
+            pass
+        return default
+
     # execute command without capture, returns exit code
     def execute (self, args, cwd = None, env = None, timeout = None, stdin = None):
         if env:
@@ -537,15 +553,11 @@ class configure (object):
         if stdin:
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
-        try:
-            result = subprocess.run(args, cwd = cwd, env = env, 
-                                    shell = False,
-                                    input = stdin,
-                                    timeout = timeout)
-            return result.returncode
-        except Exception as e:
-            raise e
-        return -1
+        result = subprocess.run(args, cwd = cwd, env = env,
+                                shell = False,
+                                input = stdin,
+                                timeout = timeout)
+        return result.returncode
 
     # execute command and capture output, returns (exit code, stdout, stderr)
     def capture (self, args, cwd = None, env = None, timeout = None, stdin = None):
@@ -556,19 +568,15 @@ class configure (object):
         if stdin:
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
-        try:
-            result = subprocess.run(args, cwd = cwd, env = env,
-                                    timeout = timeout,
-                                    shell = False,
-                                    input = stdin,
-                                    stdout = subprocess.PIPE,
-                                    stderr = subprocess.PIPE)
-            stdout = result.stdout.decode('utf-8', 'ignore')
-            stderr = result.stderr.decode('utf-8', 'ignore')
-            return (result.returncode, stdout, stderr)
-        except Exception as e:
-            raise e
-        return (-1, '', '')
+        result = subprocess.run(args, cwd = cwd, env = env,
+                                timeout = timeout,
+                                shell = False,
+                                input = stdin,
+                                stdout = subprocess.PIPE,
+                                stderr = subprocess.PIPE)
+        stdout = result.stdout.decode('utf-8', 'ignore')
+        stderr = result.stderr.decode('utf-8', 'ignore')
+        return (result.returncode, stdout, stderr)
 
     # check source file type by extension
     def check_source_type (self, filename):
@@ -804,11 +812,7 @@ class foundation (object):
         if self.srctype in ('c', 'cpp'):
             env = {}
             env['PATH'] = self.config.toolchain_path()
-            exename = os.path.split(self.exename)[-1]
-            if self.win32:
-                args.append(self.exename)
-            else:
-                args.append(self.exename)
+            args.append(self.exename)
         elif self.srctype == 'python':
             args.append(self.config._binary['python'])
             args.append(self.srcname)
@@ -829,7 +833,7 @@ class foundation (object):
 
     def launch (self, capture = False, stdin = None, timeout = None, args = None):
         if not self.ensure_executable():
-            return False
+            return (-1, '', '')
         if not capture:
             if self.compiled:
                 self.echo(CC_NOTICE, 'Running %s ...' % os.path.split(self.exename)[-1])
@@ -889,6 +893,7 @@ class CommentParser (object):
         self.pattern1 = re.compile(r'^\s*@\s*input\s*(:.*)?$', re.IGNORECASE)
         self.pattern2 = re.compile(r'^\s*@\s*output\s*(:.*)?$', re.IGNORECASE)
         self.pattern3 = re.compile(r'^\s*@\s*args\s*(:.*)?$', re.IGNORECASE)
+        self.pattern4 = re.compile(r'^\s*@\s*timeout\s*(:.*)?$', re.IGNORECASE)
         self.reset()
 
     def reset (self):
@@ -901,6 +906,7 @@ class CommentParser (object):
         self.state = 0
         self.index = 0
         self.next = 0
+        self.timeout = None
 
     def process (self, comments):
         self.reset()
@@ -919,6 +925,8 @@ class CommentParser (object):
             args = self._check_args(test)
             if args is not None:
                 self.args = args
+                continue
+            if self._check_timeout(test):
                 continue
             if self.state == 1:
                 if lnum == self.next:
@@ -961,6 +969,24 @@ class CommentParser (object):
             self.output = []
             self.opts = None
         return 0
+
+    def _check_timeout (self, text):
+        head = text.strip('#*\r\n\t ')
+        if not head.startswith('@'):
+            return False
+        m = self.pattern4.match(head)
+        if not m:
+            return False
+        meta = m.group(1)
+        if meta:
+            meta = meta.strip('\r\n\t ')
+            if meta.startswith(':'):
+                meta = meta[1:].strip('\r\n\t ')
+            try:
+                self.timeout = int(meta)
+            except ValueError:
+                pass
+        return True
 
     def _check_args (self, text):
         head = text.strip('#*\r\n\t ')
@@ -1070,6 +1096,13 @@ class CodeCheck (object):
         self.parser: CommentParser = CommentParser()
         self.units = []
         self._parse_comment()
+        self._default_settings()
+
+    def _default_settings (self):
+        config = self.config
+        if 'timeout' not in config._config['default']:
+            config._config['default']['timeout'] = '10'
+        return 0
 
     def _parse_comment (self):
         comments = self.config.extract_comments(self.foundation.srcname)
@@ -1099,8 +1132,8 @@ class CodeCheck (object):
     def start (self):
         if not self.foundation.ensure_executable():
             return 1
-        r = self._launch(False, None, None)
-        if not r:
+        code, _, _ = self._launch(False, None, None)
+        if code < 0:
             return 2
         return 0
 
@@ -1111,7 +1144,9 @@ class CodeCheck (object):
         args = None
         if self.parser.args:
             args = self.parser.args
-        r = self._launch(False, None, None, args)
+        code, _, _ = self._launch(False, None, None, args)
+        if code < 0:
+            return 2
         return 0
 
     # start a unit test by index (1-based) without compare output
@@ -1134,9 +1169,11 @@ class CodeCheck (object):
         if unit.opts and 'timeout' in unit.opts:
             try:
                 timeout = int(unit.opts['timeout'])
-            except:
+            except ValueError:
                 pass
-        hr = self._launch(False, unit.stdin, timeout)
+        code, _, _ = self._launch(False, unit.stdin, timeout)
+        if code < 0:
+            return 2
         return 0
 
     # check each unit test, returns a list of (unit, result) pairs
@@ -1147,14 +1184,17 @@ class CodeCheck (object):
             self.echo(CC_NOTICE, 'No unit tests found in comments.')
             return 0
         passed = 0
+        _timeout = self.config.read_int('default', 'timeout', 10)
+        if _timeout < 0:
+            _timeout = None
         for unit in self.units:
             if enabled and unit.index not in enabled:
                 continue
-            timeout = None
+            timeout = _timeout
             if unit.opts and 'timeout' in unit.opts:
                 try:
                     timeout = int(unit.opts['timeout'])
-                except:
+                except ValueError:
                     pass
             self.color(CC_UNIT)
             sys.stdout.write('[%d/%d] Running unit test: %s ... ' % 
@@ -1199,10 +1239,10 @@ def help():
     print('Usage: python %s [options] <source-file>' % fn)
     print('options:')
     print('  -h, --help     show this help message and exit')
-    print('  -c, --check    check the source file with unit tests')
-    print('  -d, --debug    debug the source file without compare output')
-    print('  -a, --args     run the source file with args specified in comments')
-    print('  -{num}         check only the unit test with the given index (1-based)')
+    print('  -c, --check    run embedded unit tests and verify output')
+    print('  -d, --debug    run a test case without comparing output')
+    print('  -a, --args     run with command-line arguments from @args directive')
+    print('  -{num}         select a specific test case by index (1-based, use with -c/-d)')
     return 0
 
 
