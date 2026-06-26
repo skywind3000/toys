@@ -14,12 +14,28 @@
 #
 #   Supported source types (by extension):
 #     .c/.cc/.cxx/.cpp/.h/.hpp/.hh/.cs/.java/.js/.ts/.as/.go  -> C-style
-#     .py                                                       -> Python
-#   C-style comments (// and /* */) and Python line comments (#) are
-#   recognized. Triple-quoted strings ("""/''', including prefixed
-#   forms like r"""/f'...') are NOT treated as comments — they are
-#   tokenized as string literals so a '#' inside them is ignored, but
-#   their text is never scanned for @command directives.
+#     .rs                                                      -> Rust (C-style)
+#     .pas/.pp/.dpr/.lpr                                       -> Pascal
+#     .php/.phtml                                              -> PHP
+#     .pl/.pm                                                  -> Perl
+#     .sh/.bash                                                -> Shell/Bash
+#     .lua                                                     -> Lua
+#     .hs                                                      -> Haskell
+#     .erl/.hrl                                                -> Erlang
+#     .ps1/.psm1                                               -> PowerShell
+#     .py                                                      -> Python
+#   Comment styles recognized per language:
+#     C-style/Rust/PHP : // line, /* */ block  (PHP also has # line)
+#     Pascal           : { } block, (* *) block, // line
+#     Perl/Bash        : # line
+#     Lua              : -- line, --[[ ]] block
+#     Haskell          : -- line, {- -} block
+#     Erlang           : % line
+#     PowerShell       : # line, <# #> block
+#     Python           : # line
+#   String literals are tokenized so comment markers inside them are
+#   ignored. Triple-quoted Python strings are NOT scanned for @command
+#   directives. Nested block comments (Haskell, Rust) are not handled.
 #
 # Command directive syntax in comments:
 #   // @command(name): <shell command>
@@ -169,11 +185,75 @@ PATTERN_PY_STR1 = r"'(?:\\.|[^'\\\r\n])*'"
 PATTERN_PY_STR2 = r'"(?:\\.|[^"\\\r\n])*"'
 PATTERN_PY_MISMATCH = r'.'
 
+# reusable line-comment markers (match to end of line, excluding newlines)
+PATTERN_LINE_DASH2    = r'--[^\r\n]*'             # -- line (lua, haskell)
+PATTERN_LINE_PERCENT  = r'%[^\r\n]*'              # % line (erlang)
+# reusable block-comment markers (may span lines via [\s\S])
+PATTERN_BLOCK_BRACE   = r'\{[^}]*\}'              # Pascal { }
+PATTERN_BLOCK_PSTAR   = r'\(\*[\s\S]*?\*\)'       # Pascal (* *)
+PATTERN_BLOCK_LUA     = r'--\[\[[\s\S]*?\]\]'     # Lua --[[ ]]
+PATTERN_BLOCK_HASKELL = r'\{-[\s\S]*?-\}'         # Haskell {- -}
+PATTERN_BLOCK_PWSH    = r'<#[\s\S]*?#>'           # PowerShell <# #>
+PATTERN_LUA_LONGSTR   = r'\[\[[\s\S]*?\]\]'       # Lua [[ ]] long string (skip)
+
+
+#----------------------------------------------------------------------
+# generic comment extractor: tokenize once, dispatch each comment
+# token to a handler that returns its text as a list of source lines.
+#----------------------------------------------------------------------
+def _line_comment_handler (mark):
+    # handler for a single-line comment: strip the leading marker and
+    # return a one-element list; the collector attributes it to the
+    # token's start line.
+    def handler (value):
+        text = value
+        if text.startswith(mark):
+            text = text[len(mark):]
+        return [text]
+    return handler
+
+def _block_comment_handler (start, end):
+    # handler for a block comment: strip the start/end delimiters, trim
+    # surrounding whitespace, and split into per-source-line parts. the
+    # matched text may span several lines.
+    def handler (value):
+        text = value
+        if text.startswith(start):
+            text = text[len(start):]
+        if text.endswith(end):
+            text = text[:-len(end)]
+        text = text.strip('\r\n\t ')
+        return text.split('\n')
+    return handler
+
+def _collect_comments (code, specs, handlers):
+    # tokenize `code` with `specs`; for each token whose name is a key
+    # in `handlers`, call the handler to obtain comment text lines and
+    # merge them into a per-line dict (multiple comments on one line
+    # are joined with a space). returns sorted (line, text) pairs.
+    comments = {}
+    for name, value, lnum, column in tokenize(code, specs):
+        handler = handlers.get(name)
+        if handler is None:
+            continue
+        line = lnum
+        for part in handler(value):
+            part = part.strip('\r\n\t ')
+            if line not in comments:
+                comments[line] = []
+            comments[line].append(part)
+            line += 1
+    output = []
+    for lnum in sorted(comments.keys()):
+        text = ' '.join(comments[lnum]).strip('\r\n\t ')
+        output.append((lnum, text))
+    return output
+
 
 #----------------------------------------------------------------------
 # returns a list of (line, comment) pairs for python
 #----------------------------------------------------------------------
-def extract_python_comments(code):
+def extract_python_comments (code):
     specs = [
         ('WHITESPACE', PATTERN_WHITESPACE),
         ('PY_COMMENT', PATTERN_PY_COMMENT),
@@ -187,75 +267,192 @@ def extract_python_comments(code):
         ('PY_STR2', PATTERN_PY_STR2),
         ('NAME', PATTERN_NAME),
         ('NUMBER', PATTERN_NUMBER),
-        ('PY_MISMATCH', PATTERN_PY_MISMATCH)
+        ('PY_MISMATCH', PATTERN_PY_MISMATCH),
     ]
-    comments = {}
-    for name, value, lnum, column in tokenize(code, specs):
-        if name == 'PY_COMMENT':
-            comment = value.strip('\r\n\t ')
-            if comment.startswith('#'):
-                comment = comment[1:].strip()
-            if lnum not in comments:
-                comments[lnum] = []
-            comments[lnum].append(comment)
-    output = []
-    lines = list(comments.keys())
-    lines.sort()
-    for lnum in lines:
-        comment = comments[lnum]
-        text = ' '.join(comment)
-        text = text.strip('\r\n\t ')
-        output.append((lnum, text))
-    return output
+    handlers = {'PY_COMMENT': _line_comment_handler('#')}
+    return _collect_comments(code, specs, handlers)
 
 
 #----------------------------------------------------------------------
 # returns a list of (line, comment) pairs
 #----------------------------------------------------------------------
-def extract_cpp_comments(code):
+def extract_cpp_comments (code):
     specs = [
         ('WHITESPACE', PATTERN_WHITESPACE),
-        ('COMMENT1', PATTERN_COMMENT1),
-        ('COMMENT2', PATTERN_COMMENT2),
-        ('NAME', PATTERN_NAME),
+        ('COMMENT1', PATTERN_COMMENT1),       # // line
+        ('COMMENT2', PATTERN_COMMENT2),       # /* */ block
         ('STRING', PATTERN_STRING1),
         ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
         ('NUMBER', PATTERN_NUMBER),
-        ('CINTEGER', PATTERN_CINTEGER),
-        ('MISMATCH', PATTERN_MISMATCH)
+        ('MISMATCH', PATTERN_MISMATCH),
     ]
-    comments = {}
-    for name, value, lnum, column in tokenize(code, specs):
-        if name == 'COMMENT1':
-            comment = value.strip('\r\n\t ')
-            if comment.startswith('//'):
-                comment = comment[2:].strip()
-            if lnum not in comments:
-                comments[lnum] = []
-            comments[lnum].append(comment)
-        elif name == 'COMMENT2':
-            comment = value.strip('\r\n\t ')
-            if comment.startswith('/*'):
-                comment = comment[2:]
-            if comment.endswith('*/'):
-                comment = comment[:-2]
-            comment = comment.strip('\r\n\t ')
-            line = lnum
-            for text in comment.split('\n'):
-                text = text.strip('\r\n\t ')
-                if line not in comments:
-                    comments[line] = []
-                comments[line].append(text)
-                line += 1
-    output = []
-    lines = list(comments.keys())
-    lines.sort()
-    for lnum in lines:
-        comment = comments[lnum]
-        text = ' '.join(comment)
-        text = text.strip('\r\n\t ')
-        output.append((lnum, text))
-    return output
+    handlers = {
+        'COMMENT1': _line_comment_handler('//'),
+        'COMMENT2': _block_comment_handler('/*', '*/'),
+    }
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# pascal: { } and (* *) block comments, // line comments
+#----------------------------------------------------------------------
+def extract_pascal_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('BLOCK_BRACE', PATTERN_BLOCK_BRACE),
+        ('BLOCK_PSTAR', PATTERN_BLOCK_PSTAR),
+        ('COMMENT1', PATTERN_COMMENT1),
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {
+        'BLOCK_BRACE': _block_comment_handler('{', '}'),
+        'BLOCK_PSTAR': _block_comment_handler('(*', '*)'),
+        'COMMENT1': _line_comment_handler('//'),
+    }
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# php: // and # line comments, /* */ block comments
+#----------------------------------------------------------------------
+def extract_php_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('COMMENT2', PATTERN_COMMENT2),       # /* */ block
+        ('COMMENT1', PATTERN_COMMENT1),       # // line
+        ('HASH', PATTERN_PY_COMMENT),         # # line
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {
+        'COMMENT2': _block_comment_handler('/*', '*/'),
+        'COMMENT1': _line_comment_handler('//'),
+        'HASH': _line_comment_handler('#'),
+    }
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# perl: # line comments (POD blocks are not extracted)
+#----------------------------------------------------------------------
+def extract_perl_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('HASH', PATTERN_PY_COMMENT),
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {'HASH': _line_comment_handler('#')}
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# bash/shell: # line comments
+#----------------------------------------------------------------------
+def extract_bash_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('HASH', PATTERN_PY_COMMENT),
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {'HASH': _line_comment_handler('#')}
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# lua: -- line comments and --[[ ]] block comments
+#----------------------------------------------------------------------
+def extract_lua_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('BLOCK_LUA', PATTERN_BLOCK_LUA),       # --[[ ]] (before -- line)
+        ('LUA_LONGSTR', PATTERN_LUA_LONGSTR),   # [[ ]] long string (skip)
+        ('LINE_DASH2', PATTERN_LINE_DASH2),     # --
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {
+        'BLOCK_LUA': _block_comment_handler('--[[', ']]'),
+        'LINE_DASH2': _line_comment_handler('--'),
+    }
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# haskell: -- line comments and {- -} block comments
+#----------------------------------------------------------------------
+def extract_haskell_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('BLOCK_HASKELL', PATTERN_BLOCK_HASKELL),  # {- -} (before -- line)
+        ('LINE_DASH2', PATTERN_LINE_DASH2),        # --
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {
+        'BLOCK_HASKELL': _block_comment_handler('{-', '-}'),
+        'LINE_DASH2': _line_comment_handler('--'),
+    }
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# erlang: % line comments
+#----------------------------------------------------------------------
+def extract_erlang_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('LINE_PERCENT', PATTERN_LINE_PERCENT),
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {'LINE_PERCENT': _line_comment_handler('%')}
+    return _collect_comments(code, specs, handlers)
+
+
+#----------------------------------------------------------------------
+# powershell: # line comments and <# #> block comments
+#----------------------------------------------------------------------
+def extract_powershell_comments (code):
+    specs = [
+        ('WHITESPACE', PATTERN_WHITESPACE),
+        ('BLOCK_PWSH', PATTERN_BLOCK_PWSH),       # <# #>
+        ('HASH', PATTERN_PY_COMMENT),             # # line
+        ('STRING', PATTERN_STRING1),
+        ('STRING', PATTERN_STRING2),
+        ('NAME', PATTERN_NAME),
+        ('NUMBER', PATTERN_NUMBER),
+        ('MISMATCH', PATTERN_MISMATCH),
+    ]
+    handlers = {
+        'BLOCK_PWSH': _block_comment_handler('<#', '#>'),
+        'HASH': _line_comment_handler('#'),
+    }
+    return _collect_comments(code, specs, handlers)
 
 
 #----------------------------------------------------------------------
@@ -427,6 +624,23 @@ EXTRACTORS = {
     '.ts': extract_cpp_comments,
     '.as': extract_cpp_comments,
     '.go': extract_cpp_comments,
+    '.rs': extract_cpp_comments,
+    '.pas': extract_pascal_comments,
+    '.pp': extract_pascal_comments,
+    '.dpr': extract_pascal_comments,
+    '.lpr': extract_pascal_comments,
+    '.php': extract_php_comments,
+    '.phtml': extract_php_comments,
+    '.pl': extract_perl_comments,
+    '.pm': extract_perl_comments,
+    '.sh': extract_bash_comments,
+    '.bash': extract_bash_comments,
+    '.lua': extract_lua_comments,
+    '.hs': extract_haskell_comments,
+    '.erl': extract_erlang_comments,
+    '.hrl': extract_erlang_comments,
+    '.ps1': extract_powershell_comments,
+    '.psm1': extract_powershell_comments,
     '.py': extract_python_comments,
 }
 
