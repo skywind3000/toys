@@ -600,14 +600,6 @@ class configure (object):
         return 0
 
 
-#----------------------------------------------------------------------
-# commands in comment
-#----------------------------------------------------------------------
-# @command(build): gcc -o $(FILENOEXT) (FILENAME)
-# @command(run-win32/win32): echo running on windows
-# @command(run-linux/linux): echo running on linux
-# @command(echo): echo source: "$(FILEPATH)"
-
 
 #----------------------------------------------------------------------
 # help()
@@ -654,6 +646,15 @@ def main(argv = None):
     command = args[1]
     cc.quickrun(command)
     return 0
+
+
+#----------------------------------------------------------------------
+# commands in comment
+#----------------------------------------------------------------------
+# @command(build): gcc -o $(FILENOEXT) (FILENAME)
+# @command(run-win32/win32): echo running on windows
+# @command(run-linux/linux): echo running on linux
+# @command(echo): echo source: "$(FILEPATH)"
 
 
 #----------------------------------------------------------------------
