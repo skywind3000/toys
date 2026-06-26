@@ -343,8 +343,10 @@ class configure (object):
     def __init__ (self, srcname):
         self.srcname = os.path.abspath(srcname and srcname or __file__)
         self.dirname = os.path.dirname(self.srcname)
+        self.extname = os.path.splitext(self.srcname)[1].lower()
         self.basename = os.path.basename(self.srcname)
         self.target = TARGET
+        self.commands = {}
         self.environ = {}
         self.environ['FILENAME'] = self.basename
         self.environ['FILEPATH'] = self.srcname
@@ -405,19 +407,123 @@ class configure (object):
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
         result = subprocess.run(args, cwd = cwd, env = env,
-                                shell = False,
+                                shell = True,
                                 input = stdin,
                                 timeout = timeout)
         return result.returncode
 
-    def ensure_cmd (self):
-        return 0
+    def system (self, cmd, cwd = None, env = None):
+        return self.execute(cmd, cwd, env)
 
     def print (self):
         import pprint
         pprint.pprint(self.environ)
         return 0
 
+    # load content
+    def load_file_content (self, filename, mode = 'r'):
+        if hasattr(filename, 'read'):
+            try: content = filename.read()
+            except Exception: content = None
+            return content
+        try:
+            if '~' in filename:
+                filename = os.path.expanduser(filename)
+            fp = open(filename, mode)
+            content = fp.read()
+            fp.close()
+        except Exception:
+            content = None
+        return content
+
+    # load file and guess encoding
+    def load_file_text (self, filename, encoding = None):
+        content = self.load_file_content(filename, 'rb')
+        if content is None:
+            return None
+        if content[:3] == b'\xef\xbb\xbf':
+            text = content[3:].decode('utf-8')
+        elif encoding is not None:
+            text = content.decode(encoding, 'ignore')
+        else:
+            text = None
+            guess = [sys.getdefaultencoding(), 'utf-8']
+            if sys.stdout and sys.stdout.encoding:
+                guess.append(sys.stdout.encoding)
+            try:
+                import locale
+                guess.append(locale.getpreferredencoding())
+            except Exception:
+                pass
+            visit = {}
+            for name in guess + ['gbk', 'ascii', 'latin1']:
+                if name in visit:
+                    continue
+                visit[name] = 1
+                try:
+                    text = content.decode(name)
+                    break
+                except (UnicodeDecodeError, LookupError):
+                    pass
+            if text is None:
+                text = content.decode('utf-8', 'ignore')
+        return text
+
+    def extract_comments (self, filename):
+        if not os.path.exists(filename):
+            sys.stderr.write('error: file not found: %s\n' % self.srcname)
+            raise FileNotFoundError(filename)
+        extname = os.path.splitext(filename)[1].lower()
+        if extname not in EXTRACTORS:
+            sys.stderr.write('error: no extractor for file type %s\n' % self.extname)
+            raise ValueError('no extractor for file type %s' % self.extname)
+        extractor = EXTRACTORS[extname]
+        content = self.load_file_text(filename)
+        comments = extractor(content)
+        return comments
+
+    def load (self):
+        comments = self.extract_comments(self.srcname)
+        self.commands = {}
+        for lnum, text in comments:
+            text = text.strip('\r\n\t ')
+            if not text:
+                continue
+            if not text.startswith('@'):
+                continue
+            text = text[1:].strip('\r\n\t ')
+            if not text.startswith('command'):
+                continue
+            text = text[len('command'):].strip('\r\n\t ')
+            if not ':' in text:
+                continue
+            key, _, val = text.partition(':')
+            key = key.strip('\r\n\t ')
+            val = val.strip('\r\n\t ')
+            if not key:
+                continue
+            if not key.startswith('('):
+                continue
+            if not key.endswith(')'):
+                continue
+            key = key[1:-1].strip('\r\n\t ')
+            name, _, condition = key.partition('/')
+            name = name.strip('\r\n\t ')
+            condition = condition.strip('\r\n\t ')
+            print(f'name: {name}, condition: {condition}, val: {val}')
+            if condition and condition != self.target:
+                continue
+            self.commands[name] = val
+        return 0
+
+
+
+#----------------------------------------------------------------------
+# test comments
+#----------------------------------------------------------------------
+# @command(build): gcc -o $(FILENOEXT) (FILENAME)
+# @command(run-win32/win32): echo running on windows
+# @command(run-linux/linux): echo running on linux
 
 
 #----------------------------------------------------------------------
@@ -437,6 +543,8 @@ if __name__ == '__main__':
     def test2():
         c = configure(None)
         c.print()
+        c.load()
+        pprint.pprint(c.commands)
         return 0
 
     test2()
