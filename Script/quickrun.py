@@ -510,7 +510,6 @@ class configure (object):
             name, _, condition = key.partition('/')
             name = name.strip('\r\n\t ')
             condition = condition.strip('\r\n\t ')
-            print(f'name: {name}, condition: {condition}, val: {val}')
             if condition and condition != self.target:
                 continue
             self.commands[name] = val
