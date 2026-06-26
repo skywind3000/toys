@@ -529,12 +529,12 @@ class configure (object):
 
     def extract_comments (self, filename):
         if not os.path.exists(filename):
-            sys.stderr.write('error: file not found: %s\n' % self.srcname)
+            sys.stderr.write('error: file not found: %s\n' % filename)
             raise FileNotFoundError(filename)
         extname = os.path.splitext(filename)[1].lower()
         if extname not in EXTRACTORS:
-            sys.stderr.write('error: no extractor for file type %s\n' % self.extname)
-            raise ValueError('no extractor for file type %s' % self.extname)
+            sys.stderr.write('error: no extractor for file type %s\n' % extname)
+            raise ValueError('no extractor for file type %s' % extname)
         extractor = EXTRACTORS[extname]
         content = self.load_file_text(filename)
         comments = extractor(content)
@@ -622,13 +622,13 @@ def main(argv = None):
     argv = argv if argv is not None else sys.argv[1:]
     args = [n for n in argv]
     options, args = getopt(args, 't')
+    if ('h' in options) or ('help' in options):
+        help()
+        return 0
     if not args:
         print('filename is not provided, use -h for help')
         return 1
     srcname = args[0]
-    if ('h' in options) or ('help' in options):
-        help()
-        return 0
     global TARGET
     if 't' in options:
         TARGET = options['t']
@@ -644,8 +644,7 @@ def main(argv = None):
         cc.list()
         return 0
     command = args[1]
-    cc.quickrun(command)
-    return 0
+    return cc.quickrun(command)
 
 
 #----------------------------------------------------------------------
@@ -687,6 +686,6 @@ if __name__ == '__main__':
         return 0
 
     # test3()
-    main()
+    sys.exit(main())
 
 
