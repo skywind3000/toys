@@ -15,9 +15,11 @@
 #   Supported source types (by extension):
 #     .c/.cc/.cxx/.cpp/.h/.hpp/.hh/.cs/.java/.js/.ts/.as/.go  -> C-style
 #     .py                                                       -> Python
-#   C-style comments (// and /* */) and Python comments (#, """,
-#   ''' and prefixed strings like r""" / f'...' / b"...") are
-#   recognized.
+#   C-style comments (// and /* */) and Python line comments (#) are
+#   recognized. Triple-quoted strings ("""/''', including prefixed
+#   forms like r"""/f'...') are NOT treated as comments — they are
+#   tokenized as string literals so a '#' inside them is ignored, but
+#   their text is never scanned for @command directives.
 #
 # Command directive syntax in comments:
 #   // @command(name): <shell command>
@@ -196,26 +198,6 @@ def extract_python_comments(code):
             if lnum not in comments:
                 comments[lnum] = []
             comments[lnum].append(comment)
-        elif name in ('PY_STRING3D', 'PY_STRING3S'):
-            text = value[3:-3].strip('\r\n\t ')
-            line = lnum
-            for part in text.split('\n'):
-                part = part.strip('\r\n\t ')
-                if line not in comments:
-                    comments[line] = []
-                comments[line].append(part)
-                line += 1
-        elif name in ('PY_PSTR3D', 'PY_PSTR3S'):
-            # prefix triple-quoted: strip prefix + quotes
-            idx = value.index('"') if '"' in value[:4] else value.index("'")
-            text = value[idx + 3:-3].strip('\r\n\t ')
-            line = lnum
-            for part in text.split('\n'):
-                part = part.strip('\r\n\t ')
-                if line not in comments:
-                    comments[line] = []
-                comments[line].append(part)
-                line += 1
     output = []
     lines = list(comments.keys())
     lines.sort()
@@ -460,12 +442,12 @@ TARGET = sys.platform
 #----------------------------------------------------------------------
 class configure (object):
 
-    def __init__ (self, srcname):
+    def __init__ (self, srcname, target = None):
         self.srcname = os.path.abspath(srcname and srcname or __file__)
         self.dirname = os.path.dirname(self.srcname)
         self.extname = os.path.splitext(self.srcname)[1].lower()
         self.basename = os.path.basename(self.srcname)
-        self.target = TARGET
+        self.target = target if target else TARGET
         self.commands = {}
         self.names = []
         self.environ = {}
@@ -535,7 +517,7 @@ class configure (object):
     def system (self, cmd, cwd = None, env = None):
         return self.execute(cmd, cwd, env)
 
-    def print (self):
+    def show_env (self):
         import pprint
         pprint.pprint(self.environ)
         return 0
@@ -561,50 +543,56 @@ class configure (object):
         content = self.load_file_content(filename, 'rb')
         if content is None:
             return None
+        # BOM detection: UTF-8 / UTF-16 LE / UTF-16 BE
         if content[:3] == b'\xef\xbb\xbf':
-            text = content[3:].decode('utf-8')
-        elif encoding is not None:
-            text = content.decode(encoding, 'ignore')
-        else:
-            text = None
-            guess = [sys.getdefaultencoding(), 'utf-8']
-            if sys.stdout and sys.stdout.encoding:
-                guess.append(sys.stdout.encoding)
+            return content[3:].decode('utf-8')
+        if content[:2] == b'\xff\xfe':
+            return content[2:].decode('utf-16-le')
+        if content[:2] == b'\xfe\xff':
+            return content[2:].decode('utf-16-be')
+        if encoding is not None:
+            return content.decode(encoding, 'ignore')
+        # try common encodings in order; latin1 never fails (last resort)
+        guess = ['utf-8', 'gbk']
+        try:
+            import locale
+            pe = locale.getpreferredencoding()
+            if pe:
+                guess.append(pe)
+        except Exception:
+            pass
+        visit = {}
+        for name in guess:
+            if not name or name in visit:
+                continue
+            visit[name] = 1
             try:
-                import locale
-                guess.append(locale.getpreferredencoding())
-            except Exception:
+                return content.decode(name)
+            except (UnicodeDecodeError, LookupError):
                 pass
-            visit = {}
-            for name in guess + ['gbk', 'ascii', 'latin1']:
-                if name in visit:
-                    continue
-                visit[name] = 1
-                try:
-                    text = content.decode(name)
-                    break
-                except (UnicodeDecodeError, LookupError):
-                    pass
-            if text is None:
-                text = content.decode('utf-8', 'ignore')
-        return text
+        return content.decode('latin1')
 
     def extract_comments (self, filename):
         if not os.path.exists(filename):
             sys.stderr.write('error: file not found: %s\n' % filename)
-            raise FileNotFoundError(filename)
+            return None
         extname = os.path.splitext(filename)[1].lower()
         if extname not in EXTRACTORS:
             sys.stderr.write('error: no extractor for file type %s\n' % extname)
-            raise ValueError('no extractor for file type %s' % extname)
+            return None
         extractor = EXTRACTORS[extname]
         content = self.load_file_text(filename)
+        if content is None:
+            return None
         comments = extractor(content)
         return comments
 
     def load (self):
         comments = self.extract_comments(self.srcname)
+        if comments is None:
+            return -1
         self.commands = {}
+        conditional = {}
         for lnum, text in comments:
             text = text.strip('\r\n\t ')
             if not text:
@@ -632,7 +620,13 @@ class configure (object):
             condition = condition.strip('\r\n\t ')
             if condition and condition != self.target:
                 continue
-            self.commands[name] = val
+            # platform-specific commands are buffered and merged last
+            # so they override unconditional ones of the same name
+            if condition:
+                conditional[name] = val
+            else:
+                self.commands[name] = val
+        self.commands.update(conditional)
         self.names = list(self.commands.keys())
         self.names.sort()
         return 0
@@ -647,12 +641,12 @@ class configure (object):
             val = self.environ[key]
             if not isinstance(val, str):
                 val = str(val)
-            name = '$(' + key + ')'
-            if name in cmd:
-                cmd = cmd.replace(name, val)
+            token = '$(' + key + ')'
+            if token in cmd:
+                cmd = cmd.replace(token, val)
         return self.system(cmd, cwd = self.dirname, env = env)
 
-    def list (self):
+    def list_commands (self):
         rows = []
         for name in self.names:
             cmd = self.commands[name]
@@ -691,19 +685,20 @@ def main(argv = None):
         print('filename is not provided, use -h for help')
         return 1
     srcname = args[0]
-    global TARGET
+    target = TARGET
     if 't' in options:
-        TARGET = options['t']
+        target = options['t']
     if 'target' in options:
-        TARGET = options['target']
+        target = options['target']
     if not os.path.exists(srcname):
         print('error: file not found: %s' % srcname)
         return 1
-    cc = configure(srcname)
-    cc.load()
+    cc = configure(srcname, target)
+    if cc.load() != 0:
+        return 1
     if (len(args) == 1) or ('l' in options) or ('list' in options):
         print('Command List (%s):' % srcname)
-        cc.list()
+        cc.list_commands()
         return 0
     command = args[1]
     return cc.quickrun(command)
@@ -712,7 +707,7 @@ def main(argv = None):
 #----------------------------------------------------------------------
 # commands in comment
 #----------------------------------------------------------------------
-# @command(build): gcc -o $(FILENOEXT) (FILENAME)
+# @command(build): gcc -o $(FILENOEXT) $(FILENAME)
 # @command(run-win32/win32): echo running on windows
 # @command(run-linux/linux): echo running on linux
 # @command(echo): echo source: "$(FILEPATH)"
@@ -734,11 +729,11 @@ if __name__ == '__main__':
         return 0
     def test2():
         c = configure(None)
-        c.print()
+        c.show_env()
         c.load()
         pprint.pprint(c.commands)
         c.quickrun('echo')
-        c.list()
+        c.list_commands()
         help()
         return 0
     def test3():
