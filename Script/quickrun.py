@@ -308,6 +308,64 @@ def getopt (argv, shortopts = ''):
         index += 1
     return options, args
 
+
+#----------------------------------------------------------------------
+# tabulify: style = 0, 1, 2
+#----------------------------------------------------------------------
+def tabulify (rows, style = 0):
+    colsize = {}
+    maxcol = 0
+    output = []
+    if not rows:
+        return ''
+    for row in rows:
+        maxcol = max(len(row), maxcol)
+        for col, text in enumerate(row):
+            text = str(text)
+            size = len(text)
+            if col not in colsize:
+                colsize[col] = size
+            else:
+                colsize[col] = max(size, colsize[col])
+    if maxcol <= 0:
+        return ''
+    def gettext(row, col):
+        csize = colsize[col]
+        if row >= len(rows):
+            return ' ' * (csize + 2)
+        row = rows[row]
+        if col >= len(row):
+            return ' ' * (csize + 2)
+        text = str(row[col])
+        padding = 2 + csize - len(text)
+        pad1 = 1
+        pad2 = padding - pad1
+        return (' ' * pad1) + text + (' ' * pad2)
+    if style == 0:
+        for y, row in enumerate(rows):
+            line = ''.join([ gettext(y, x) for x in range(maxcol) ])
+            output.append(line)
+    elif style == 1:
+        if rows:
+            newrows = rows[:1]
+            head = [ '-' * colsize[i] for i in range(maxcol) ]
+            newrows.append(head)
+            newrows.extend(rows[1:])
+            rows = newrows
+        for y, row in enumerate(rows):
+            line = ''.join([ gettext(y, x) for x in range(maxcol) ])
+            output.append(line)
+    elif style == 2:
+        sep = '+'.join([ '-' * (colsize[x] + 2) for x in range(maxcol) ])
+        sep = '+' + sep + '+'
+        for y, row in enumerate(rows):
+            output.append(sep)
+            line = '|'.join([ gettext(y, x) for x in range(maxcol) ])
+            output.append('|' + line + '|')
+        output.append(sep)
+    return '\n'.join(output)
+
+
 #----------------------------------------------------------------------
 # source extractors
 #----------------------------------------------------------------------
@@ -347,6 +405,7 @@ class configure (object):
         self.basename = os.path.basename(self.srcname)
         self.target = TARGET
         self.commands = {}
+        self.names = []
         self.environ = {}
         self.environ['FILENAME'] = self.basename
         self.environ['FILEPATH'] = self.srcname
@@ -362,13 +421,12 @@ class configure (object):
                 name = name.strip()
                 if name:
                     mm.append(name)
-            markers = tuple(mm)
+            if mm:
+                markers = tuple(mm)
         self.root = self.find_root(self.dirname, markers, True)
         self.environ['ROOT'] = self.root
         self.environ['DIRNAME'] = os.path.basename(self.dirname)
         self.environ['PRONAME'] = os.path.basename(self.root)
-        if 'QUICKRUN_TARGET' in os.environ:
-            self.target = os.environ['QUICKRUN_TARGET'].strip()
         self.environ['TARGET'] = self.target
 
     def find_root (self, path, markers = None, fallback = False):
@@ -513,16 +571,89 @@ class configure (object):
             if condition and condition != self.target:
                 continue
             self.commands[name] = val
+        self.names = list(self.commands.keys())
+        self.names.sort()
+        return 0
+
+    def quickrun (self, name):
+        if name not in self.commands:
+            sys.stderr.write('error: command not found: %s\n' % name)
+            return 1
+        cmd = self.commands[name]
+        env = self.environ.copy()
+        for key in self.environ:
+            val = self.environ[key]
+            if not isinstance(val, str):
+                val = str(val)
+            name = '$(' + key + ')'
+            if name in cmd:
+                cmd = cmd.replace(name, val)
+        return self.system(cmd, cwd = self.dirname, env = env)
+
+    def list (self):
+        rows = []
+        for name in self.names:
+            cmd = self.commands[name]
+            rows.append([name, ': ' + cmd])
+        text = tabulify(rows, style = 0)
+        print(text)
         return 0
 
 
-
 #----------------------------------------------------------------------
-# test comments
+# commands in comment
 #----------------------------------------------------------------------
 # @command(build): gcc -o $(FILENOEXT) (FILENAME)
 # @command(run-win32/win32): echo running on windows
 # @command(run-linux/linux): echo running on linux
+# @command(echo): echo source: "$(FILEPATH)"
+
+
+#----------------------------------------------------------------------
+# help()
+#----------------------------------------------------------------------
+def help():
+    fn = os.path.basename(sys.argv[0])
+    tt = sys.platform
+    print('usage: python %s [options] <filename> [command]' % fn)
+    print('options:')
+    print('  -h, --help                  show this message and exit')
+    print('  -t {name}, --target={name}  specify target platform (default: %s)' % tt)
+    print('  -l, --list                  list available commands')
+    return 0
+
+
+#----------------------------------------------------------------------
+# main function
+#----------------------------------------------------------------------
+def main(argv = None):
+    argv = argv if argv is not None else sys.argv[1:]
+    args = [n for n in argv]
+    options, args = getopt(args, 't')
+    if not args:
+        print('filename is not provided, use -h for help')
+        return 1
+    srcname = args[0]
+    if ('h' in options) or ('help' in options):
+        help()
+        return 0
+    global TARGET
+    if 't' in options:
+        TARGET = options['t']
+    if 'target' in options:
+        TARGET = options['target']
+    if not os.path.exists(srcname):
+        print('error: file not found: %s' % srcname)
+        return 1
+    cc = configure(srcname)
+    cc.load()
+    if (len(args) == 1) or ('l' in options) or ('list' in options):
+        print('Command List (%s):' % srcname)
+        cc.list()
+        return 0
+    command = args[1]
+    cc.quickrun(command)
+    return 0
 
 
 #----------------------------------------------------------------------
@@ -544,7 +675,17 @@ if __name__ == '__main__':
         c.print()
         c.load()
         pprint.pprint(c.commands)
+        c.quickrun('echo')
+        c.list()
+        help()
+        return 0
+    def test3():
+        args = []
+        args = [__file__]
+        main(args)
         return 0
 
-    test2()
+    # test3()
+    main()
+
 
