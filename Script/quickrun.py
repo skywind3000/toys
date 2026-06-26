@@ -2,7 +2,69 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# quickrun.py - 
+# quickrun.py - Extract @command directives from source comments and
+#               execute predefined build/run commands
+#
+# Description:
+#   This tool scans source files for embedded @command directives in
+#   comments, parses them into named commands, and executes the one
+#   requested on the command line — letting build/run/test recipes
+#   live alongside the code itself, with no Makefile or extra script
+#   required.
+#
+#   Supported source types (by extension):
+#     .c/.cc/.cxx/.cpp/.h/.hpp/.hh/.cs/.java/.js/.ts/.as/.go  -> C-style
+#     .py                                                       -> Python
+#   C-style comments (// and /* */) and Python comments (#, """,
+#   ''' and prefixed strings like r""" / f'...' / b"...") are
+#   recognized.
+#
+# Command directive syntax in comments:
+#   // @command(name): <shell command>
+#   // @command(name/target): <shell command>   # target-only command
+#   A directive whose /target differs from the current target is
+#   skipped, so the same source can carry platform-specific recipes.
+#
+# Available variables (written exactly as shown, replaced before run):
+#   $(FILENAME)   - source file name with extension
+#   $(FILEPATH)   - absolute path of the source file
+#   $(FILEDIR)    - absolute directory of the source file
+#   $(FILEEXT)    - source extension, lowercased
+#   $(FILENOEXT)  - source file name without extension
+#   $(PATHNOEXT)  - absolute source path without extension
+#   $(ROOT)       - project root directory (detected upward by markers)
+#   $(DIRNAME)    - name of the directory containing the source file
+#   $(PRONAME)    - name of the project root directory
+#   $(TARGET)     - current target platform (default sys.platform, -t to override)
+#
+# Project root detection:
+#   Walks upward from the source directory looking for marker files/
+#   dirs (.git, .svn, .hg, .project, .root by default). Override the
+#   marker set via the QUICKRUN_MARKERS env var (comma-separated,
+#   glob patterns supported). Falls back to the source directory.
+#
+# Usage examples:
+#   quickrun.py hello.cpp            # list available commands
+#   quickrun.py hello.cpp build      # run the "build" command
+#   quickrun.py hello.cpp run        # run the "run" command
+#   quickrun.py -t linux hello.cpp clean   # run "clean" as on linux
+#   quickrun.py -l hello.cpp         # list commands explicitly
+#   quickrun.py -h                   # show help
+#
+# Embedding commands in C/C++ source:
+#   // @command(build): g++ $(FILENAME) -o $(FILENOEXT)
+#   // @command(run): ./$(FILENOEXT)
+#   // @command(clean/linux): rm -f $(FILENOEXT)
+#   // @command(clean/win32): del /q $(FILENOEXT).exe
+#
+# Embedding commands in Python source:
+#   # @command(run): python $(FILENAME)
+#   # @command(test): python -m pytest $(FILEDIR)
+#
+# Behavior:
+#   - Commands run via subprocess.run(..., shell=True) in the source
+#     file's directory; the program exit code equals the command's.
+#   - If the requested command is not defined, exit code is 1.
 #
 # Created by skywind on 2026/06/26
 # Last Modified: 2026/06/26 14:38:46
