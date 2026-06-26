@@ -324,6 +324,7 @@ EXTRACTORS = {
     '.js': extract_cpp_comments,
     '.ts': extract_cpp_comments,
     '.as': extract_cpp_comments,
+    '.go': extract_cpp_comments,
     '.py': extract_python_comments,
 }
 
@@ -404,10 +405,13 @@ class configure (object):
             if isinstance(stdin, str):
                 stdin = stdin.encode('utf-8', 'ignore')
         result = subprocess.run(args, cwd = cwd, env = env,
-                                shell = True,
+                                shell = False,
                                 input = stdin,
                                 timeout = timeout)
         return result.returncode
+
+    def ensure_cmd (self):
+        return 0
 
     def print (self):
         import pprint
@@ -434,5 +438,6 @@ if __name__ == '__main__':
         c = configure(None)
         c.print()
         return 0
+
     test2()
 
