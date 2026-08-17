@@ -36,6 +36,7 @@
 | 14 | 配置文件格式 | INI（`configparser` 标准库）：单节 `[makoserver]`、`#`/`;` 行注释、手写友好；`session_lifetime` 显式 int 转换；文件名 `makoserver.ini` / `settings.ini` |
 | 15 | port / host 不进配置 | 仅 dev server 用得到（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性——纯命令行 `-p` / `--host`，schema 不设死键 |
 | 16 | 尾挂 PATH_INFO（PHP AcceptPathInfo） | 路径不存在时逐级回溯找存在的文件，命中 `.mako` 即渲染、尾挂作 `_SERVER['PATH_INFO']` 传入；命中非 `.mako` 文件 → 404（静态不带尾挂）；回溯碰到存在的目录即停、转 index 兜底；`SCRIPT_NAME` 同步改为脚本路径部分（PHP `$_SERVER` 分工） |
+| 17 | REQUEST_URI 键；回溯耗尽不上溯 | 补入 `_SERVER`（PHP 同名键同语义：编码态原文，含挂载前缀与 query）——目录兜底渲染时 `PATH_INFO` 为空，脚本靠此键获知原始 URL 做子路径分派；回溯耗尽 / 目录兜底失败维持 404，**不上溯**到 root 的 index.mako（PHP 原生无全兜底语义，前端控制器用显式 `/index.mako/...` 尾挂表达） |
 
 ## 1. 单文件内部布局
 
@@ -250,6 +251,8 @@ HTTP 模式（自 WSGI environ 透传 + 提炼）：
 
 `REQUEST_METHOD`、`QUERY_STRING`、`CONTENT_TYPE`、`CONTENT_LENGTH`、`REMOTE_ADDR`、`SERVER_NAME`、`SERVER_PORT`、`REQUEST_SCHEME`（自 `wsgi.url_scheme`），以及全部 `HTTP_*` 头（environ 原名透传）。
 
+`REQUEST_URI` = 原始请求 URI（**编码态原文**，含挂载前缀与 query，如 `'/app1/register/hello?x=1'`；无 query 时无 `?`）。WSGI environ 无此标准键（CGI/FPM 才有）：优先取 Werkzeug 注入的 `RAW_URI`，缺失时以原始 SCRIPT_NAME + 原始 PATH_INFO + query 拼接兜底。用途：index 兜底渲染的目录入口脚本 `PATH_INFO` 为空、看不到残余段，靠此键获知完整原始路径实现子路径分派（WordPress permalink、CodeIgniter 的 REQUEST_URI 模式均依赖同名键）。CLI 模式不设此键（PHP CLI 亦无）。
+
 `SCRIPT_NAME` / `PATH_INFO` 按分支判定结果**覆写构造**（PHP `$_SERVER` 语义，非 environ 原样透传——脚本路径永远在 `SCRIPT_NAME`，尾挂在 `PATH_INFO`）：
 
 | 场景 | SCRIPT_NAME | PATH_INFO |
@@ -450,7 +453,7 @@ python makoserver.py [options] script [args...]
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
-| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
+| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
 | `test_session.py` | 签发/回带往返；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出 / `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
