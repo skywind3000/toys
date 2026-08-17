@@ -12,9 +12,10 @@
 - 基于 Mako / Flask，提供一套类似 .php 的网页服务；
 - 用户请求 `http://localhost:5000/web/demo.mako` 的话，就会解析出相对路径，到文档根目录下寻找对应 .mako 文件并渲染返回；
 - 启动后指定一个文档根目录，就能为下面的所有 .mako 脚本提供页面服务，用户写新的动态页面，新增 .mako 文件就行，不必改 Flask 端任何一行代码；
-- 如果请求的是 .html / .jpg 等非 .mako 文件，直接读取二进制内容并设置对应 Content-Type 返回（静态文件服务），用 `mimetypes` 猜测类型，天然支持图片等任意二进制文件；
+- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；
 - 能够防止相对路径穿透到文档根目录以外；
 - 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码）；
+- 服务自身与配置的防回吐：makoserver.py 自身与 `makoserver.ini`（.py / .ini 均不在静态白名单，天然 404）、实际加载命中的配置文件、已配置的日志文件（后两者路径启动时记录、请求时比对，命中即 404，覆盖经 `MAKOSERVER_CONF` 指到白名单类型文件名、日志起名 `access.txt` 等情形）——即使位于文档根目录内也不会被静态分支回吐 secret 与访客日志；
 - 如果请求路径不包含文件名，依次尝试追加 `index.mako`、`index.html`、`index.htm`；
 - Flask 端提供 bridge 函数/对象供 .mako 脚本使用，详见下文「Bridge API」一节；
 - 更新检测：用户更新 .mako 脚本后能自动检测并 reload —— 采用**请求时检查 mtime** 的方式，不引入 watchdog；
@@ -85,20 +86,21 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ## 配置文件
 
-- 全局默认配置（默认端口、默认文档根目录等）：`~/.config/makoserver/settings.json`；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
-- 可选键 `access_log` / `error_log`：值为文件路径，配置后请求日志 / 错误日志分别写入对应文件；不配置时的默认流向：access log 不落盘、error log 走 stderr（详见「非功能需求」日志一节）。日志文件路径不得默认指向文档根目录，避免被静态分支回吐泄露；
+- 全局默认配置（默认端口、默认文档根目录等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
+- 可选键 `access_log` / `error_log`：值为文件路径，配置后请求日志 / 错误日志分别写入对应文件；不配置时的默认流向：access log 不落盘、error log 走 stderr（详见「非功能需求」日志一节）。日志文件路径不建议指向文档根目录；即使指向，框架也会对该路径做运行时 404 屏蔽（见「模板服务」防回吐一条），不会回吐泄露；
 - 命令行参数优先级高于配置文件：单独运行时命令行指定的根目录、端口等覆盖配置文件中的同名项；
 - WSGI 模式下按以下顺序查找配置文件，命中即用：
   1. 环境变量 `MAKOSERVER_CONF` 指定的路径；
-  2. WSGI 入口脚本同目录下的 `makoserver.json`；
-  3. 兜底 `~/.config/makoserver/settings.json`。
-- 若希望"配置随站点目录走，一个目录拷走就能跑"，做法是把 WSGI 入口脚本和 `makoserver.json` 一起放进站点目录（利用第 2 条规则），配置中的相对路径以配置文件所在目录为基准解析。
+  2. WSGI 入口脚本同目录下的 `makoserver.ini`；
+  3. 兜底 `~/.config/makoserver/settings.ini`。
+- 若希望"配置随站点目录走，一个目录拷走就能跑"，做法是把 WSGI 入口脚本和 `makoserver.ini` 一起放进站点目录（利用第 2 条规则），配置中的相对路径以配置文件所在目录为基准解析；
+- 更简的**零配置形态**：把 makoserver.py 单独拷进站点目录即可——找不到任何配置文件时，WSGI 模式以 makoserver.py 自身所在目录为文档根目录（与第 2 条查找规则同一锚点），需要改端口 / 密钥等再补 `makoserver.ini`。
 
 ## 运行方式
 
 - 整个 MakoServer 自身代码只有 `makoserver.py` 一个文件，第三方依赖仅 Flask、Mako 两个，除此之外不依赖任何第三方库，拷走单文件就能部署；
 - 这个 MakoServer 可以单独运行，指定一个根目录和端口就能启动一个 HTTP Server 提供页面服务；
-- 这个 MakoServer 也可以按 WSGI 的模式运行，它会寻找配置文件，从里面解析出根目录；
+- 这个 MakoServer 也可以按 WSGI 的模式运行，它会寻找配置文件，从里面解析出根目录；找不到配置文件时，以 makoserver.py 自身所在目录为文档根目录（零配置即拷即用）；
 - 还可以单独传入一个 .mako 脚本，就像命令行运行 `php xxx.php` 那样渲染出来，结果写到 stdout；
 - CLI 模式下 bridge 对象参考 PHP CLI 的降级语义：请求参数字典为空、请求方法为 `GET`、请求 body 为空、cookie 读取为空；`RESP.header()` / `RESP.status()` / `RESP.setcookie()` 等响应控制调用静默无效（no-op），不报错——保证同一个 .mako 脚本在 HTTP 和 CLI 两种模式下都能运行。
 
@@ -111,4 +113,4 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
   - access log 默认不落盘：独立 dev 模式走 Werkzeug 控制台默认输出，WSGI 模式交由宿主（Apache `access_log` / gunicorn `--access-logfile`）负责，MakoServer 不重复记录；配置了 `access_log` 文件路径后由 MakoServer 主动记录请求日志（含 WSGI 模式，此时与宿主日志并存，是否双写由使用者取舍）；
   - error log（含 5xx traceback）默认写 stderr；可由配置项 `error_log` 指定文件覆盖，`access_log` 同理可选；
   - 配置了文件路径即由使用者自行管理滚动（logrotate / 容器日志收集），框架不内置日志轮转；
-  - 日志文件路径不得默认写入文档根目录——否则会被静态分支当作文件回吐，泄露访客 IP / 探测路径 / 服务端 traceback。
+  - 日志文件路径不建议写入文档根目录——框架虽对已配置的日志路径做运行时 404 屏蔽（见「模板服务」防回吐一条），放 root 外仍更整洁；

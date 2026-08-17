@@ -31,6 +31,9 @@
 | 9 | `_REQUEST` 合并顺序 | GET 与 POST 合并（POST 覆盖同名 GET），不含 cookie——对齐现代 PHP `request_order="GP"` 默认 |
 | 10 | `getlist` 可用范围 | `_GET` / `_POST` / `_REQUEST` 三者均支持（同一 PHPDict 实现） |
 | 11 | CLI 下 `_SERVER` 内容 | 固定降级值 + `argv`，详见 6.4 |
+| 12 | 静态文件类型判定 | 内置扩展名白名单表（弃用 mimetypes，注册表映射不可控）；白名单外一律 404（与不存在同响应，fail-closed） |
+| 13 | WSGI 零配置 root | 配置缺失时回退 makoserver.py 所在目录（`__file__` 目录，与配置查找第 2 条同锚点），单文件拷进站点目录即部署 |
+| 14 | 配置文件格式 | INI（`configparser` 标准库）：单节 `[makoserver]`、`#`/`;` 行注释、手写友好；`port`/`session_lifetime` 显式 int 转换；文件名 `makoserver.ini` / `settings.ini` |
 
 ## 1. 单文件内部布局
 
@@ -52,11 +55,11 @@ makoserver.py 内部代码区块（自上而下）：
 
 ## 2. 配置
 
-### 2.1 配置 schema（扁平键）
+### 2.1 配置 schema（`[makoserver]` 节内扁平键）
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `root` | str | 必填（serve/WSGI 必须能解析出，否则启动报错退出） | 文档根目录，支持相对路径（见 2.3） |
+| `root` | str | 见 2.4 回退链 | 文档根目录，支持相对路径（见 2.3）；三种模式均有回退，无需必填 |
 | `port` | int | 5000 | dev server 端口 |
 | `host` | str | `127.0.0.1` | dev server 监听地址 |
 | `secret` | str | 空 → 派生 | session 签名密钥（UTF-8 编码） |
@@ -66,13 +69,13 @@ makoserver.py 内部代码区块（自上而下）：
 | `access_log` | str | 空（不落盘） | access log 文件路径 |
 | `error_log` | str | 空（stderr） | error log 文件路径 |
 
-未知键忽略不报错（向前兼容）。配置文件为非法 JSON：按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径与行号）；仅 CLI 渲染模式不读配置、不受影响。
+未知键忽略不报错（向前兼容）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；`port` / `session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
 
 ### 2.2 查找顺序（WSGI / serve 模式，命中即用、不逐层合并）
 
 1. 环境变量 `MAKOSERVER_CONF` 指定的路径（文件不存在 = 未命中，继续下寻）；
-2. 入口脚本（`makoserver.py`）同目录下 `makoserver.json`；
-3. `~/.config/makoserver/settings.json`。
+2. 入口脚本（`makoserver.py`）同目录下 `makoserver.ini`；
+3. `~/.config/makoserver/settings.ini`。
 
 serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在目录。
 
@@ -80,9 +83,12 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 
 配置文件中所有相对路径（`root`、`access_log`、`error_log`）均以**该配置文件所在目录**为基准 `os.path.join(conf_dir, value)` 后再取 abspath。命令行传入的路径不做此变换（按 shell 语义走 cwd）。
 
-### 2.4 优先级
+### 2.4 优先级与 root 回退链
 
-命令行参数 > 配置文件 > 内置默认。CLI 渲染模式不读配置。
+- CLI 渲染：不读配置，无 root 概念（模板基准 = 脚本所在目录，见 4.3）；
+- dev server：`-r/--root` > 配置文件 `root` > **当前工作目录**（对齐 `php -S` 默认 docroot = cwd 的行为；默认 host=127.0.0.1 仅监听回环，暴露面可控）；
+- WSGI：配置文件 `root` > **makoserver.py 所在目录**（`__file__` 取 abspath 后 dirname；不回退 cwd——WSGI 进程的工作目录不可靠，如 mod_wsgi 常为 `/`）。零配置即拷即用：单文件放进站点目录就能跑；
+- 其余键（port / host / secret / ...）：命令行 > 配置文件 > 内置默认。
 
 ## 3. 请求处理流水线
 
@@ -123,12 +129,28 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 3. 编译/渲染任何异常（含 include/inherit 目标缺失）→ 500（见 9.1）；
 4. 渲染成功 → 按 8 组装响应。
 
-### 3.5 静态分支
+### 3.5 静态分支（扩展名白名单）
 
-1. `mimetypes.guess_type(real)`：猜中 → 该类型；猜不中 → `application/octet-stream`；
-2. **不加 charset**（静态文件可能是任意编码的老页面，强加 UTF-8 会误导浏览器）；
-3. 读文件字节为 body；读失败（权限/占用）→ 500；
-4. 支持 `If-Modified-Since` / 304？一期不做，一律 200 全量返回（本机场景带宽免费）。
+判定在规范化后的 basename 上（3.3 已 normcase/lower，Windows 大小写变体统一）。内置白名单表（模块级 dict 常量，**弃用 mimetypes 模块**——其映射来自系统注册表，装软件即变，不可控）：
+
+| 类别 | 扩展名 | Content-Type |
+|------|--------|--------------|
+| 网页 | `.html` / `.htm` | `text/html; charset=utf-8` |
+| 文本 | `.txt` | `text/plain; charset=utf-8` |
+| 样式 | `.css` | `text/css; charset=utf-8` |
+| 脚本 | `.js` | `application/javascript` |
+| 数据 | `.json` | `application/json`（无 charset，与 RESP.json 一致，RFC 8259） |
+| 图片 | `.png` / `.jpg` `.jpeg` / `.gif` / `.svg` / `.ico` / `.webp` | `image/png` / `image/jpeg` / `image/gif` / `image/svg+xml` / `image/x-icon` / `image/webp` |
+| 文档 | `.pdf` | `application/pdf` |
+| 压缩 | `.zip` / `.rar` / `.7z` / `.tar` / `.gz` `.tgz` | `application/zip` / `application/vnd.rar` / `application/x-7z-compressed` / `application/x-tar` / `application/gzip` |
+
+规则：
+
+1. 扩展名在白名单 → 按表设 Content-Type，读文件字节原样为 body（不转码；二进制类无 charset，文本类声明 utf-8——与 PRD「文本输出统一 UTF-8」契约对齐）；
+2. **白名单外一律 404**（`.py` / `.pyw` / `.pyo` / `.pyc` / `.php` / `.ini` / `.bak` / `.db` / `.log` / 无扩展名 / ...），与「不存在」同响应体（3.6，防探测原则）——fail-closed：源码、备份、数据库等杂物默认不可下载（makoserver.py 自身即被此条挡住）；
+3. **运行时敏感路径屏蔽**：请求 realpath 命中「实际加载的配置文件路径」或「已配置的 error_log / access_log 路径」→ 404。`.ini` 本就不在静态白名单（`makoserver.ini` / `settings.ini` 天然 404），但 `MAKOSERVER_CONF` 可指向任意文件名（含 `secret.json` 等白名单类型），日志路径亦可起名 `access.txt`，故屏蔽逻辑对所有命中的敏感路径生效（启动时记入集合，静态分支比对）——防 secret 与访客日志回吐；
+4. 读文件失败（权限/占用）→ 500；
+5. `If-Modified-Since` / 304 一期不做，一律 200 全量返回（本机场景带宽免费）。
 
 ### 3.6 404 响应
 
@@ -332,7 +354,15 @@ traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 - **不设防**：进程级故障真实影响 makoserver——`os._exit()`、C 扩展段错误直接杀死进程；死循环请求挂起且一期无超时（GIL 调度下其他请求仍可服务，但该请求永不返回）；内存泄漏累加在宿主进程；模板亦可经 `echo.__globals__` 等路径触达模块全局（无沙箱的应有之义，信任边界靠「可信环境」定位承担）；
 - 进程级健壮性交部署层兜底：WSGI 多进程（gunicorn prefork）+ `--max-requests` 定期回收 + `--timeout` 杀死死循环（与 hardening.md「两层账」一致）；一期 dev server 单进程形态不提供。
 
-## 10. 运行形态
+## 10. 运行形态与模式判定
+
+### 10.0 模式判定（互斥三分支）
+
+1. `__name__ != '__main__'`（被 import：mod_wsgi / gunicorn / uWSGI）→ **WSGI 模式**，模块级构建 `application`；
+2. `__main__` 且存在首个非选项位置参数 → **CLI 渲染模式**，该参数即脚本路径（**不限制 .mako 扩展名**，对齐 `php foo.txt` 照跑的习惯；文件不存在 → stderr 报错 exit 1）；
+3. `__main__` 且无位置参数 → **dev server 模式**。
+
+「检测 WSGI 环境」以 import 语义判定（`__name__`），不依赖环境变量——gunicorn / uWSGI 不设统一标志，mod_wsgi import 时请求 environ 尚不存在。
 
 ### 10.1 独立 dev server
 
@@ -340,11 +370,11 @@ traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 python makoserver.py [--root DIR] [--port N] [--host H]
 ```
 
-读配置（2.2）→ 命令行覆盖（2.4）→ `app.run(host, port, threaded=True)`。并发 = Werkzeug dev server 线程模型，不追求生产级。
+读配置（2.2）→ 命令行覆盖与 root 三级回退（2.4，最终回退 cwd）→ `app.run(host, port, threaded=True)`。并发 = Werkzeug dev server 线程模型，不追求生产级。
 
 ### 10.2 WSGI 入口
 
-模块级 `application = create_app(...)`：import 时完成配置查找与 app 构造（每进程一次，无跨进程状态，天然多进程兼容）。Apache `WSGIScriptAlias /app1 /path/to/makoserver.py` 即用。
+模块级 `application = create_app(...)`：import 时完成配置查找与 app 构造（每进程一次，无跨进程状态，天然多进程兼容）；root 见 2.4（配置缺失时回退本文件所在目录，零配置即拷即用）。Apache `WSGIScriptAlias /app1 /path/to/makoserver.py` 即用。
 
 ### 10.3 CLI 渲染
 
@@ -357,7 +387,7 @@ python makoserver.py script.mako [args...]
 - 成功：`sys.stdout.buffer.write(body)`（原始字节，二进制安全）；
 - 失败：见 9.3。
 
-参数判定：首个位置参数存在且不是选项 → CLI 渲染模式；无位置参数 → dev server 模式。
+模式判定与扩展名规则见 10.0。
 
 ## 11. 日志
 
@@ -375,15 +405,15 @@ python makoserver.py script.mako [args...]
 
 | 文件 | 覆盖点 |
 |------|--------|
-| `test_config.py` | 三级查找命中即用；`MAKOSERVER_CONF` 不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；CLI 覆盖优先级；非法 JSON 报错 |
+| `test_config.py` | 三级查找命中即用；`MAKOSERVER_CONF` 不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；CLI 覆盖优先级；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `port` 非整数）；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录 |
 | `test_paths.py` | `../` 逃逸、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO`、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；拒绝与不存在同 404 响应体 |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/` |
-| `test_static.py` | html/jpg/png Content-Type；未知扩展 → octet-stream；字节原样；无 charset |
+| `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
 | `test_session.py` | 签发/回带往返；篡改 data/ts/签名 → 空 dict；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime）；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
-| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 传入；include 基准 = 脚本目录；异常 exit 1 |
+| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 传入；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言） |
 
 ## 13. 明确不做（一期）
