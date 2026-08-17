@@ -49,6 +49,7 @@
 | 25 | 注入名作用域与 `<%! %>` 编写约定 | bridge 注入名仅在渲染体作用域可见（6.7）；`<%! %>` 模块级函数引用注入名编译期无错、**运行时首次调用才 NameError**（demo 留言板 debug 面板实测踩中）——约定 `<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参 |
 | 26 | root 尾部追加进 sys.path（站点本地模块 import） | dev / WSGI 启动时（create_app，启动校验后）把 `realpath(root)` **去重后 append 到 sys.path 尾部**，模板 `<%! %>` 即可点分 import root 下的 .py（py3 命名空间包，无需 `__init__.py`）。选尾部而非 insert(0)：标准库 / 已安装包优先，root 里同名 `json.py` 无法遮蔽标准库；CLI 无 root 概念不参与。细节见 2.5 |
 | 27 | 启动时 chdir 到 root 亦否决（#21 的补充论证） | #21 否的是每请求 chdir（多线程竞态）；启动时一次性 chdir 虽无竞态，仍否决，四条理由：① **cwd 是标量、sys.path 是集合**——同进程多 root（测试 / 多挂载）时 chdir 必然打架，sys.path 追加可共存；② **跨模式分裂**——HTTP chdir 到 root、CLI 无 root 只能留在启动目录，同一脚本裸相对路径两模式基准不同，违反 PRD 双模式契约（`SCRIPT_DIRNAME` 拼路径则两模式语义一致）；③ **WSGI 宿主公民**——cwd 是宿主进程级状态，mod_wsgi 同进程多应用 / gunicorn 多 app 会被改地板，mod_wsgi 官方明确警告；sys.path 追加是加法、chdir 是替换，侵入度不同量级；④ **漂移风险**——裸相对路径一旦有保证即被依赖，而任何代码 `os.chdir()` 都会让全进程线程的基准一起漂移。另：dev server 的 root 回退链默认值即 cwd，chdir 会永久丢失启动目录信息 |
+| 28 | Template 构造传 filename=（实测后收窄收益） | TemplateStore 构造 `Template(..., filename=模板绝对路径)`，CLI stdin 分支传 `'-'`。**实测修正预期**（初版假设「traceback 显示真实路径」不成立）：Mako 编译 `co_filename` 钉死为 module_id 变形名，运行时帧与 `__file__` 均不受 filename 影响；**唯一实证收益**：编译期 SyntaxException 消息多 `in file '<绝对路径>'` 子句（流入 500 页 / CLI stderr / error log）。不注入模块级 `__file__`（主人裁定：收益不抵行号偏移与双模式语义成本）；运行时帧换真路径留待有真实需求再做 |
 
 ## 1. 单文件内部布局
 
@@ -227,7 +228,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 1. `path = os.path.join(base_dir, *uri.split('/'))`；
 2. 读源码：`open(path, 'r', encoding='utf-8-sig')`（兼容 Windows 记事本 BOM）；
 3. **尾部空白截断**：`text = text.rstrip()`（PRD 契约：文件末尾空白永远不属于输出内容；rstrip 默认字符集含空格/tab/\r/\n/\f\v，覆盖所有加载路径——主模板、include、inherit、CLI 脚本一致）；
-4. `Template(text=text, lookup=self, input_encoding='utf-8')`，纯内存编译（无 `module_directory`）。
+4. `Template(text=text, lookup=self, input_encoding='utf-8', uri=uri, filename=path)`，纯内存编译（无 `module_directory`）。`filename=` 传模板绝对路径（CLI stdin 渲染传 `'-'`）——实测作用边界见决策 #28：仅令编译期 SyntaxException 附 `in file '<绝对路径>'` 子句，不注入 `__file__`、不改运行时 traceback 帧名。
 
 ### 4.2 mtime 缓存与 reload
 

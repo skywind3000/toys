@@ -435,8 +435,14 @@ class TemplateStore:
             # strip trailing whitespace: whitespace at EOF is never
             # part of the output
             text = text.rstrip()
+            # filename= does NOT set __file__ in module blocks and
+            # does NOT change runtime traceback frames (Mako compiles
+            # with co_filename = mangled module_id, decision #28);
+            # its one verified effect: compile-phase SyntaxException
+            # messages gain an "in file '<abs path>'" clause, which
+            # flows into the 500 page / CLI stderr / error log
             tpl = Template(text=text, lookup=self, uri=uri,
-                           input_encoding='utf-8')
+                           filename=path, input_encoding='utf-8')
             self.__cache[uri] = (path, st.st_mtime_ns, st.st_size, tpl)
             return tpl
 
@@ -1297,7 +1303,8 @@ def render_cli (script, args):
             # contract as file loading (whitespace at EOF is never
             # part of the output)
             tpl = Template(text=text.rstrip(), lookup=store,
-                           uri='<stdin>', input_encoding='utf-8')
+                           uri='<stdin>', filename='-',
+                           input_encoding='utf-8')
         else:
             tpl = store.get_template(os.path.basename(script_abs))
         ctx = mako_runtime.Context(buf, **bridge)

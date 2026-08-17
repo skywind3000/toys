@@ -97,6 +97,19 @@ def test_compile_error_500 (site, wf, client_factory):
     assert b'500 Internal Server Error' in r.data
 
 
+def test_compile_error_carries_abs_path (site, wf, client_factory):
+    # Template(filename=绝对路径)：编译期 SyntaxException 消息带
+    # "in file '<abs>'"（决策 #28，运行时帧不受影响）
+    import os
+    wf('bad.mako', '<%\nx = \n%>')
+    cli = client_factory(site)
+    r = cli.get('/bad.mako')
+    assert r.status_code == 500
+    target = os.path.realpath(str(site / 'bad.mako'))
+    assert b'in file' in r.data
+    assert target.encode('utf-8') in r.data
+
+
 def test_runtime_error_discards_partial (site, wf, client_factory):
     # 渲染中途抛异常：丢弃 partial output，返回干净 500
     wf('t.mako', 'PARTIAL<% raise RuntimeError("stop") %>')
