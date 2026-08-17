@@ -105,7 +105,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 ## 非功能需求
 
 - 并发模型：第一期使用 Flask 自带 dev server 即可，不追求生产级并发能力；
-- 依赖版本：受 Python 3.8 地板约束，`Flask<3.1` / `Mako<1.3`（部署时可钉版本上界，避免未来主版本破坏性改动影响 MakoServer）；
+- 依赖版本：受 Python 3.8 地板约束，`Flask<4` / `Mako<1.5`（部署时可钉版本上界，避免未来主版本破坏性改动影响 MakoServer）；开发/验证基准为 Flask 2.2.x + Mako 1.4.x，其中自定义字节缓冲注入用到 `mako.runtime` 私有接口，升级 Mako 小版本时需回归验证；
 - 模板编译：一律在内存中进行，`module_directory` 不启用，确保文档根目录可只读挂载且不产生 `__pycache__` / `.pyc` 污染（`module_directory` 会落盘编译后 `.py` 并经 import 系统写 `__pycache__`，既破坏只读 root 又可能被静态分支回吐编译后源码）；
 - 日志：
   - access log 默认不落盘：独立 dev 模式走 Werkzeug 控制台默认输出，WSGI 模式交由宿主（Apache `access_log` / gunicorn `--access-logfile`）负责，MakoServer 不重复记录；配置了 `access_log` 文件路径后由 MakoServer 主动记录请求日志（含 WSGI 模式，此时与宿主日志并存，是否双写由使用者取舍）；
