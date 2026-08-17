@@ -197,6 +197,29 @@ def test_default_root_fallback (site, tmp_path, mako_mod):
     assert app.mako_server.root == os.path.abspath(str(site))
 
 
+def test_root_appended_to_sys_path (site, mako_mod):
+    """create_app appends root realpath to sys.path tail (decision #26)
+    so <%! %> blocks can import site-local .py helpers; appending
+    twice must be deduped."""
+    import sys
+    root_real = os.path.realpath(str(site))
+    before = sys.path.count(root_real)
+    mako_mod.create_app(root=str(site))
+    mako_mod.create_app(root=str(site))
+    assert sys.path.count(root_real) == before + 1
+
+
+def test_template_imports_site_module (site, wf, client_factory):
+    """A <%! %> block can import a .py helper living under root
+    (py3 namespace package, no __init__.py), end to end."""
+    wf('sitepkg/helper.py', 'def shout ():\n    return "HELLO-FROM-ROOT"\n')
+    wf('page.mako', '<%!\nfrom sitepkg.helper import shout\n%>${shout()}\n')
+    client = client_factory(site)
+    rv = client.get('/page.mako')
+    assert rv.status_code == 200
+    assert rv.data == b'HELLO-FROM-ROOT'
+
+
 def test_root_missing_raises (tmp_path, mako_mod):
     bad = str(tmp_path / 'nonexistent')
     with pytest.raises(mako_mod.ConfigError) as ei:

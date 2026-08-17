@@ -10,6 +10,8 @@
 import os
 import json
 
+from common.siteutil import tagline as _tagline
+
 PER_PAGE = 5
 
 
@@ -62,6 +64,7 @@ saved_name = _COOKIE.get('gb_name', '')
 debug = bool(_GET.get('debug'))
 %>\
 <%include file="header.mako"/>
+<p class="dim">${escape(_tagline())} <span class="dim">(imported from common/siteutil.py in a &lt;%! %&gt; block)</span></p>
 % if flash:
 <div class="flash ${escape(flash.get('type', 'info'))}">${escape(flash.get('text', ''))}</div>
 % endif

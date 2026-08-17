@@ -91,6 +91,10 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 违反时的失败形态：编译正常通过（注入名是合法标识符），**运行时**函数被调用才抛 `NameError`——且若该函数只在特定分支（如 `?debug=1`）被调用，平时页面一切正常，极具迷惑性。
 
+### 站点本地模块 import
+
+HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sys.path` 尾部，因此模板可以在 `<%! %>` 模块块里直接 import 根目录下的 .py 辅助模块（点分路径，py3 命名空间包，无需 `__init__.py`），例如 `root/common/siteutil.py` → `from common.siteutil import tagline`。两点预期：追加在尾部，标准库与已安装包永远优先，root 下同名文件无法遮蔽标准库；导入的 .py 常驻 `sys.modules`，**编辑后需重启服务才生效**（与 .mako 的 mtime 热重载不同），适合放 DB / Redis 客户端等长生命周期单例。CLI 模式无文档根概念不参与；`.py` 不在静态白名单，辅助模块放根目录内不会经 HTTP 泄露。
+
 ## 路径解析
 
 - 程序与配置中统一用 **root** 指代文档根目录；

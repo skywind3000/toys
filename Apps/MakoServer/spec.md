@@ -47,6 +47,7 @@
 | 24 | CLI stdin 渲染标记用 `-` 非 `--` | `python makoserver.py - [args...]` 从 stdin 读模板源并渲染。选**单减号**：POSIX Utility Syntax Guideline 13 规定操作数 `-` 即 stdin/stdout，cat / grep / sed / tar / curl / gcc / python / jq / pandoc / `kubectl apply -f -` / `docker build -` 全线同约定，PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`（本项目对标 PHP，天然契合）；`--` 被否决——它是 getopt/argparse 的**选项终止符**（POSIX Guideline 10），argparse 会吞掉首个 `--`、根本到不了位置参数，语义冲突且技术不可行。细则见 10.3 |
 | 25 | 注入名作用域属模板编写约定而非框架缺陷 | demo 留言板实测踩坑：`<%! %>`（模块级）里定义的辅助函数调用 `escape` → 编译正常、**运行时**被调才报 `NameError`（注入名仅存在于渲染作用域，见 6.7）。框架不做任何修复/兜底——Mako 两级作用域系模板引擎固有语义，强行把注入名塞进模板模块 globals 会引入跨请求共享可变状态（与 9.4 每请求隔离原则冲突）；以文档约定收口（PRD「注入名作用域」节），见 6.7 |
 | 25 | 注入名作用域与 `<%! %>` 编写约定 | bridge 注入名仅在渲染体作用域可见（6.7）；`<%! %>` 模块级函数引用注入名编译期无错、**运行时首次调用才 NameError**（demo 留言板 debug 面板实测踩中）——约定 `<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参 |
+| 26 | root 尾部追加进 sys.path（站点本地模块 import） | dev / WSGI 启动时（create_app，启动校验后）把 `realpath(root)` **去重后 append 到 sys.path 尾部**，模板 `<%! %>` 即可点分 import root 下的 .py（py3 命名空间包，无需 `__init__.py`）。选尾部而非 insert(0)：标准库 / 已安装包优先，root 里同名 `json.py` 无法遮蔽标准库；CLI 无 root 概念不参与。细节见 2.5 |
 
 ## 1. 单文件内部布局
 
@@ -106,6 +107,27 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 - WSGI：配置文件 `root` > **makoserver.py 所在目录**（`__file__` 取 abspath 后 dirname；不回退 cwd——WSGI 进程的工作目录不可靠，如 mod_wsgi 常为 `/`）。零配置即拷即用：单文件放进站点目录就能跑；
 - 其余键（`secret` / `session_*` / `access_log` / `error_log`）：仅配置文件 > 内置默认（无命令行对应参数）；
 - `port` / `host` 为**纯命令行参数**（默认 5000 / `127.0.0.1`），不进配置文件——作用域分界：进程启动参数走命令行，站点与部署属性走配置文件；WSGI 模式监听由宿主决定，配置该键本就无效。
+
+### 2.5 root 与 sys.path（站点本地模块 import，决策 #26）
+
+create_app 在启动校验（决策 #22）通过后、构建 MakoServer 前，将 `os.path.realpath(final_root)` **去重后 `sys.path.append`（尾部）**。dev server 与 WSGI 两模式都经 create_app，一体生效；CLI 渲染不读配置、无 root 概念，不参与。
+
+由此模板可在模块块直接 import root 下的 .py 辅助模块（py3 命名空间包，无需 `__init__.py`）：
+
+```
+root/
+  common/siteutil.py        ← import common.siteutil
+  demo/index.mako           ← <%! from common.siteutil import tagline %>
+```
+
+行为决策与预期管理：
+
+1. **尾部追加**而非 `insert(0)`——标准库与已安装包优先于 root，root 下即使存在 `json.py` 也无法遮蔽标准库（fail-safe 默认）；
+2. **去重**：`root_real not in sys.path` 才追加（同进程多次 create_app / gunicorn preload + fork 场景不重复堆叠）；
+3. **模块缓存预期**：导入的 .py 进 `sys.modules` 后常驻，**编辑后需重启服务才生效**（与 .mako 的 mtime 热重载不同）——长生命周期资源（DB / Redis 客户端等）放这里正合适，频繁改动的逻辑仍应写在 .mako 里；
+4. **模块级单例**：`sys.modules` 保证全进程（含所有模板）共享同一模块对象，不随任何模板重编译重建；注意它是跨请求共享状态，并发正确性由模块自己负责（同 9.4 边界声明）；
+5. **安全白送**：`.py` 不在静态白名单（3.5 规则 2），辅助模块放 root 内永远不会经 HTTP 泄露；
+6. **不自动加模板同目录**（曾考虑的首访追加方案被否）：跨目录同名模块先到先得、全局生效，静默拿错包的排查成本过高；root 相对点分路径足够覆盖需求且无歧义。
 
 ## 3. 请求处理流水线
 

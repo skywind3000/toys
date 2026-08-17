@@ -19,6 +19,7 @@ python makoserver.py -r demo -p 8000
 | `index.mako` | 留言列表 + 表单 + debug 面板 |
 | `post.mako` | POST 处理：校验、落盘、发 cookie、redirect（PRG） |
 | `header.mako` / `footer.mako` | 公共布局（`<%include>` 演示） |
+| `common/siteutil.py` | 站点本地辅助模块（root 在 sys.path，`<%! %>` 直接 import，spec 决策 #26） |
 | `style.css` | 静态文件（白名单分支演示） |
 | `data/messages.json` | 留言存储（运行时自动创建，勿手工编辑） |
 
@@ -30,6 +31,7 @@ python makoserver.py -r demo -p 8000
 - **Session** — 访问计数器（`_SESSION['visits']`）+ 一次性 flash 消息（POST→redirect→GET 显示后消失）
 - **PRG 模式** — `post.mako` 处理完 `RESP.redirect('index.mako')` + `return`
 - **模板定位** — 数据文件用 `_SERVER['SCRIPT_DIRNAME']` 拼绝对路径（spec 决策 #21）
+- **站点模块 import** — `index.mako` 的 `<%! %>` 块 `from common.siteutil import tagline`（root 尾部追加进 sys.path，spec 决策 #26；注意 .py 修改后需重启，不像 .mako 有 mtime 热重载）
 - **HTML 转义** — 所有用户输入经 `escape()` 输出（可发 `<script>alert(1)</script>` 验证）
 
 ## curl 冒烟测试

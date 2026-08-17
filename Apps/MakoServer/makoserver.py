@@ -1201,6 +1201,16 @@ def create_app (root=None, conf_file=None, default_root=None,
         final_root = os.path.abspath(default_root or MODULE_DIR)
         source = default_source
     validate_startup(config, final_root, source)
+    # make site-local .py helpers importable from templates: append
+    # the document root (realpath, dedup) to sys.path TAIL so <%! %>
+    # blocks can "import pkg.mod" for anything under root (py3
+    # namespace packages, no __init__.py needed). Tail-appending
+    # keeps stdlib / site-packages ahead of root (a root-level
+    # json.py cannot shadow the stdlib). CLI mode has no root
+    # concept and never reaches this path (spec decision #26).
+    root_real = os.path.realpath(final_root)
+    if root_real not in sys.path:
+        sys.path.append(root_real)
     server = MakoServer(final_root, config, conf_path)
 
     app = flask.Flask('makoserver', static_folder=None)
