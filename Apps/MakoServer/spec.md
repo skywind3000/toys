@@ -41,7 +41,7 @@
 | 19 | session cookie 属性 | 固定 `Path=/; HttpOnly; SameSite=Lax`；**不设 Max-Age / Expires**（浏览器会话 cookie，对齐 PHP 默认 `session.cookie_lifetime=0`）——过期控制由服务端时间戳判定承担（cookie 即使被浏览器持久保留，过期后校验失败按无 session 处理） |
 | 20 | OPTIONS 交给脚本 | 路由注册 `provide_automatic_options=False`——否则 Flask 默认自动应答 OPTIONS（200 + Allow 头），view 永不被调用、`REQUEST_METHOD='OPTIONS'` 传不到脚本；关闭后 OPTIONS 到达模板分支照常渲染（Apache + mod_php 同为执行脚本） |
 | 21 | 模板文件访问基准 | **不 chdir**（cwd 是进程级状态，dev server / WSGI 多线程共享进程，并发请求互相切目录 = 数据竞争；PHP 敢切靠的是单请求同步 worker 模型）；补 `_SERVER['SCRIPT_FILENAME']` / `['DOCUMENT_ROOT']` / `['SCRIPT_DIRNAME']`（前两键 PHP `$_SERVER` 标配，第三键为便利键 = dirname，语义同 PHP `__DIR__`）；模板定位文件用三键拼绝对路径，裸相对路径基准为进程 cwd、行为不保证 |
-| 22 | root 存在性启动校验 | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；CLI 无 root 概念不校验 |
+| 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
 
 ## 1. 单文件内部布局
 
@@ -75,7 +75,7 @@ makoserver.py 内部代码区块（自上而下）：
 | `access_log` | str | 空（不落盘） | access log 文件路径 |
 | `error_log` | str | 空（stderr） | error log 文件路径 |
 
-未知键忽略不报错（向前兼容）；若未知键与已知键拼写相近（如 `session_lifetim`），向 stderr 打一条 warning（非阻塞，防拼写错被静默吞掉回落默认值）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；**构造 `ConfigParser(interpolation=None)`**——默认的 `BasicInterpolation` 会对 `%` 做插值展开，含 `%` 的值（如手写 secret）直接抛 `InterpolationSyntaxError`，必须显式关闭；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
+未知键忽略不报错（向前兼容）；若未知键与已知键拼写相近（如 `session_lifetim`），向 stderr 打一条 warning（非阻塞，防拼写错被静默吞掉回落默认值）——「相近」**钉死为 `difflib.get_close_matches(name, 已知键列表, n=1, cutoff=0.8)` 非空即 warn**（实现唯一、无裁量空间；无相近匹配的未知键静默忽略）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；**构造 `ConfigParser(interpolation=None)`**——默认的 `BasicInterpolation` 会对 `%` 做插值展开，含 `%` 的值（如手写 secret）直接抛 `InterpolationSyntaxError`，必须显式关闭；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
 
 `port` / `host` **不进配置文件**（决策 #15）：它们只对 dev server 一个模式生效（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性，纯命令行 `-p` / `--host` 提供（见 10.1）。
 
@@ -96,7 +96,7 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 
 - CLI 渲染：不读配置，无 root 概念（模板基准 = 脚本所在目录，见 4.3）；
 - dev server：`-r/--root` > 配置文件 `root` > **当前工作目录**（对齐 `php -S` 默认 docroot = cwd 的行为；默认 host=127.0.0.1 仅监听回环，暴露面可控）；
-- **root 存在性启动校验**（决策 #22）：dev / WSGI 启动时校验最终确定的 root 存在且为目录（`os.path.isdir`）——不存在或非目录 → **报错退出**（stderr 带 root 路径与来源，如 `root=/nonexistent (from config)`），不静默带病运行（否则 realpath 照算、全站 404，极具迷惑性）；CLI 无 root 概念不校验。回退链默认值（cwd）同样过此校验，路径统一；
+- **root 存在性启动校验**（决策 #22）：dev / WSGI 启动时校验最终确定的 root 存在且为目录（`os.path.isdir`）——不存在或非目录 → **报错退出**（stderr 带 root 路径与来源，如 `root=/nonexistent (from config)`），不静默带病运行（否则 realpath 照算、全站 404，极具迷惑性）；CLI 无 root 概念不校验。回退链默认值（cwd）同样过此校验，路径统一。已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写——探测方式：以 append 模式试开一次即关；失败报错退出，同「报错退出优于带病运行」哲学，否则延迟到装配 FileHandler 或首条日志才炸、WSGI 下 stderr 无人看）；
 - WSGI：配置文件 `root` > **makoserver.py 所在目录**（`__file__` 取 abspath 后 dirname；不回退 cwd——WSGI 进程的工作目录不可靠，如 mod_wsgi 常为 `/`）。零配置即拷即用：单文件放进站点目录就能跑；
 - 其余键（`secret` / `session_*` / `access_log` / `error_log`）：仅配置文件 > 内置默认（无命令行对应参数）；
 - `port` / `host` 为**纯命令行参数**（默认 5000 / `127.0.0.1`），不进配置文件——作用域分界：进程启动参数走命令行，站点与部署属性走配置文件；WSGI 模式监听由宿主决定，配置该键本就无效。
@@ -114,16 +114,18 @@ Flask app 仅注册两条路由（catch-all，禁用 static 路由）：
 
 WSGI 挂载前缀（SCRIPT_NAME）由 Flask/Werkzeug 自动剥除，view 收到的即 URL 尾部。全谓词的作用域：POST / PUT / DELETE / PATCH 到达**模板分支**时正常渲染，`_SERVER['REQUEST_METHOD']` 如实传递（REST 风格 API 由 .mako 脚本自行处理）；**静态分支不接受非 GET/HEAD**（405，见 3.5）。
 
+**Werkzeug 前置行为声明**（发生在本框架任何路径逻辑之前）：路由层默认 `merge_slashes=True`，`//a///b` 这类重复斜杠会被 Werkzeug 先发 **308** 归并重定向到 `/a/b`，view 收不到——属宿主层标准行为，保留默认（显式关闭则 `//` 请求直达 normpath、URL 不归一即服务，缓存键与 `REQUEST_URI` 呈现不一致）。故「全部路径逻辑在 resolve_path 收口」指 **merge_slashes 归一之后**的路径。
+
 ### 3.2 路径解析算法（resolve_path）
 
 输入：URL 尾部 `url_path`（已 URL 解码）。步骤：
 
-1. **POSIX 规范化**：`rel = posixpath.normpath('/' + url_path).lstrip('/')`，得到如 `demo/demo.mako`。前置 `/` 使 normpath 将越界 `..` **钳制回根**（`/../../etc` → `/etc`，rel 永不含头部 `..`）——注意这是钳制而非拒绝，逃逸防护实际由第 3 步 commonpath 收口承担（实测 normpath 不会让 `..` 残留，实现勿依赖本步做拒绝）；
+1. **POSIX 规范化**：`rel = posixpath.normpath('/' + url_path).lstrip('/')`，得到如 `demo/demo.mako`。前置 `/` 使 normpath 将越界 `..` **钳制回根**（`/../../etc` → `/etc`，rel 永不含头部 `..`）——注意这是钳制而非拒绝，逃逸防护实际由第 4 步 commonpath 收口承担（实测 normpath 不会让 `..` 残留，实现勿依赖本步做拒绝）。本步同时记录 `trailing = url_path.endswith('/')`（原始请求是否带尾斜杠——normpath 会吃掉它，后端分支判定需要，见 3.3 静态分支与 6.4 PATH_INFO 形态）；
 2. **空字节拒绝**（全平台）：URL 解码后 `'\x00' in rel` → 拒绝（404）——`\x00` 进入 `os.stat` / `open` 会抛 `ValueError`（非 OSError），不拦会变 500；
 3. **NTFS 特判**（`os.name == 'nt'` 下）：
    - `rel` 含 `:`（盘符 / `::$DATA` 数据流）→ 拒绝；
    - Windows 会剥掉路径段末尾的 `.` 与空格，此处对 `rel` 整体 `rstrip(' .')`（等效作用于末段 basename）后再做后续判断——防 `demo.mako.` 绕过；中间段的点/空格交由文件系统自身语义，不额外模拟。**特判仅限 Windows 系、有意跨平台分裂**：Linux 文件系统无剥尾点语义，`demo.mako.` 是字面文件名、通常不存在 → 走不存在分支 404（回溯不救——父段即 root 目录），天然 fail-closed，无需也不模拟剥点——与 lower() 归一的全平台一致是两条哲学：前者靠平台语义天然兜底即可，后者平台大小写语义互斥（NTFS 不敏感 / ext4 敏感）必须显式归一；
-4. **拼合与真实路径收口**：`full = os.path.join(root, rel)`；`real = os.path.realpath(full)`、`root_real = os.path.realpath(root)`；仅当 `os.path.commonpath([real, root_real]) != root_real`（逃出 root）→ 拒绝。`real == root_real`（请求 `/` 本身）**放行**，进入 3.3 目录分支走 index 兜底，不得拒绝。realpath 一并覆盖符号链接 / junction 指出 root 的场景；
+4. **拼合与真实路径收口**：`full = os.path.join(root, rel)`；`real = os.path.realpath(full)`、`root_real = os.path.realpath(root)`；`os.path.commonpath([real, root_real])` **包 try/except ValueError → 拒绝（404）**——commonpath 对两路径**不同盘符 / UNC / 设备命名空间**时不返回不等、直接抛 `ValueError("Paths don't have the same drive")`（文档化行为），未捕获会变 500。两类同族陷阱由此一条兜底吃掉：① root 内 junction / 符号链接指向另一盘符（realpath 忠实解析出他盘路径，本指望 commonpath 拒绝，跨盘时它自己先炸）；② DOS 设备名请求（`/nul`、`/con.txt`、`/aux`、`/com1.css`——Windows 路径归一可解析成设备路径形态）。异常路径与不等路径同走 404（3.2 step6 同体原则）。`commonpath != root_real`（逃出 root）→ 拒绝。`real == root_real`（请求 `/` 本身）**放行**，进入 3.3 目录分支走 index 兜底，不得拒绝。realpath 一并覆盖符号链接 / junction 指出 root 的场景；
 5. **敏感路径屏蔽**：`real` 命中运行时屏蔽集合（实际加载的配置文件路径、已配置的 access_log / error_log 路径，见 3.5 规则 4）→ 404。本步对**初始 real** 先行比对（快速路径，拦住直接请求）；由于尾挂回溯 / index 兜底会解析出**与初始 real 不同的目标文件**，屏蔽比对的总则是「**最终解析到的目标文件在打开 / 渲染前必须过屏蔽集合**」（回溯命中父文件、兜底命中 index.* 时各自比对，见 3.3）——静态分支（回吐 secret / 日志）与模板分支（把日志 / 配置**当模板编译执行**，`error_log` 起名 `log.mako` 即成 RCE）一体防护；
 6. **拒绝即 404**：与「文件不存在」同响应（见 3.6），不区分。
 
@@ -133,10 +135,12 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 对步骤 4 的 `real`：`name = os.path.basename(real).lower()`
 
-- `name.endswith('.mako')` **且 `os.path.isfile(real)`** → **模板分支**（见 3.4）。`endswith` 不带 isfile 的旧写法会把**名为 `foo.mako` 的目录**送进模板分支，`open()` 抛 `IsADirectoryError` → 500，故加 isfile 收口；
+- `name.endswith('.mako')` **且 `os.path.isfile(real)`** → **模板分支**（见 3.4）。`endswith` 不带 isfile 的旧写法会把**名为 `foo.mako` 的目录**送进模板分支，`open()` 抛 `IsADirectoryError` → 500，故加 isfile 收口。请求 `/demo.mako/`（`trailing`、无尾挂）→ 照常渲染，`PATH_INFO = '/'`（尾斜杠本身算尾挂，对齐 Apache/mod_php 语义，见 6.4）；
 - `name.endswith('.mako')` 但**不是文件**（目录或不存在）→ 404（不进回溯——`/nonexist.mako/x` 回溯到 `nonexist.mako` 亦非文件、再到 root 是目录，结果同为 404，规则闭合。其中名为 `foo.mako` 的**目录**有意不做目录处理、不走 301 / index 兜底：目录名以 `.mako` 结尾系病态命名，若按目录处理则兜底 `foo.mako/index.*` 命中后 `SCRIPT_NAME` 以 `.mako` 结尾、与「.mako 后缀 = 可执行模板文件」的直觉契约冲突，简单一致的选择是一律 404）；
-- `os.path.isfile(real)` → **静态分支**（.mako 已被上面拦截，不会以静态形式吐出源码）；
-- `os.path.isdir(real)` → **目录请求**：先看 URL 尾部有无 `/`（`request.path.endswith('/')`；`request.path` 为解码态，`%2F` 会被解码成 `/` 而直接按带斜杠处理——边角行为，声明接受）——无（如 `/demo`）→ **301** 重定向，`Location = request.path + '/'`（QUERY_STRING 非空时才追加 `?query`，空 query 不挂裸 `?`）。`request.path` 天然含 WSGI 挂载前缀如 `/app1`（实测确认）；`request.path` 是解码态，但 **Werkzeug `redirect()` 会对 Location 自动重新百分号编码**（中文目录名实测出 `/%E4%B8%AD.../`，无碍）——实现者勿自行 `quote`，防双重编码。有尾斜杠（如 `/demo/`、`/`）→ **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理；**命中文件先 `os.path.realpath` 归一再过屏蔽集合比对**——`index.*` 本身可能是指向被屏蔽文件的符号链接，未解析直接比对即旁路，命中 → 404），全不中 → 404；
+- `os.path.isfile(real)` → **静态分支**（.mako 已被上面拦截，不会以静态形式吐出源码。**原始请求带尾斜杠（`trailing`）→ 404**：文件非目录，对齐 Apache「文件路径带尾斜杠 404」，与「静态不带尾挂」（`style.css/hello` → 404）精神一致——不查则 normpath 吃掉斜杠后照常 200，与尾挂 404 行为分裂）；
+- `os.path.isdir(real)` → **目录请求**，按序两查：
+  - **挂载根无斜杠**（前置边角）：environ `PATH_INFO` 为空（`''`）且 `SCRIPT_NAME` 非空（挂载根如 `/app1`）→ **301** 到 `SCRIPT_NAME + '/'`（+ query）。必须本步先行拦截：Werkzeug 的 `request.path` 会把空 `PATH_INFO` **归一成 `'/'`**（源码 `raw_path.lstrip("/") and "/" + ... or "/"`），`endswith('/')` 判定失灵、静默走 index 兜底 → 页面挂在无斜杠 URL `/app1` 下，页内相对链接全按 `/` 解析错链——正是 301 补斜杠（决策 #18）要防的事故，判定须用 environ 原始 `PATH_INFO` 而非 `request.path`；
+  - 其余：看 URL 尾部有无 `/`（`request.path.endswith('/')`；`request.path` 为解码态，`%2F` 会被解码成 `/` 而直接按带斜杠处理——边角行为，声明接受）——无（如 `/demo`）→ **301** 重定向，`Location = request.script_root + request.path + '/'`（QUERY_STRING 非空时才追加 `?query`，空 query 不挂裸 `?`）。**必须拼 `script_root`**：Werkzeug `Request.path` 只派生自 `PATH_INFO`、**不含**挂载前缀（前缀在 `request.script_root`，即 environ `SCRIPT_NAME`）——曾误判「request.path 天然含前缀」，系 test client 默认 `SCRIPT_NAME=''`、全路径进了 `PATH_INFO` 所致，测不出两者分离；真实挂载（`WSGIScriptAlias /app1`）下只拼 path 会得到 `/demo/` 而非 `/app1/demo/`、301 跳出应用。`request.path` 是解码态，但 **Werkzeug `redirect()` 会对 Location 自动重新百分号编码**（中文目录名实测无碍）——实现者勿自行 `quote`，防双重编码。有尾斜杠（如 `/demo/`、`/`）→ **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理；**命中文件先 `os.path.realpath` 归一再过屏蔽集合比对**——`index.*` 本身可能是指向被屏蔽文件的符号链接，未解析直接比对即旁路，命中 → 404），全不中 → 404；
 - `real` 不存在 → **尾挂回溯**（PATH_INFO 机制，对齐 PHP `AcceptPathInfo`）：**在 `real`（realpath 产物）链上**逐级去掉末段向上，**只找文件**（不得在未解析链接的 `full` / `rel` 拼合路径上判定——注意两条链上 `isfile` 的存在性判定结果并无差异，**必须用 real 链的理由是屏蔽比对要拿真实路径**：realpath 已把符号链接解析掉，`link.mako` → `log.mako` 的软链在 real 链上天然是 `root/log.mako`、与屏蔽集合（存 realpath）正确比对；full 链上参与比对的 `root/link.mako` 不在集合而其真实目标在，比对放行、`open()` 时才被 OS 重定向到被屏蔽文件，旁路即成）——
   - 父路径是**存在的文件**且 `.mako` → **先过屏蔽集合比对**（real 链上的路径天然是真实路径，直接比对；防 `/log.mako/hello` 经回溯绕过初始 real 比对、旁路执行被屏蔽日志），通过则渲染该文件，被去掉的部分（含前导 `/`）作为 `_SERVER['PATH_INFO']` 传入（如 `/index.mako/hello` → 渲染 `index.mako`，`PATH_INFO = '/hello'`）；
   - 父路径是存在的文件但**非 .mako** → 404（静态文件不带尾挂，PHP 同语义，`style.css/hello` → 404）；
@@ -149,7 +153,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 ### 3.4 模板分支
 
-1. `store.get(rel)`：mtime 检查命中缓存或重新加载编译（见 4）；
+1. `store.get(脚本相对路径)`：mtime 检查命中缓存或重新加载编译（见 4）。**脚本相对路径** = 普通请求时即 3.2 的 `rel`；尾挂回溯 / index 兜底场景为**实际渲染目标**（回溯命中的父文件、`<real>/index.mako`）相对 root 的路径——不得传原始 `rel`（否则缓存键挂错、加载的文件也不对，见 3.3）；
 2. 主模板文件不存在已在 3.3 判定层拦截（404，不进本分支）；本条仅作防御性兜底；
 3. 编译/渲染任何异常（含 include/inherit 目标缺失）→ 500（见 9.1）；
 4. 渲染成功 → 按 8 组装响应。
@@ -273,7 +277,7 @@ HTTP 模式（自 WSGI environ 透传 + 提炼）：
 | 尾挂请求（`/index.mako/hello`） | 挂载前缀 + `/index.mako` | `'/hello'` |
 | index 兜底渲染（`/dir/` → `dir/index.mako`） | 挂载前缀 + `/dir/` | `''` |
 
-（挂载前缀即 environ 原始 SCRIPT_NAME，如 `/app1`，无挂载时为空串。）
+（挂载前缀即 environ 原始 SCRIPT_NAME，如 `/app1`，无挂载时为空串。`/demo.mako/`（尾斜杠、无尾挂）属普通请求形态但 `PATH_INFO = '/'` 而非空串——尾斜杠本身算尾挂，对齐 Apache/mod_php，见 3.3。）
 
 `SCRIPT_FILENAME` / `DOCUMENT_ROOT` / `SCRIPT_DIRNAME`（决策 #21，模板定位文件的正路）：
 
@@ -357,7 +361,7 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 
 ### 7.3 签发 / 重签 / 过期规则表
 
-请求开始时载入有效数据并做快照（`snapshot = copy of loaded data`）。渲染结束后按 `now_dict` 与快照比对（不等 = 脚本写过）：
+请求开始时载入有效数据并做**规范化快照**：`snapshot = json.dumps(data, sort_keys=True, separators=(',', ':'))`——快照与比对基准均为**规范化 JSON 串**而非 dict copy。浅拷贝有隐蔽坑：`_SESSION['cart'].append(x)` 这类嵌套原地修改后，快照与现值内层是同一对象、`==` 恒真，absolute 模式判「未改」不重签、修改静默丢失，sliding 模式却因「有效即重签」把它存下——两种模式对同一段脚本行为分裂，最难排查。JSON 串一举解决深比较与 dict 键序两个问题。渲染结束后以同样参数序列化 `now_dict` 与快照**比串**，不等 = 脚本写过（检出含嵌套层级的原地修改、增删键、整体重绑定）：
 
 | 场景 | absolute | sliding |
 |------|----------|---------|
@@ -369,11 +373,12 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 
 （清空 `_SESSION` 属「改了数据」：absolute 下重签空数据 ts 继承，sliding 下 ts=now。）
 
-变更检测基于框架持有 dict 的快照比对，仅覆盖**原地修改**（`_SESSION['k'] = v` / `.update()` / `.clear()` / `del`）；模板中 `_SESSION = {...}` 属局部名重绑定，框架侧对象不变，判为「未写」、修改丢失——Python 语义使然（与 PHP `$_SESSION` 可整体重赋值不同），模板代码须原地增删改。
+变更检测基于框架持有 dict 的快照比对，覆盖**原地修改**（`_SESSION['k'] = v` / `.update()` / `.clear()` / `del`，**含嵌套层级**——`_SESSION['cart'].append(x)` 等，深比较由上述规范化 JSON 串快照保证）；模板中 `_SESSION = {...}` 属局部名重绑定，框架侧对象不变，判为「未写」、修改丢失——Python 语义使然（与 PHP `$_SESSION` 可整体重赋值不同），模板代码须原地增删改。
 
-### 7.4 容量上限
+### 7.4 容量上限与序列化失败
 
-组装 Set-Cookie 前检查完整 cookie 串长度 > 3800 字节 → 抛 `SessionTooLarge` → 500 错误页（错误信息说明 4KB 限制）。
+- 组装 Set-Cookie 前检查完整 cookie 串长度 > 3800 字节 → 抛 `SessionTooLarge` → 500 错误页（错误信息说明 4KB 限制）；
+- session 值不可 JSON 序列化（datetime / set / 自定义对象等）→ 序列化抛 `TypeError` → **同语义 500** 错误页（错误信息说明 session 仅支持 JSON 类型）——与 `SessionTooLarge` 同阶段（渲染成功后的响应组装）、同性质（脚本写了存不进 cookie 的东西），归一类处理。
 
 ### 7.5 CLI 模式
 
@@ -386,7 +391,7 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 1. body = `buffer.getvalue()`；
 2. status = RESP 记录的 code（未设 → 200）；
 3. Content-Type：RESP 显式设置值 > 默认 `text/html; charset=utf-8`；
-4. 其余 RESP headers 逐个加入（后设覆盖先设；**Set-Cookie 例外**——`RESP.header` 设置的逐条追加、`RESP.setcookie` 按 cookie name 后设覆盖、session 的 Set-Cookie 独立追加，三者并存下发）；
+4. 其余 RESP headers 逐个加入（后设覆盖先设；**Set-Cookie 例外**——`RESP.header` 设置的逐条追加、`RESP.setcookie` 按 cookie name 后设覆盖、session 的 Set-Cookie 独立追加，三者并存下发。**session cookie 名独占**：脚本 `RESP.setcookie('MAKO_SESSION', ...)` 与框架 session 机制同名时**该条丢弃、不下发**，并向 error log 打 warning——下发两条同名 Set-Cookie 的浏览器取舍行为未定义；session 机制对该名字独占管理（`Path/HttpOnly/SameSite` 固定属性不容脚本覆盖；清 session 走服务端过期或清空数据，删浏览器 cookie 无意义））；
 5. session 规则（7.3）决定是否追加 Set-Cookie；
 6. 组装 `flask.Response(body, status, headers)` 返回。
 
@@ -477,14 +482,14 @@ python makoserver.py [options] script [args...]
 
 | 文件 | 覆盖点 |
 |------|--------|
-| `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录；**root 不存在 / 非目录 → 启动报错退出（stderr 含 root 路径与来源；决策 #22）** |
-| `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀（`/app1/demo` → `/app1/demo/`，不跳出应用）；带斜杠 `/demo/` 照常兜底**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）** |
+| `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录；**root 不存在 / 非目录 → 启动报错退出（stderr 含 root 路径与来源；决策 #22）**；**`error_log` / `access_log` 父目录不存在 / 不可写 → 启动报错退出（append 探测失败；决策 #22 同哲学）** |
+| `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root、**跨盘符 junction 与 DOS 设备名（`/nul`、`/con.txt`，Windows）→ 404（commonpath ValueError 兜底回归，非 500）**；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀——`environ_overrides={'SCRIPT_NAME': '/app1'}` 构造（test client 默认 SCRIPT_NAME=''、测不出 script_root/path 分离），`/app1/demo` → `/app1/demo/` 不跳出应用；挂载根无斜杠（`/app1`，environ PATH_INFO=''）→ 301 `/app1/`（Werkzeug 空 PATH_INFO 归一 '/' 的静默兜底回归）；带斜杠 `/demo/` 照常兜底**；**裸尾斜杠：`/style.css/` → 404、`/demo.mako/` → 渲染 + `PATH_INFO='/'`**；**`//a` → 308（Werkzeug merge_slashes 前置归一，声明性断言）**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）** |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/` |
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；**root 内 `link.mako` 符号链接指向 `log.mako` → 直接请求与尾挂请求均 404（real 链比对回归：full 链上链接路径不在集合、真实目标在，real 链已解析为真实路径直接命中）**；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
-| `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出 / `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
+| `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出（**含嵌套层级：`_SESSION['cart'].append(x)` 判「已写」重签——规范化 JSON 串深比较回归，absolute 模式防嵌套修改静默丢失**）/ `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；**值不可 JSON 序列化（datetime 等）→ 500（错误信息说明仅支持 JSON 类型）**；**`RESP.setcookie('MAKO_SESSION', ...)` 同名 → 丢弃不下发 + error log warning（session cookie 名独占回归）**；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；**OPTIONS 请求 .mako 到达脚本渲染（`REQUEST_METHOD='OPTIONS'`，非 Flask 自动 Allow 应答——provide_automatic_options=False 回归）**；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
 

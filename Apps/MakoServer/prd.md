@@ -21,7 +21,7 @@
 - Flask 端提供 bridge 函数/对象供 .mako 脚本使用，详见下文「Bridge API」一节；
 - 更新检测：用户更新 .mako 脚本后能自动检测并 reload —— 采用**请求时检查 mtime** 的方式，不引入 watchdog；
 - 错误处理：.mako 脚本编译错误或运行时异常时，返回 5xx 状态码 + 错误内容页面；
-- 404 处理：请求的文件不存在（含 index 兜底全部未命中）、或路径穿透检查被拒绝时，统一返回 404 状态码 + 简单文本错误页，不区分"不存在"与"被拒绝"（避免探测目录结构）；
+- 404 处理：请求的文件不存在（含 index 兜底全部未命中）、或路径穿透检查被拒绝时，统一返回 404 状态码 + 简单文本错误页，不区分"不存在"与"被拒绝"（避免探测文件结构）；目录存在性可经 301（目录无斜杠）/ 404（不存在）的差异被探测——Apache 同病，可信环境接受，知悉即可；
 - 编码：文本输出统一 UTF-8，第一期重点覆盖 `text/html`、`text/plain`、`application/json` 三种类型。
 
 ## Bridge API
@@ -56,7 +56,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
   - **两层超时独立控制**：cookie 自身的 HTTP 层过期（`RESP.setcookie()` 的 expires/max-age）与签名 session 的时间戳过期是两层，前者管浏览器是否携带，后者管服务端是否接受；
   - 支持两种超时语义（配置项切换）：绝对超时（签发时间起算）与滑动超时（每次响应重签刷新，仿 PHP 默认行为）；
   - 签名密钥优先读配置；配置缺失时由本机指纹（machine-id + 网卡 MAC 的 hash）派生，无需落盘即可同机稳定、跨机不同；
-  - 预期管理：容量受 cookie 限制（约 4KB，超限抛 500 错误页、错误信息说明容量限制）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
+  - 预期管理：容量受 cookie 限制（约 4KB，超限抛 500 错误页、错误信息说明容量限制）、值仅支持 JSON 可序列化类型（datetime / 自定义对象等写入时同样 500 报错）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
   - 更复杂的会话需求（主动淘汰、大容量存储等）由用户脚本自行搭配 Redis 等后端实现，bridge 提供 cookie 原语即可支撑（发 HttpOnly 的 sid cookie + 自管存储），MakoServer 不内置也不感知这些依赖。
 
 ### 响应
@@ -84,7 +84,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - makoserver.py 可直接作为 WSGI 入口使用（文件导出 `application` 函数），无需另写入口脚本；
 - **WSGI 挂载场景**：假设 Apache 配置了 `WSGIScriptAlias /app1 /path/to/makoserver.py`，且配置中 root 为 `/home/data/mako`。用户请求 `http://192.168.1.11/app1/demo/demo.mako` 时，`/app1` 挂载前缀由 WSGI 环境（SCRIPT_NAME）提供并被剥除，剩余部分 `demo/demo.mako` 拼到 root 上，解析为模板文件 `/home/data/mako/demo/demo.mako`；
 - **独立 Flask 模式**：同一 root 下，请求 `http://localhost:5000/demo/demo.mako` 没有挂载前缀，直接解析为 `/home/data/mako/demo/demo.mako`——两种模式下相同的 URL 尾部对应同一个模板文件，方便本机开发与 WSGI 部署行为一致；
-- **index 兜底**：仍以 WSGI 场景为例，用户请求 `http://192.168.1.11/app1`（或 `/app1/`）时，在 root（`/home/data/mako`）下依次寻找 `index.mako`、`index.html`、`index.htm`，哪个存在就渲染/返回哪个，全部不存在则 404。
+- **index 兜底**：仍以 WSGI 场景为例，用户请求 `http://192.168.1.11/app1/` 时，在 root（`/home/data/mako`）下依次寻找 `index.mako`、`index.html`、`index.htm`，哪个存在就渲染/返回哪个，全部不存在则 404；请求 `/app1`（挂载根无尾斜杠）时先 301 补斜杠到 `/app1/` 再兜底（防页内相对链接错链，与目录补斜杠同理）。
 
 ## 配置文件
 
