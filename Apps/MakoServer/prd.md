@@ -86,13 +86,14 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ## 配置文件
 
-- 全局默认配置（默认端口、默认文档根目录等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
+- 全局默认配置（默认文档根目录、session 相关等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
 - 可选键 `access_log` / `error_log`：值为文件路径，配置后请求日志 / 错误日志分别写入对应文件；不配置时的默认流向：access log 不落盘、error log 走 stderr（详见「非功能需求」日志一节）。日志文件路径不建议指向文档根目录；即使指向，框架也会对该路径做运行时 404 屏蔽（见「模板服务」防回吐一条），不会回吐泄露；
-- 命令行参数优先级高于配置文件：单独运行时命令行指定的根目录、端口等覆盖配置文件中的同名项；
+- 命令行参数：`-r` 指定的根目录覆盖配置文件中的 `root`；`-p` / `--host` 为纯命令行参数（端口、监听地址属进程启动属性，只对 dev server 有意义，不进配置文件——WSGI 模式监听由宿主决定，CLI 模式不读配置）；
 - WSGI 模式下按以下顺序查找配置文件，命中即用：
   1. 环境变量 `MAKOSERVER_CONF` 指定的路径；
   2. WSGI 入口脚本同目录下的 `makoserver.ini`；
   3. 兜底 `~/.config/makoserver/settings.ini`。
+  独立 dev server 模式在此之上另有命令行 `--conf FILE` 最高优先（CLI 渲染模式不读配置、忽略该参数）。
 - 若希望"配置随站点目录走，一个目录拷走就能跑"，做法是把 WSGI 入口脚本和 `makoserver.ini` 一起放进站点目录（利用第 2 条规则），配置中的相对路径以配置文件所在目录为基准解析；
 - 更简的**零配置形态**：把 makoserver.py 单独拷进站点目录即可——找不到任何配置文件时，WSGI 模式以 makoserver.py 自身所在目录为文档根目录（与第 2 条查找规则同一锚点），需要改端口 / 密钥等再补 `makoserver.ini`。
 

@@ -33,7 +33,8 @@
 | 11 | CLI 下 `_SERVER` 内容 | 固定降级值 + `argv`，详见 6.4 |
 | 12 | 静态文件类型判定 | 内置扩展名白名单表（弃用 mimetypes，注册表映射不可控）；白名单外一律 404（与不存在同响应，fail-closed） |
 | 13 | WSGI 零配置 root | 配置缺失时回退 makoserver.py 所在目录（`__file__` 目录，与配置查找第 2 条同锚点），单文件拷进站点目录即部署 |
-| 14 | 配置文件格式 | INI（`configparser` 标准库）：单节 `[makoserver]`、`#`/`;` 行注释、手写友好；`port`/`session_lifetime` 显式 int 转换；文件名 `makoserver.ini` / `settings.ini` |
+| 14 | 配置文件格式 | INI（`configparser` 标准库）：单节 `[makoserver]`、`#`/`;` 行注释、手写友好；`session_lifetime` 显式 int 转换；文件名 `makoserver.ini` / `settings.ini` |
+| 15 | port / host 不进配置 | 仅 dev server 用得到（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性——纯命令行 `-p` / `--host`，schema 不设死键 |
 
 ## 1. 单文件内部布局
 
@@ -60,8 +61,6 @@ makoserver.py 内部代码区块（自上而下）：
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
 | `root` | str | 见 2.4 回退链 | 文档根目录，支持相对路径（见 2.3）；三种模式均有回退，无需必填 |
-| `port` | int | 5000 | dev server 端口 |
-| `host` | str | `127.0.0.1` | dev server 监听地址 |
 | `secret` | str | 空 → 派生 | session 签名密钥（UTF-8 编码） |
 | `session_lifetime` | int | 3600 | session 有效期（秒） |
 | `session_mode` | str | `sliding` | `sliding` / `absolute` |
@@ -69,13 +68,16 @@ makoserver.py 内部代码区块（自上而下）：
 | `access_log` | str | 空（不落盘） | access log 文件路径 |
 | `error_log` | str | 空（stderr） | error log 文件路径 |
 
-未知键忽略不报错（向前兼容）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；`port` / `session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
+未知键忽略不报错（向前兼容）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
+
+`port` / `host` **不进配置文件**（决策 #15）：它们只对 dev server 一个模式生效（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性，纯命令行 `-p` / `--host` 提供（见 10.1）。
 
 ### 2.2 查找顺序（WSGI / serve 模式，命中即用、不逐层合并）
 
-1. 环境变量 `MAKOSERVER_CONF` 指定的路径（文件不存在 = 未命中，继续下寻）；
-2. 入口脚本（`makoserver.py`）同目录下 `makoserver.ini`；
-3. `~/.config/makoserver/settings.ini`。
+1. dev server 命令行 `--conf FILE`（仅 `__main__` 模式存在；CLI 渲染模式下该参数被忽略）；
+2. 环境变量 `MAKOSERVER_CONF` 指定的路径（文件不存在 = 未命中，继续下寻）；
+3. 入口脚本（`makoserver.py`）同目录下 `makoserver.ini`；
+4. `~/.config/makoserver/settings.ini`。
 
 serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在目录。
 
@@ -88,7 +90,8 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 - CLI 渲染：不读配置，无 root 概念（模板基准 = 脚本所在目录，见 4.3）；
 - dev server：`-r/--root` > 配置文件 `root` > **当前工作目录**（对齐 `php -S` 默认 docroot = cwd 的行为；默认 host=127.0.0.1 仅监听回环，暴露面可控）；
 - WSGI：配置文件 `root` > **makoserver.py 所在目录**（`__file__` 取 abspath 后 dirname；不回退 cwd——WSGI 进程的工作目录不可靠，如 mod_wsgi 常为 `/`）。零配置即拷即用：单文件放进站点目录就能跑；
-- 其余键（port / host / secret / ...）：命令行 > 配置文件 > 内置默认。
+- 其余键（`secret` / `session_*` / `access_log` / `error_log`）：仅配置文件 > 内置默认（无命令行对应参数）；
+- `port` / `host` 为**纯命令行参数**（默认 5000 / `127.0.0.1`），不进配置文件——作用域分界：进程启动参数走命令行，站点与部署属性走配置文件；WSGI 模式监听由宿主决定，配置该键本就无效。
 
 ## 3. 请求处理流水线
 
@@ -243,7 +246,7 @@ CLI 模式（降级值）：
 | `SCRIPT_NAME` | 脚本绝对路径 |
 | `PATH_INFO` | `''` |
 | `REMOTE_ADDR` / `SERVER_NAME` / `SERVER_PORT` / `CONTENT_TYPE` / `CONTENT_LENGTH` | `''` |
-| `argv` | `sys.argv`（对齐 PHP CLI SAPI） |
+| `argv` | `[脚本路径] + 其余命令行参数`（argv[0] = 被渲染脚本自身，对齐 PHP CLI `$argv`） |
 
 ### 6.5 _BODY / _JSON
 
@@ -367,10 +370,16 @@ traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 ### 10.1 独立 dev server
 
 ```
-python makoserver.py [--root DIR] [--port N] [--host H]
+python makoserver.py [options]
+  -r, --root DIR      文档根目录（最高优先级，回退链见 2.4）
+  -p, --port N        端口，默认 5000（纯命令行，不读配置）
+  --host ADDR         监听地址，默认 127.0.0.1（纯命令行，不读配置）
+  --conf FILE         指定配置文件（等价 MAKOSERVER_CONF，优先于三级查找）
+  --version           打印 __version__ 退出
+  -h, --help          argparse 自带
 ```
 
-读配置（2.2）→ 命令行覆盖与 root 三级回退（2.4，最终回退 cwd）→ `app.run(host, port, threaded=True)`。并发 = Werkzeug dev server 线程模型，不追求生产级。
+读配置（2.2，`--conf` 最先）→ 命令行覆盖与 root 三级回退（2.4，最终回退 cwd）→ `app.run(host, port, threaded=True)`。并发 = Werkzeug dev server 线程模型，不追求生产级。
 
 ### 10.2 WSGI 入口
 
@@ -379,10 +388,13 @@ python makoserver.py [--root DIR] [--port N] [--host H]
 ### 10.3 CLI 渲染
 
 ```
-python makoserver.py script.mako [args...]
+python makoserver.py [options] script [args...]
+  script    被渲染脚本路径（不限 .mako 扩展名，文件不存在 → stderr 报错 exit 1）
+  args...   脚本名之后的一切参数不解析、原样透传（argparse REMAINDER），
+            脚本经 _SERVER['argv'] 读取，argv[0] = script 自身（对齐 PHP $argv）
 ```
 
-- 不读配置文件；`TemplateStore.base_dir` = 脚本所在目录（4.3）；
+- 不读配置文件（`--conf` / `-r` / `-p` / `--host` 在此模式静默忽略，PHP 式宽容）；`TemplateStore.base_dir` = 脚本所在目录（4.3）；
 - bridge 按 6.4/6.6 CLI 列降级；
 - 成功：`sys.stdout.buffer.write(body)`（原始字节，二进制安全）；
 - 失败：见 9.3。
@@ -405,7 +417,7 @@ python makoserver.py script.mako [args...]
 
 | 文件 | 覆盖点 |
 |------|--------|
-| `test_config.py` | 三级查找命中即用；`MAKOSERVER_CONF` 不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；CLI 覆盖优先级；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `port` 非整数）；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录 |
+| `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录 |
 | `test_paths.py` | `../` 逃逸、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO`、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；拒绝与不存在同 404 响应体 |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/` |
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404；图片/压缩字节原样；404 与不存在响应体一致 |
@@ -413,7 +425,7 @@ python makoserver.py script.mako [args...]
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
 | `test_session.py` | 签发/回带往返；篡改 data/ts/签名 → 空 dict；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime）；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
-| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 传入；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
+| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言） |
 
 ## 13. 明确不做（一期）
