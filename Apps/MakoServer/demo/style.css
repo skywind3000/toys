@@ -1,0 +1,76 @@
+/* style.css - static file served by MakoServer's whitelist branch */
+body {
+  background: #f4f5f7;
+  color: #222;
+  margin: 0;
+  font-family: Verdana, Arial, "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+}
+.wrap { max-width: 760px; margin: 0 auto; padding: 18px 16px 40px; }
+h1 { font-size: 22px; margin: 10px 0 4px; }
+h1 .sub { font-size: 12px; color: #888; font-weight: normal; }
+h2 { font-size: 15px; margin: 22px 0 8px; }
+.dim { color: #999; font-weight: normal; }
+.stats { color: #555; font-size: 12px; }
+.msg {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.msg .meta { font-size: 12px; color: #666; margin-bottom: 4px; }
+.msg .text { white-space: pre-wrap; word-break: break-word; }
+.empty { color: #999; font-style: italic; }
+.pager { margin: 14px 0; }
+.pager a, .pager .cur {
+  display: inline-block;
+  padding: 3px 9px;
+  margin-right: 4px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  text-decoration: none;
+  color: #36c;
+  background: #fff;
+}
+.pager .cur { background: #36c; color: #fff; border-color: #36c; }
+form { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 4px 14px 12px; margin-top: 18px; }
+input[type=text], textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  padding: 7px 9px;
+  font: inherit;
+}
+button {
+  background: #3366cc;
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  padding: 8px 22px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { background: #2952a3; }
+.flash {
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+.flash.ok { background: #e6f4e6; border: 1px solid #a3d9a3; color: #1e6b1e; }
+.flash.err { background: #fdecea; border: 1px solid #f5b5af; color: #a02c1e; }
+table.dump { border-collapse: collapse; width: 100%; margin: 8px 0 20px; }
+table.dump th {
+  background: #666699;
+  color: #fff;
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+table.dump td { border: 1px solid #ccc; padding: 3px 8px; font-size: 12px; vertical-align: top; }
+table.dump td.k { background: #eeeeff; font-weight: bold; width: 220px; }
+table.dump td.v { background: #fff; word-break: break-all; white-space: pre-wrap; }
+.foot { color: #999; font-size: 12px; margin-top: 30px; }
+.foot a { color: #666699; }
