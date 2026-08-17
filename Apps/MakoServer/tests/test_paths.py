@@ -196,6 +196,24 @@ def test_merge_slashes_keeps_query (cli):
     assert '/a/b' in loc and 'q=1' in loc
 
 
+def test_merge_slashes_308_non_ascii (cli):
+    # 非 ASCII 路径：真实 WSGI 服务器按 PEP 3333 以 latin-1 承载
+    # UTF-8 字节，Location 须还原后再重编码（解码舞步回归）
+    raw = '//中文/a.txt'.encode('utf-8').decode('latin-1')
+    r = cli.get('/', environ_overrides={'PATH_INFO': raw})
+    assert r.status_code == 308
+    assert r.headers['Location'].endswith('/%E4%B8%AD%E6%96%87/a.txt')
+
+
+def test_mount_root_301_non_ascii_prefix (cli):
+    # 挂载前缀含非 ASCII：301 Location 同受解码舞步保护
+    raw_sn = '/应用'.encode('utf-8').decode('latin-1')
+    r = cli.get('/', environ_overrides={'SCRIPT_NAME': raw_sn,
+                                        'PATH_INFO': ''})
+    assert r.status_code == 301
+    assert r.headers['Location'].endswith('/%E5%BA%94%E7%94%A8/')
+
+
 #----------------------------------------------------------------------
 # 裸尾斜杠
 #----------------------------------------------------------------------

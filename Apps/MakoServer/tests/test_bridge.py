@@ -300,6 +300,15 @@ def test_setcookie_same_name_overwrite (site, wf, client_factory):
     assert r.headers.get_all('Set-Cookie') == ['ck=v2; Path=/']
 
 
+def test_setcookie_expires_timestamp (site, wf, client_factory):
+    # expires 数值时间戳 → IMF-fixdate 格式（UTC）
+    wf('t.mako', '<%\nRESP.setcookie("ck", "cv", expires=0)\necho("x")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    sc = r.headers['Set-Cookie']
+    assert 'Expires=Thu, 01 Jan 1970 00:00:00 GMT' in sc
+
+
 def test_post_root_reaches_template (site, wf, client_factory):
     # POST / 到达根路径模板，不出现 Flask 默认 405
     wf('index.mako', '<% echo("M=", _SERVER["REQUEST_METHOD"]) %>')

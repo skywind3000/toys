@@ -5,7 +5,7 @@
 # makoserver.py - 基于 Mako + Flask 的类 PHP 动态页面服务
 #
 # Created by skywind on 2026/08/18
-# Last Modified: 2026/08/18 04:00:00
+# Last Modified: 2026/08/18 05:21:21
 #
 # 运行形态：
 #   1. 独立 dev server:  python makoserver.py [-r root] [-p port] [--host addr]
@@ -248,6 +248,22 @@ def make_error_logger (path):
     return logger
 
 
+def wsgi_to_utf8 (value):
+    """PEP 3333 解码舞步：environ 承载串（latin-1）还原为 UTF-8 文本。
+
+    用 environ 原值（SCRIPT_NAME / PATH_INFO）构造 Location 时必须先
+    过此还原——werkzeug 的 redirect() 会按 UTF-8 重新百分号编码，
+    直接喂 latin-1 形态的承载串，非 ASCII 路径的 Location 即成乱码
+    （%C3%A4%C2%B8%C2%AD 而非 %E4%B8%AD）。werkzeug 的 request.path /
+    script_root 内部做过同样的还原，故经其取值的分支无此问题。
+    值本身非 latin-1 可表示（如测试直接注入真实字符串）时原样返回。
+    """
+    try:
+        return value.encode('latin-1').decode('utf-8', 'replace')
+    except UnicodeError:
+        return value
+
+
 class PathInfoNormMiddleware:
     """WSGI 前置 middleware：PATH_INFO 归一 + 重复斜杠归并重定向。
 
@@ -276,7 +292,7 @@ class PathInfoNormMiddleware:
             environ['PATH_INFO'] = path_info
         if '//' in path_info:
             merged = re.sub('/{2,}', '/', path_info)
-            location = environ.get('SCRIPT_NAME', '') + merged
+            location = wsgi_to_utf8(environ.get('SCRIPT_NAME', '') + merged)
             qs = environ.get('QUERY_STRING', '')
             if qs:
                 location += '?' + qs
@@ -528,7 +544,9 @@ class RespObject:
         parts = ['%s=%s' % (name, value)]
         if expires is not None:
             if isinstance(expires, (int, float)):
-                stamp = datetime.datetime.utcfromtimestamp(expires)
+                # fromtimestamp + utc 时区（utcfromtimestamp 于 3.12 弃用）
+                stamp = datetime.datetime.fromtimestamp(
+                    expires, datetime.timezone.utc)
                 parts.append('Expires=' + stamp.strftime('%a, %d %b %Y %H:%M:%S GMT'))
             else:
                 parts.append('Expires=%s' % expires)
@@ -837,7 +855,7 @@ class MakoServer:
         # 挂载根无斜杠（原始 PATH_INFO 为空）→ 301 补斜杠
         raw_pi = environ.get('MAKO_RAW_PATH_INFO', environ.get('PATH_INFO', ''))
         if raw_pi == '' and environ.get('SCRIPT_NAME', ''):
-            location = environ['SCRIPT_NAME'] + '/'
+            location = wsgi_to_utf8(environ['SCRIPT_NAME']) + '/'
             qs = environ.get('QUERY_STRING', '')
             if qs:
                 location += '?' + qs
