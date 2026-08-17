@@ -2,17 +2,50 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# makoserver.py - 基于 Mako + Flask 的类 PHP 动态页面服务
+# makoserver.py - PHP-like dynamic page server based on Mako + Flask
 #
 # Created by skywind on 2026/08/18
-# Last Modified: 2026/08/18 05:21:21
+# Last Modified: 2026/08/18 05:34:46
 #
-# 运行形态：
-#   1. 独立 dev server:  python makoserver.py [-r root] [-p port] [--host addr]
-#   2. WSGI 入口:       import 后使用模块级 application 对象
-#   3. CLI 渲染:        python makoserver.py script.mako [args...]
+# Serve .mako templates the way PHP serves .php files: drop files
+# into a document root and every "*.mako" is rendered per request
+# with PHP style superglobals (_GET / _POST / _REQUEST / _SERVER /
+# _COOKIE / _SESSION / _BODY / _JSON), echo()/escape() helpers and
+# a RESP response-control object. Whitelisted static files are
+# served as-is; everything else is 404 (fail-closed).
 #
-# 详见同目录 prd.md 与 spec.md
+# Run modes:
+#
+#   1. Standalone dev server:
+#        python makoserver.py [-r ROOT] [-p PORT] [--host ADDR]
+#                             [--conf FILE]
+#      Serves ROOT (priority: -r > config "root" > cwd) on
+#      http://127.0.0.1:5000 by default, e.g.:
+#        python makoserver.py -r ./site -p 8080
+#
+#   2. WSGI application (Apache mod_wsgi / gunicorn / uWSGI):
+#      Import this module and use the module-level "application"
+#      object, built at import time from the config search chain;
+#      root falls back to this file's directory, so copying
+#      makoserver.py into the site directory is a zero-config
+#      deployment, e.g.:
+#        WSGIScriptAlias /app1 /path/to/makoserver.py   (Apache)
+#        gunicorn makoserver:application                (gunicorn)
+#
+#   3. CLI rendering (like "php script.php"):
+#        python makoserver.py script.mako [args...]
+#      Renders a single script and writes the raw bytes to stdout;
+#      everything after the script name is passed through verbatim
+#      as _SERVER['argv'] (argv[0] = the script itself). No config
+#      file is read in this mode.
+#
+# Configuration is a single-section INI ([makoserver]), searched in
+# order: --conf FILE > env MAKOSERVER_CONF > makoserver.ini next to
+# this file > ~/.config/makoserver/settings.ini (first hit wins).
+# Keys: root, secret, session_lifetime, session_mode, session_cookie,
+# access_log, error_log.
+#
+# See prd.md and spec.md in the same directory for full details.
 #
 #======================================================================
 
@@ -49,13 +82,14 @@ __all__ = ['MakoServer', 'create_app', 'application', '__version__']
 
 
 #======================================================================
-# 常量
+# Constants
 #======================================================================
 
-# 本文件所在目录（WSGI 零配置回退 root / makoserver.ini 查找锚点）
+# Directory of this file (WSGI zero-config fallback root, and the
+# anchor for the makoserver.ini config lookup)
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 配置 schema 默认值（[makoserver] 节内扁平键）
+# Config schema defaults (flat keys inside the [makoserver] section)
 DEFAULT_CONFIG = {
     'root': '',
     'secret': '',
@@ -68,7 +102,8 @@ DEFAULT_CONFIG = {
 
 KNOWN_KEYS = list(DEFAULT_CONFIG.keys())
 
-# 静态文件扩展名白名单（弃用 mimetypes，注册表映射不可控）
+# Static file extension whitelist (mimetypes module rejected: its
+# mappings come from the OS registry and are not under our control)
 STATIC_TYPES = {
     '.html': 'text/html; charset=utf-8',
     '.htm': 'text/html; charset=utf-8',
@@ -93,39 +128,39 @@ STATIC_TYPES = {
     '.xz': 'application/x-xz',
 }
 
-# 目录请求的 index 兜底顺序
+# Index fallback order for directory requests
 INDEX_FILES = ('index.mako', 'index.html', 'index.htm')
 
-# 全部放开的 HTTP 谓词
+# All HTTP methods routed to the views
 ALL_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
 
-# session cookie 完整串长度上限（超过即 500）
+# Size limit of the complete session cookie string (500 when exceeded)
 SESSION_COOKIE_LIMIT = 3800
 
 
 #======================================================================
-# 异常
+# Exceptions
 #======================================================================
 
 class ConfigError (Exception):
-    """配置或启动参数错误，启动阶段直接报错退出用。"""
+    """Bad configuration or startup argument; abort at startup."""
 
 
 class SessionTooLarge (Exception):
-    """session 数据超过 cookie 容量上限。"""
+    """Session data exceeds the cookie capacity limit."""
 
 
 #======================================================================
-# 配置：查找与加载
+# Configuration: lookup and loading
 #======================================================================
 
 def find_config_file (cli_conf=None):
-    """按优先级查找配置文件，命中即用，返回绝对路径或 None。
+    """Search config file by priority, first hit wins.
 
-    顺序：命令行 --conf > 环境变量 MAKOSERVER_CONF >
-          makoserver.py 同目录 makoserver.ini >
-          ~/.config/makoserver/settings.ini
-    指定的文件不存在视为未命中，继续下寻。
+    Returns the absolute path or None. Order: command line --conf >
+    env MAKOSERVER_CONF > makoserver.ini next to makoserver.py >
+    ~/.config/makoserver/settings.ini.
+    A specified but missing file counts as a miss; keep searching.
     """
     candidates = []
     if cli_conf:
@@ -143,7 +178,7 @@ def find_config_file (cli_conf=None):
 
 
 def load_config (path):
-    """加载 INI 配置文件，返回 dict。非法配置抛 ConfigError。"""
+    """Load an INI config file into a dict; raise ConfigError if bad."""
     cp = configparser.ConfigParser(interpolation=None)
     try:
         with open(path, 'r', encoding='utf-8-sig') as fp:
@@ -159,22 +194,23 @@ def load_config (path):
         if key in KNOWN_KEYS:
             conf[key] = value
         else:
-            # 未知键忽略；与已知键拼写相近时打 warning 防手误
+            # unknown keys are ignored; warn when close to a known key
+            # so a typo does not silently fall back to the default
             close = difflib.get_close_matches(key, KNOWN_KEYS, n=1, cutoff=0.8)
             if close:
                 sys.stderr.write('makoserver: warning: unknown config key %r '
                                  '(did you mean %r?) in %s\n' % (key, close[0], path))
-    # session_lifetime 显式 int 转换
+    # explicit int conversion for session_lifetime
     try:
         conf['session_lifetime'] = int(str(conf['session_lifetime']).strip())
     except ValueError:
         raise ConfigError('session_lifetime must be an integer in %s' % path)
-    # session_mode 校验
+    # validate session_mode
     mode = str(conf['session_mode']).strip().lower()
     if mode not in ('sliding', 'absolute'):
         raise ConfigError('session_mode must be sliding or absolute in %s' % path)
     conf['session_mode'] = mode
-    # 相对路径以配置文件所在目录为基准
+    # relative paths are resolved against the config file's directory
     conf_dir = os.path.dirname(os.path.abspath(path))
     for key in ('root', 'access_log', 'error_log'):
         value = str(conf[key]).strip()
@@ -187,9 +223,10 @@ def load_config (path):
 
 
 def validate_startup (config, root, source):
-    """启动校验：root 必须存在且为目录；日志路径父目录存在且可 append。
+    """Startup validation: root must be an existing directory; log
+    paths must have an existing parent directory and be appendable.
 
-    失败抛 ConfigError（报错退出优于带病运行）。
+    Raises ConfigError on failure (failing fast beats limping along).
     """
     if not os.path.isdir(root):
         raise ConfigError('root=%s (from %s) is not a directory' % (root, source))
@@ -208,14 +245,16 @@ def validate_startup (config, root, source):
 
 
 #======================================================================
-# 日志
+# Logging
 #======================================================================
 
 class _AppendFileHandler (logging.Handler):
-    """每次写日志即时 append 打开文件，不长期持有句柄。
+    """Open the file in append mode for every record; never keep the
+    handle open.
 
-    避免 Windows 下长期锁定日志文件（影响清理/滚动），
-    本机场景写入量小，开销可忽略。
+    Avoids holding a long-term lock on the log file under Windows
+    (which hinders cleanup/rotation); write volume is tiny in the
+    local-machine scenario, so the overhead is negligible.
     """
 
     def __init__ (self, path):
@@ -231,10 +270,11 @@ class _AppendFileHandler (logging.Handler):
 
 
 def make_error_logger (path):
-    """构建 error log 的 logger：配置了文件走文件，否则 stderr。
+    """Build the error-log logger: file when configured, else stderr.
 
-    直接实例化 logging.Logger（不走 getLogger 注册表），避免同进程
-    多个 MakoServer 实例（如测试场景）互相覆盖 handler。
+    Instantiate logging.Logger directly (bypassing the getLogger
+    registry) so multiple MakoServer instances in one process (e.g.
+    the test suite) do not overwrite each other's handlers.
     """
     logger = logging.Logger('makoserver.error')
     logger.setLevel(logging.DEBUG)
@@ -249,14 +289,18 @@ def make_error_logger (path):
 
 
 def wsgi_to_utf8 (value):
-    """PEP 3333 解码舞步：environ 承载串（latin-1）还原为 UTF-8 文本。
+    """PEP 3333 decoding dance: restore an environ carrier string
+    (latin-1) back to UTF-8 text.
 
-    用 environ 原值（SCRIPT_NAME / PATH_INFO）构造 Location 时必须先
-    过此还原——werkzeug 的 redirect() 会按 UTF-8 重新百分号编码，
-    直接喂 latin-1 形态的承载串，非 ASCII 路径的 Location 即成乱码
-    （%C3%A4%C2%B8%C2%AD 而非 %E4%B8%AD）。werkzeug 的 request.path /
-    script_root 内部做过同样的还原，故经其取值的分支无此问题。
-    值本身非 latin-1 可表示（如测试直接注入真实字符串）时原样返回。
+    Any Location built from raw environ values (SCRIPT_NAME /
+    PATH_INFO) must go through this first: werkzeug's redirect()
+    re-percent-encodes as UTF-8, so feeding it the latin-1 carrier
+    form turns non-ASCII paths into mojibake Locations
+    (%C3%A4%C2%B8%C2%AD instead of %E4%B8%AD). werkzeug performs the
+    same restoration internally for request.path / script_root, so
+    branches reading those are unaffected. If the value cannot be
+    represented in latin-1 (e.g. tests injecting real strings), it
+    is returned unchanged.
     """
     try:
         return value.encode('latin-1').decode('utf-8', 'replace')
@@ -265,19 +309,23 @@ def wsgi_to_utf8 (value):
 
 
 class PathInfoNormMiddleware:
-    """WSGI 前置 middleware：PATH_INFO 归一 + 重复斜杠归并重定向。
+    """Front WSGI middleware: PATH_INFO normalization + duplicate
+    slash merge redirect.
 
-    两件事：
-    1. Werkzeug 2.2 的 matcher 对空 PATH_INFO（挂载根无斜杠请求，如
-       WSGIScriptAlias /app1 下的 http://host/app1）会直接 308 重定向到
-       script_root + '/' 并丢失 query，请求到不了视图。这里把空/裸
-       PATH_INFO 归一成 '/'（原始值记入 MAKO_RAW_PATH_INFO），使请求
-       进入视图后由视图按 3.3 规则发出 301（保留 query）；
-    2. 重复斜杠归一：werkzeug 的 merge_slashes 仅在首次匹配失败时
-       才触发归一 308，而本站 catch-all <path:> 路由首次即可匹配
-       （//a 直接命中），归一永不触发、造成缓存键与 REQUEST_URI
-       呈现不一致。故在此显式归并：//a///b → 308 到 /a/b（保留
-       query），对齐 spec 3.1 声明的行为。
+    Two jobs:
+    1. Werkzeug 2.2's matcher answers an empty PATH_INFO (mount-root
+       request without a slash, e.g. http://host/app1 under
+       WSGIScriptAlias /app1) with its own 308 to script_root + '/'
+       and drops the query, so the request never reaches the view.
+       Normalize empty/bare PATH_INFO to '/' (recording the original
+       value in MAKO_RAW_PATH_INFO) so the view can issue the 301 per
+       spec 3.3 (query preserved);
+    2. Duplicate slash merge: werkzeug's merge_slashes only kicks in
+       after a first match failure, but our catch-all <path:> route
+       matches on the first try (//a hits directly), so the merge 308
+       never fires and cache keys diverge from the REQUEST_URI
+       presentation. Merge explicitly here: //a///b -> 308 to /a/b
+       (query preserved), matching the behavior declared in spec 3.1.
     """
 
     def __init__ (self, app):
@@ -286,7 +334,8 @@ class PathInfoNormMiddleware:
     def __call__ (self, environ, start_response):
         path_info = environ.get('PATH_INFO', '')
         if path_info == '' or not path_info.startswith('/'):
-            # 原始值记入 MAKO_RAW_PATH_INFO，视图据此判定挂载根无斜杠
+            # record the original value in MAKO_RAW_PATH_INFO; the view
+            # uses it to detect a mount-root request without a slash
             environ['MAKO_RAW_PATH_INFO'] = path_info
             path_info = '/' + path_info.lstrip('/')
             environ['PATH_INFO'] = path_info
@@ -302,10 +351,11 @@ class PathInfoNormMiddleware:
 
 
 class AccessLogMiddleware:
-    """WSGI middleware：配置了 access_log 时记录请求日志。
+    """WSGI middleware: write the access log when access_log is set.
 
-    行格式：{iso_time} {remote_addr} {method} {path} {status} {bytes}
-    装配于 app.wsgi_app，dev server 与 WSGI 两模式同样生效。
+    Line format: {iso_time} {remote_addr} {method} {path} {status} {bytes}
+    Wrapped around app.wsgi_app, so it works identically in both the
+    dev server and WSGI modes.
     """
 
     def __init__ (self, app, path):
@@ -344,14 +394,16 @@ class AccessLogMiddleware:
 
 
 #======================================================================
-# 模板加载：TemplateStore
+# Template loading: TemplateStore
 #======================================================================
 
 class TemplateStore:
-    """自定义模板集合（不用 TemplateLookup，其文件读取无 rstrip 钩子）。
+    """Custom template collection (TemplateLookup rejected: its file
+    reading offers no rstrip hook).
 
-    实现 Mako Collection 协议 get_template(uri) / adjust_uri(uri, relativeto)，
-    带 mtime + size 缓存（请求时检查，不引入 watchdog）。
+    Implements the Mako collection protocol get_template(uri) /
+    adjust_uri(uri, relativeto), with an mtime + size cache (checked
+    per request; no watchdog dependency).
     """
 
     def __init__ (self, base_dir):
@@ -377,7 +429,8 @@ class TemplateStore:
             except OSError:
                 raise mako_exceptions.TopLevelLookupException(
                     'template not found: %s' % uri)
-            # 尾部空白截断：文件末尾空白永远不属于输出内容
+            # strip trailing whitespace: whitespace at EOF is never
+            # part of the output
             text = text.rstrip()
             tpl = Template(text=text, lookup=self, uri=uri,
                            input_encoding='utf-8')
@@ -394,14 +447,16 @@ class TemplateStore:
 
 
 #======================================================================
-# 字节缓冲：BytesBuffer
+# Byte buffer: BytesBuffer
 #======================================================================
 
 class BytesBuffer:
-    """实现 Mako buffer 协议（write/getvalue）的字节缓冲。
+    """Byte buffer implementing the Mako buffer protocol
+    (write/getvalue).
 
-    write(str) 即时 UTF-8 编码追加；write(bytes/bytearray/memoryview) 直通。
-    内部为 chunk 列表，避免 bytes 不可变的反复拷贝。
+    write(str) encodes to UTF-8 immediately and appends;
+    write(bytes/bytearray/memoryview) passes through. Internally a
+    chunk list, avoiding repeated copies of immutable bytes.
     """
 
     def __init__ (self):
@@ -420,7 +475,8 @@ class BytesBuffer:
 
 
 def make_echo (buf):
-    """构造 echo(*args)：模仿 PHP echo，None 输出空串，其它 str() 后编码。"""
+    """Build echo(*args): mimic PHP echo; None prints nothing, other
+    values are str()-ed then encoded."""
     def echo (*args):
         for item in args:
             if item is None:
@@ -435,10 +491,12 @@ def make_echo (buf):
 
 
 def html_escape (value):
-    """escape(value)：模仿 PHP htmlspecialchars，返回转义后的字符串。
+    """escape(value): mimic PHP htmlspecialchars, returning the
+    escaped string.
 
-    str() 后转义 & < > " '（quote=True）；str() 失败返回 '(unprintable)'。
-    纯转换函数，不输出；HTTP / CLI 两模式行为一致。
+    str() the value, then escape & < > " ' (quote=True); if str()
+    fails, return '(unprintable)'. Pure conversion function with no
+    output; behaves the same in HTTP and CLI modes.
     """
     try:
         return html.escape(str(value), quote=True)
@@ -447,11 +505,12 @@ def html_escape (value):
 
 
 #======================================================================
-# Bridge：PHPDict / RespObject
+# Bridge: PHPDict / RespObject
 #======================================================================
 
 class PHPDict (dict):
-    """仿 PHP 超全局数组：单值 = 同名参数最后一次出现，getlist 取全部。"""
+    """PHP-superglobal-like dict: the single value is the last
+    occurrence of a repeated parameter; getlist returns all of them."""
 
     def __init__ (self, *args, **kwargs):
         super(PHPDict, self).__init__(*args, **kwargs)
@@ -474,7 +533,8 @@ class PHPDict (dict):
 
 
 def merge_php_dict (get_d, post_d):
-    """合并 _REQUEST：POST 覆盖同名 GET；getlist 返回 GET+POST 全部值。"""
+    """Merge into _REQUEST: POST overrides same-name GET; getlist
+    returns all GET+POST values."""
     d = PHPDict()
     for key, value in get_d.items():
         d[key] = value
@@ -489,19 +549,22 @@ def merge_php_dict (get_d, post_d):
 
 
 class RespObject:
-    """响应控制对象（RESP）：header/status/redirect/json/setcookie/write。
+    """Response control object (RESP):
+    header/status/redirect/json/setcookie/write.
 
-    CLI 模式下除 write/json 外全部 no-op。
+    In CLI mode everything except write/json is a no-op.
     """
 
     def __init__ (self, echo_func, cli=False):
         self.__echo = echo_func
         self.__cli = cli
-        self.__headers = []     # (name, value) 列表，Set-Cookie 追加其余覆盖
+        self.__headers = []     # (name, value) list; Set-Cookie appends, others overwrite
         self.__status = None
-        self.__cookies = {}     # name -> 完整 cookie 串，同名后设覆盖
-        # escape 的规范名：与注入的 escape 同一函数对象（同 echo/RESP.write
-        # 关系）；纯转换函数，非响应控制，CLI 模式下照常可用
+        self.__cookies = {}     # name -> full cookie string, same name overwrites
+        # canonical name for escape: the very same function object as
+        # the injected escape (like the echo/RESP.write pair); a pure
+        # conversion helper, not response control, so it stays usable
+        # in CLI mode
         self.escape = html_escape
 
     def write (self, *args):
@@ -544,7 +607,7 @@ class RespObject:
         parts = ['%s=%s' % (name, value)]
         if expires is not None:
             if isinstance(expires, (int, float)):
-                # fromtimestamp + utc 时区（utcfromtimestamp 于 3.12 弃用）
+                # fromtimestamp + utc tz (utcfromtimestamp deprecated in 3.12)
                 stamp = datetime.datetime.fromtimestamp(
                     expires, datetime.timezone.utc)
                 parts.append('Expires=' + stamp.strftime('%a, %d %b %Y %H:%M:%S GMT'))
@@ -565,22 +628,25 @@ class RespObject:
         self.__cookies[str(name)] = '; '.join(parts)
 
     def collect (self):
-        """组装阶段取内部状态：(status, headers, cookies)。"""
+        """Fetch internal state at assembly time: (status, headers, cookies)."""
         return (self.__status, list(self.__headers), dict(self.__cookies))
 
 
 #======================================================================
-# Session：签名 cookie 编解码与密钥派生
+# Session: signed cookie codec and key derivation
 #======================================================================
 
 _HOST_SECRET = None
 
 
 def derive_host_secret ():
-    """由本机指纹派生 session 签名密钥（模块级缓存，进程内不重算）。
+    """Derive the session signing key from the host fingerprint
+    (module-level cache, computed once per process).
 
-    多分量收集（hostname / 主板 UUID 或 machine-id / CPU / MAC），
-    逐项容错，sha256(':'.join(components)) 直接作 HMAC-SHA256 密钥。
+    Multi-component collection (hostname / motherboard UUID or
+    machine-id / CPU / MAC), each fault-tolerant on its own;
+    sha256(':'.join(components)) is used directly as the
+    HMAC-SHA256 key.
     """
     global _HOST_SECRET
     if _HOST_SECRET is not None:
@@ -645,7 +711,8 @@ def derive_host_secret ():
             pass
         if not skip:
             mac = uuid.getnode()
-            # bit40 本地管理位为 1 表示随机/本地 MAC，不稳定，跳过
+            # bit 40 is the locally-administered bit; 1 means a
+            # random/local MAC, unstable, skip it
             if ((mac >> 40) & 0x01) == 0:
                 components.append('%012x' % mac)
     except Exception:
@@ -656,9 +723,9 @@ def derive_host_secret ():
 
 
 class SessionCodec:
-    """签名 session cookie 编解码。
+    """Signed session cookie codec.
 
-    格式：{data_b64}.{ts}.{sig}
+    Format: {data_b64}.{ts}.{sig}
     sig = hmac_sha256(secret, data_b64 + '.' + ts).hexdigest()
     """
 
@@ -677,7 +744,7 @@ class SessionCodec:
         return (data_b64 + b'.' + ts_s + b'.' + sig.encode('ascii')).decode('ascii')
 
     def decode (self, value, now=None):
-        """校验 cookie，成功返回 (data_dict, ts)，失败返回 None。"""
+        """Verify the cookie; return (data_dict, ts) on success, else None."""
         if not value or not isinstance(value, str):
             return None
         if now is None:
@@ -712,11 +779,12 @@ class SessionCodec:
 
 
 #======================================================================
-# MakoServer：请求处理流水线
+# MakoServer: request processing pipeline
 #======================================================================
 
 class MakoServer:
-    """核心服务对象：持有 root / 配置 / TemplateStore / 屏蔽集合等状态。"""
+    """Core server object: holds root / config / TemplateStore /
+    blocked path set and other state."""
 
     def __init__ (self, root, config, conf_path=None):
         self.root = os.path.abspath(root)
@@ -730,7 +798,7 @@ class MakoServer:
             secret = derive_host_secret()
         self.codec = SessionCodec(secret, config['session_lifetime'],
                                   config['session_mode'], config['session_cookie'])
-        # 运行时敏感路径屏蔽集合（存 normcase(realpath)）
+        # runtime sensitive-path block set (stores normcase(realpath))
         self.blocked = set()
         if conf_path:
             self.blocked.add(os.path.normcase(os.path.realpath(conf_path)))
@@ -740,7 +808,7 @@ class MakoServer:
         self.error_logger = make_error_logger(config.get('error_log') or None)
 
     #----------------------------------------------------------------------
-    # 小工具
+    # small helpers
     #----------------------------------------------------------------------
 
     def __not_found (self):
@@ -769,7 +837,8 @@ class MakoServer:
         return os.path.normcase(real) in self.blocked
 
     def __within_root (self, real):
-        """realpath 收口：real 必须在 root_real 之内（或即 root_real）。"""
+        """realpath containment: real must live inside root_real (or
+        be root_real itself)."""
         try:
             common = os.path.commonpath([os.path.normcase(real),
                                          os.path.normcase(self.root_real)])
@@ -778,23 +847,24 @@ class MakoServer:
         return common == os.path.normcase(self.root_real)
 
     #----------------------------------------------------------------------
-    # 入口：分支判定
+    # entry: branch decision
     #----------------------------------------------------------------------
 
     def handle (self, url_path):
-        """处理一个请求，url_path 为路由剥出的 URL 尾部（已解码）。"""
-        # 3.2 step 1：POSIX 规范化
+        """Handle one request; url_path is the URL tail extracted by
+        the route (already URL-decoded)."""
+        # spec 3.2 step 1: POSIX normalization
         rel = posixpath.normpath('/' + url_path).lstrip('/')
         trailing = url_path.endswith('/')
-        # 3.2 step 2：空字节拒绝
+        # spec 3.2 step 2: reject NUL bytes
         if '\x00' in rel:
             return self.__not_found()
-        # 3.2 step 3：NT 特判（有意跨平台分裂）
+        # spec 3.2 step 3: NT special-casing (intentional cross-platform split)
         if os.name == 'nt':
             if ':' in rel:
                 return self.__not_found()
             rel = rel.rstrip(' .')
-        # 3.2 step 4：拼合与真实路径收口
+        # spec 3.2 step 4: join and realpath containment
         if rel:
             full = os.path.join(self.root_real, rel.replace('/', os.sep))
         else:
@@ -805,20 +875,23 @@ class MakoServer:
             return self.__not_found()
         if not self.__within_root(real):
             return self.__not_found()
-        # 3.2 step 5：敏感路径屏蔽（初始 real 快速路径）
+        # spec 3.2 step 5: sensitive path blocking (fast path on the
+        # initial real)
         if self.__is_blocked(real):
             return self.__not_found()
-        # 3.3 分支判定（basename 显式 lower 归一，全平台大小写不敏感）
+        # spec 3.3 branch decision (basename explicitly lower()-ed:
+        # case-insensitive on every platform)
         name = os.path.basename(real).lower()
         if name.endswith('.mako'):
             if os.path.isfile(real):
-                # 尾斜杠本身算尾挂：/demo.mako/ → PATH_INFO='/'
+                # a bare trailing slash counts as path info:
+                # /demo.mako/ -> PATH_INFO='/'
                 path_info = '/' if trailing else ''
                 return self.__render(real, rel, '/' + rel, path_info)
             return self.__not_found()
         if os.path.isfile(real):
             if trailing:
-                # 文件路径带尾斜杠 → 404（对齐 Apache）
+                # file path with a trailing slash -> 404 (align Apache)
                 return self.__not_found()
             return self.__serve_static(real)
         if os.path.isdir(real):
@@ -826,7 +899,7 @@ class MakoServer:
         return self.__walk_back(real, trailing)
 
     #----------------------------------------------------------------------
-    # 静态分支
+    # static branch
     #----------------------------------------------------------------------
 
     def __serve_static (self, real):
@@ -834,7 +907,8 @@ class MakoServer:
         ext = os.path.splitext(base)[1]
         ctype = STATIC_TYPES.get(ext)
         if ctype is None:
-            # 白名单外一律 404（fail-closed，与不存在同响应）
+            # outside the whitelist -> 404 (fail-closed, same response
+            # as a missing file)
             return self.__not_found()
         if flask.request.method not in ('GET', 'HEAD'):
             return self.__method_not_allowed()
@@ -846,13 +920,13 @@ class MakoServer:
         return flask.Response(data, status=200, content_type=ctype)
 
     #----------------------------------------------------------------------
-    # 目录分支：301 补斜杠 + index 兜底
+    # directory branch: 301 slash redirect + index fallback
     #----------------------------------------------------------------------
 
     def __serve_dir (self, real, rel):
         req = flask.request
         environ = req.environ
-        # 挂载根无斜杠（原始 PATH_INFO 为空）→ 301 补斜杠
+        # mount root without a slash (original PATH_INFO empty) -> 301
         raw_pi = environ.get('MAKO_RAW_PATH_INFO', environ.get('PATH_INFO', ''))
         if raw_pi == '' and environ.get('SCRIPT_NAME', ''):
             location = wsgi_to_utf8(environ['SCRIPT_NAME']) + '/'
@@ -860,14 +934,15 @@ class MakoServer:
             if qs:
                 location += '?' + qs
             return wz_redirect(location, code=301)
-        # 目录请求无尾斜杠 → 301（对齐 Apache DirectorySlash）
+        # directory request without a trailing slash -> 301 (align
+        # Apache DirectorySlash)
         if not req.path.endswith('/'):
             location = req.script_root + req.path + '/'
             qs = environ.get('QUERY_STRING', '')
             if qs:
                 location += '?' + qs
             return wz_redirect(location, code=301)
-        # index 兜底：index.mako / index.html / index.htm
+        # index fallback: index.mako / index.html / index.htm
         for fn in INDEX_FILES:
             cand = os.path.join(real, fn)
             cand_real = os.path.realpath(cand)
@@ -881,12 +956,13 @@ class MakoServer:
                 script_rel = (rel + '/index.mako') if rel else 'index.mako'
                 suffix = ('/' + rel + '/') if rel else '/'
                 return self.__render(cand_real, script_rel, suffix, '')
-            # index.html / index.htm 走静态（豁免 trailing，同受谓词限制）
+            # index.html / index.htm go static (exempt from trailing,
+            # still under the method restriction)
             return self.__serve_static(cand_real)
         return self.__not_found()
 
     #----------------------------------------------------------------------
-    # 尾挂回溯（PATH_INFO 机制，对齐 PHP AcceptPathInfo）
+    # path-info walk-back (PATH_INFO mechanism, align PHP AcceptPathInfo)
     #----------------------------------------------------------------------
 
     def __walk_back (self, real, trailing):
@@ -904,7 +980,7 @@ class MakoServer:
             if os.path.isfile(current):
                 base = os.path.basename(current).lower()
                 if not base.endswith('.mako'):
-                    # 静态文件不带尾挂
+                    # static files take no path info
                     return self.__not_found()
                 if self.__is_blocked(current):
                     return self.__not_found()
@@ -916,11 +992,12 @@ class MakoServer:
                 return self.__render(current, rel_target, '/' + rel_target,
                                      path_info)
             if os.path.isdir(current):
-                # 回溯碰到存在的目录 → 404（不兜底，对齐 Apache mod_dir）
+                # walk-back hit an existing directory -> 404 (no index
+                # fallback, align Apache mod_dir)
                 return self.__not_found()
 
     #----------------------------------------------------------------------
-    # 模板分支：渲染 + 响应组装
+    # template branch: render + response assembly
     #----------------------------------------------------------------------
 
     def __render (self, script_path, script_rel, script_suffix, path_info):
@@ -939,9 +1016,9 @@ class MakoServer:
             ctx._set_with_template(tpl)
             mako_runtime._render_context(tpl, tpl.callable_, ctx)
         except Exception:
-            # 丢弃 partial output，返回干净的 500
+            # discard partial output, return a clean 500
             return self.__internal_error()
-        # 渲染成功：session 收口 + 响应组装
+        # render succeeded: session finalization + response assembly
         try:
             session_cookie = self.__finalize_session(session_state, session_dict)
         except (SessionTooLarge, TypeError, ValueError):
@@ -949,7 +1026,8 @@ class MakoServer:
         return self.__assemble(buf, resp, session_cookie)
 
     def __build_bridge (self, echo, resp, script_path, script_suffix, path_info):
-        """构造 bridge 注入名。_BODY 必须最先构造（get_data 先于 form）。"""
+        """Build the bridge names. _BODY must be built first
+        (get_data before form)."""
         req = flask.request
         environ = req.environ
         body = req.get_data(cache=True)
@@ -967,7 +1045,7 @@ class MakoServer:
         for key, value in environ.items():
             if key.startswith('HTTP_') and isinstance(value, str):
                 server[key] = value
-        # REQUEST_URI：编码态原文，三级取值
+        # REQUEST_URI: encoded original, three-level fallback
         request_uri = environ.get('REQUEST_URI') or environ.get('RAW_URI')
         if not request_uri:
             request_uri = environ.get('SCRIPT_NAME', '') + environ.get('PATH_INFO', '')
@@ -975,7 +1053,7 @@ class MakoServer:
             if qs:
                 request_uri += '?' + qs
         server['REQUEST_URI'] = request_uri
-        # SCRIPT_NAME / PATH_INFO 按分支判定结果覆写构造
+        # SCRIPT_NAME / PATH_INFO rebuilt from the branch decision
         prefix = environ.get('SCRIPT_NAME', '')
         server['SCRIPT_NAME'] = prefix + script_suffix
         server['PATH_INFO'] = path_info
@@ -984,7 +1062,8 @@ class MakoServer:
         server['DOCUMENT_ROOT'] = self.root_real
         server['SCRIPT_DIRNAME'] = os.path.dirname(script_abs)
 
-        # _JSON：Content-Type 含 json 子串才解析，失败为 None
+        # _JSON: parsed only when Content-Type contains the substring
+        # "json"; None on failure
         json_data = None
         ctype = (req.content_type or '').lower()
         if body and ('json' in ctype):
@@ -993,7 +1072,7 @@ class MakoServer:
             except Exception:
                 json_data = None
 
-        # session 载入
+        # session loading
         cookie_value = req.cookies.get(self.codec.cookie_name)
         session_state = {'valid': False, 'ts': 0, 'snapshot': None}
         session_dict = {}
@@ -1022,11 +1101,14 @@ class MakoServer:
         return bridge, session_state, session_dict
 
     def __finalize_session (self, state, session_dict):
-        """渲染结束后按 sliding/absolute 规则决定是否下发 Set-Cookie。
+        """After rendering, decide whether to send Set-Cookie per the
+        sliding/absolute rules.
 
-        返回完整 cookie 串或 None；可能抛 SessionTooLarge / TypeError。
+        Returns the full cookie string or None; may raise
+        SessionTooLarge / TypeError.
         """
-        # 规范化 JSON 串深比较（检出嵌套层级的原地修改）
+        # canonical JSON string deep-compare (detects in-place edits
+        # at nested levels)
         dump = json.dumps(session_dict, sort_keys=True, separators=(',', ':'))
         if state['valid']:
             if self.codec.mode == 'sliding':
@@ -1064,7 +1146,8 @@ class MakoServer:
                 header_list.append((name, value))
         if content_type is None:
             content_type = 'text/html; charset=utf-8'
-        # session cookie 名独占：脚本 setcookie 同名条目丢弃不下发
+        # the session cookie name is exclusive: same-name setcookie
+        # entries from the script are dropped, never sent
         session_name = self.codec.cookie_name
         for name in cookies:
             if name == session_name:
@@ -1085,17 +1168,19 @@ class MakoServer:
 
 
 #======================================================================
-# 应用构建
+# Application construction
 #======================================================================
 
 def create_app (root=None, conf_file=None, default_root=None,
                 default_source='default'):
-    """构建 Flask 应用。
+    """Build the Flask application.
 
-    root: 命令行 -r 指定的根目录（最高优先）
-    conf_file: 命令行 --conf / 查找命中的配置文件路径（None = 无配置）
-    default_root: root 的最终回退（dev=cwd, WSGI=makoserver.py 所在目录）
-    出错抛 ConfigError。
+    root: root directory from the command line -r (highest priority)
+    conf_file: config file path from --conf / the search chain
+        (None = no config)
+    default_root: final fallback for root (dev=cwd, WSGI=makoserver.py
+        directory)
+    Raises ConfigError on failure.
     """
     if conf_file:
         config = load_config(conf_file)
@@ -1136,11 +1221,12 @@ def create_app (root=None, conf_file=None, default_root=None,
 
 
 #======================================================================
-# CLI 渲染模式
+# CLI rendering mode
 #======================================================================
 
 def render_cli (script, args):
-    """像 php xxx.php 一样渲染单个脚本，结果写 stdout。失败 exit(1)。"""
+    """Render a single script like "php xxx.php", writing the result
+    to stdout. Exits with 1 on failure."""
     script_abs = os.path.abspath(script)
     if not os.path.isfile(script_abs):
         sys.stderr.write('makoserver: no such file: %s\n' % script)
@@ -1187,7 +1273,7 @@ def render_cli (script, args):
     except SystemExit:
         raise
     except BaseException:
-        # stdout 不输出 partial 内容，traceback 走 stderr
+        # no partial content on stdout; traceback goes to stderr
         traceback.print_exc()
         sys.exit(1)
     sys.stdout.buffer.write(buf.getvalue())
@@ -1195,7 +1281,7 @@ def render_cli (script, args):
 
 
 #======================================================================
-# 命令行入口
+# Command line entry
 #======================================================================
 
 def main (argv=None):
@@ -1233,14 +1319,14 @@ def main (argv=None):
 
 
 #======================================================================
-# 模块级 WSGI 入口
+# Module level WSGI entry
 #======================================================================
 
 application = None
 
 
 def _wsgi_bootstrap ():
-    """WSGI 模式（被 import 时）构建 application。"""
+    """Build the application in WSGI mode (when imported)."""
     conf_path = find_config_file()
     try:
         return create_app(conf_file=conf_path, default_root=MODULE_DIR,
