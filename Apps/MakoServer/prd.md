@@ -28,15 +28,15 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 - **请求数据**：大写下划线超全局风格（`_GET` / `_SERVER` 等），几乎不会与局部变量撞名；
 - **响应控制**：统一挂 `RESP` 对象（`RESP.header()` / `RESP.json()` 等），不占用全局名——尤其 `json` 由此释放给标准库，模板里 `import json` 后 `json.dumps()` 不受干扰；
-- **输出**：仅 `echo` / `echoraw` 两个裸函数（高频、PHP 肌肉记忆、名字独特），另挂规范名 `RESP.write()` / `RESP.writeraw()`（`echo` / `echoraw` 只是它们的 PHP 风格别名），被模板局部变量覆盖时用规范名兜底。
+- **输出**：仅 `echo` 一个裸函数（高频、PHP 肌肉记忆、名字独特），另挂规范名 `RESP.write()`，被模板局部变量覆盖时用规范名兜底。
 
 ### 输出
 
-- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值；
-- `echoraw(bytes, content_type)` —— **短路输出**二进制内容（如动态生成图片 / 文件下载）：立即终止模板渲染，以原始字节 + 指定 Content-Type 作为响应体，跳过文本渲染假设。`echo` 只处理文本，二进制一律走 `echoraw`；
-- `RESP.write(*args)` / `RESP.writeraw(*args, content_type)` —— 上述两个函数的规范名，挂在 `RESP` 对象上不受模板局部变量影响：即便 `echo` / `echoraw` 被覆盖，规范名永远可用；
-- 模板中 `<% %>` 块之外的普通文本照旧直接输出，两种方式可混用；
-- **输出全程缓冲**：`echo()` / 文本块写入内部缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output，返回干净的 5xx 错误页。
+- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值。输出缓冲只有一个，统一存 bytes：参数是 bytes（含 bytearray）时直接追加，其它类型先 `str()` 再即时 UTF-8 编码追加——因此二进制内容（动态生成图片 / 文件下载等）直接 `echo(字节串)` 即可，无需单独的 raw 接口；
+- `RESP.write(*args)` —— `echo` 的规范名，挂在 `RESP` 对象上不受模板局部变量影响：即便 `echo` 被覆盖，规范名永远可用；
+- 模板中 `<% %>` 块之外的普通文本照旧直接输出，以上方式可混用；
+- **输出全程缓冲**：`echo()` / 文本块写入内部缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output，返回干净的 5xx 错误页；
+- **源码末尾空白截断**：读取 .mako 源文件后、编译前，统一删除源码末尾空白（空格 / tab / 换行）——文件末尾空白永远不属于输出内容。由此写精确二进制脚本（整文件单一 `<% %>` 块、二进制经 `echo(bytes)` 输出）时无需关心编辑器的 EOF 换行，`%>` 后的尾部空白不会污染输出；普通文本模板也获得统一行为（响应体末尾不保留源文件的尾部换行）。
 
 ### 请求（仿 PHP 超全局变量命名）
 
@@ -58,7 +58,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 响应
 
-响应控制方法统一挂 `RESP` 对象（输出类的 `RESP.write` / `RESP.writeraw` 见上文输出节）：
+响应控制方法统一挂 `RESP` 对象（输出类的 `RESP.write` 见上文输出节）：
 
 - `RESP.header(name, value)` / `RESP.status(code)` —— 设置响应 header、状态码（对应 PHP 的 `header()` / `http_response_code()`）；
 - `RESP.redirect(url, code=302)` —— 便捷重定向（等价于 PHP 的 `header('Location: ...')`）；
