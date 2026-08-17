@@ -166,3 +166,13 @@ def test_echo_none_and_bytes_cli (tmp_path):
     script.write_text('<% echo(None, b"B", "A") %>', encoding='utf-8')
     r = run_cli([str(script)], cwd=str(tmp_path))
     assert r.stdout == b'BA'
+
+
+def test_escape_cli (tmp_path):
+    # CLI 模式 escape / RESP.escape 照常可用（纯函数不受 no-op 影响）
+    script = tmp_path / 't.mako'
+    script.write_text('<% echo(escape("<b>"), "|", RESP.escape(42)) %>',
+                      encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 0
+    assert r.stdout == b'&lt;b&gt;|42'

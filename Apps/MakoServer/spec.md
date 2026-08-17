@@ -236,13 +236,14 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 ### 6.1 注入机制
 
-`template.render(context, **bridge_names)` 或经 5.2 的 Context 构造注入。注入名固定为下表 10 个，未注入名在模板中引用时按 Mako 默认 NameError 报 500。
+`template.render(context, **bridge_names)` 或经 5.2 的 Context 构造注入。注入名固定为下表 11 个，未注入名在模板中引用时按 Mako 默认 NameError 报 500。
 
 **构造顺序（必须遵守）**：先 `_BODY = request.get_data(cache=True)`，再构造 `_GET` / `_POST`（读 `request.args` / `request.form`）。顺序颠倒（先 form 后 get_data）会让 body 读到 `b''`——Werkzeug 的表单解析直接消费底层流，`get_data` 晚于 form 则无流可读（Flask 2.2 实测）；`get_data(cache=True)` 先行缓存后，form 解析从缓存回填、两者兼得。
 
 | 注入名 | 类型 | 构造 |
 |--------|------|------|
 | `echo` | function | 见 6.2 |
+| `escape` | function | 见 6.2（HTML 转义，返回字符串） |
 | `_REQUEST` | PHPDict | GET+POST 合并 |
 | `_BODY` | bytes | `request.get_data(cache=True)`（**最先构造**，见上构造顺序） |
 | `_GET` | PHPDict | `request.args` |
@@ -253,11 +254,13 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 | `_SESSION` | dict | 见 7 |
 | `RESP` | RespObject | 见 6.6 |
 
-（`RESP.write` 是 RespObject 属性 = `echo` 同一函数对象。）
+（`RESP.write` 是 RespObject 属性 = `echo` 同一函数对象；`RESP.escape` 同理 = `escape` 同一函数对象。）
 
-### 6.2 echo(*args)
+### 6.2 echo(*args) / escape(value)
 
-逐参数顺序写入 buffer：`None` → 跳过（空串，对齐 PHP `echo null`）；`str` → `buffer.write(str)`（UTF-8 即时编码）；`bytes/bytearray/memoryview` → `buffer.write(bytes(...))`；其它 → `buffer.write(str(x))`。多参数按序全部输出后返回（无返回值）。
+**echo**：逐参数顺序写入 buffer：`None` → 跳过（空串，对齐 PHP `echo null`）；`str` → `buffer.write(str)`（UTF-8 即时编码）；`bytes/bytearray/memoryview` → `buffer.write(bytes(...))`；其它 → `buffer.write(str(x))`。多参数按序全部输出后返回（无返回值）。
+
+**escape**：对标 PHP `htmlspecialchars` —— 先 `str(value)`（整数 / 浮点 / None / 任意对象先字符串化），再 `html.escape(..., quote=True)` 转义 `& < > " '`，**返回转义后的字符串**；`str()` 失败返回 `'(unprintable)'`。纯转换函数：不写 buffer、不碰响应，故不受 CLI 响应控制 no-op 规则影响，两模式行为一致；`RESP.escape` 为同一函数对象（规范名兜底）。
 
 ### 6.3 PHPDict
 
@@ -317,6 +320,7 @@ CLI 模式（降级值）：
 | 方法 | 行为（HTTP 模式） | CLI 模式 |
 |------|--------------------|-----------|
 | `write(*args)` | = `echo` | 同 echo（正常输出） |
+| `escape(value)` | = `escape` 同一函数对象（见 6.2），返回转义串 | 照常可用（纯函数） |
 | `header(name, value)` | 记入待发 headers，后设覆盖先设；例外：`Set-Cookie` **追加不覆盖**（对齐 PHP `header('Set-Cookie: ...')` 可多次调用逐条下发，见 8）；`Content-Type` 经此设置时完全覆盖默认值 | no-op |
 | `status(code)` | 记入状态码，后设覆盖 | no-op |
 | `redirect(url, code=302)` | `header('Location', url)` + `status(code)`，**不终止渲染** | no-op |
@@ -489,7 +493,7 @@ python makoserver.py [options] script [args...]
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/`；**`/dir/`（有 index.html）→ 200（index 兜底豁免 trailing 判定回归——不豁免则目录请求恒 404）** |
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；**root 内 `link.mako` 符号链接指向 `log.mako` → 直接请求与尾挂请求均 404（real 链比对回归：full 链上链接路径不在集合、真实目标在，real 链已解析为真实路径直接命中）**；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
-| `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
+| `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底；**escape：HTML 五字符全转义（quote=True）、整数/浮点先 str() 再转义、纯返回值不写缓冲、RESP.escape 同一函数对象与覆盖兜底、CLI 照常可用** |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
 | `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出（**含嵌套层级：`_SESSION['cart'].append(x)` 判「已写」重签——规范化 JSON 串深比较回归，absolute 模式防嵌套修改静默丢失**）/ `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；**值不可 JSON 序列化（datetime 等）→ 500（错误信息说明仅支持 JSON 类型）**；**`RESP.setcookie('MAKO_SESSION', ...)` 同名 → 丢弃不下发 + error log warning（session cookie 名独占回归）**；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |

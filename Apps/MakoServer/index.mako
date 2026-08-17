@@ -13,7 +13,6 @@ import datetime
 # 注意：不 import makoserver 本身（WSGI 模式下重复执行模块级 bootstrap），
 # 版本号经 echo.__globals__（注入函数所在模块命名空间）读取，两种模式通用。
 #
-import html as _h
 import flask as _flask
 import mako as _mako
 import werkzeug as _wz
@@ -22,17 +21,12 @@ _g = echo.__globals__
 _ms_version = _g.get('__version__', '?')
 _srv = _SERVER
 
-def _esc (v):
-    try:
-        return _h.escape(str(v), quote=True)
-    except Exception:
-        return '(unprintable)'
 
 def _kv_rows (pairs):
     out = []
     for k, v in pairs:
         out.append('<tr><td class="e">%s</td><td class="v">%s</td></tr>'
-                   % (_esc(k), _esc(v)))
+                   % (escape(k), escape(v)))
     if not out:
         out.append('<tr><td class="e" colspan="2">(empty)</td></tr>')
     return '\n'.join(out)
@@ -64,28 +58,28 @@ a {color:#666699;}
 </head>
 <body>
 <div class="banner">
-<h1>makoinfo() <span>- MakoServer ${_esc(_ms_version)}</span></h1>
+<h1>makoinfo() <span>- MakoServer ${escape(_ms_version)}</span></h1>
 </div>
 <div class="wrap">
 
 <h2>System</h2>
 <table>
-<tr><td class="e">MakoServer Version</td><td class="v">${_esc(_ms_version)}</td></tr>
-<tr><td class="e">Python Version</td><td class="v">${_esc(sys.version.replace(chr(10), ' '))}</td></tr>
-<tr><td class="e">Python Executable</td><td class="v">${_esc(sys.executable)}</td></tr>
-<tr><td class="e">Platform</td><td class="v">${_esc(platform.platform())}</td></tr>
-<tr><td class="e">OS / Architecture</td><td class="v">${_esc(os.name)} / ${_esc(platform.machine())}</td></tr>
-<tr><td class="e">Hostname</td><td class="v">${_esc(socket.gethostname())}</td></tr>
-<tr><td class="e">Process ID</td><td class="v">${_esc(os.getpid())}</td></tr>
-<tr><td class="e">Current Working Directory</td><td class="v">${_esc(os.getcwd())}</td></tr>
-<tr><td class="e">Server Time</td><td class="v">${_esc(_now)}</td></tr>
+<tr><td class="e">MakoServer Version</td><td class="v">${escape(_ms_version)}</td></tr>
+<tr><td class="e">Python Version</td><td class="v">${escape(sys.version.replace(chr(10), ' '))}</td></tr>
+<tr><td class="e">Python Executable</td><td class="v">${escape(sys.executable)}</td></tr>
+<tr><td class="e">Platform</td><td class="v">${escape(platform.platform())}</td></tr>
+<tr><td class="e">OS / Architecture</td><td class="v">${escape(os.name)} / ${escape(platform.machine())}</td></tr>
+<tr><td class="e">Hostname</td><td class="v">${escape(socket.gethostname())}</td></tr>
+<tr><td class="e">Process ID</td><td class="v">${escape(os.getpid())}</td></tr>
+<tr><td class="e">Current Working Directory</td><td class="v">${escape(os.getcwd())}</td></tr>
+<tr><td class="e">Server Time</td><td class="v">${escape(_now)}</td></tr>
 </table>
 
 <h2>Frameworks &amp; Dependencies</h2>
 <table>
-<tr><td class="e">Flask</td><td class="v">${_esc(_flask.__version__)}</td></tr>
-<tr><td class="e">Werkzeug</td><td class="v">${_esc(_wz.__version__)}</td></tr>
-<tr><td class="e">Mako</td><td class="v">${_esc(_mako.__version__)}</td></tr>
+<tr><td class="e">Flask</td><td class="v">${escape(_flask.__version__)}</td></tr>
+<tr><td class="e">Werkzeug</td><td class="v">${escape(_wz.__version__)}</td></tr>
+<tr><td class="e">Mako</td><td class="v">${escape(_mako.__version__)}</td></tr>
 </table>
 
 <h2>This Request (_SERVER)</h2>
@@ -117,16 +111,17 @@ ${_kv_rows(sorted(os.environ.items()))}
 
 <h2>Paths</h2>
 <table>
-<tr><td class="e">DOCUMENT_ROOT</td><td class="v">${_esc(_srv.get('DOCUMENT_ROOT', '-'))}</td></tr>
-<tr><td class="e">SCRIPT_FILENAME</td><td class="v">${_esc(_srv.get('SCRIPT_FILENAME', '-'))}</td></tr>
-<tr><td class="e">SCRIPT_DIRNAME</td><td class="v">${_esc(_srv.get('SCRIPT_DIRNAME', '-'))}</td></tr>
-<tr><td class="e">sys.path</td><td class="v">${_esc(chr(10).join(sys.path))}</td></tr>
+<tr><td class="e">DOCUMENT_ROOT</td><td class="v">${escape(_srv.get('DOCUMENT_ROOT', '-'))}</td></tr>
+<tr><td class="e">SCRIPT_FILENAME</td><td class="v">${escape(_srv.get('SCRIPT_FILENAME', '-'))}</td></tr>
+<tr><td class="e">SCRIPT_DIRNAME</td><td class="v">${escape(_srv.get('SCRIPT_DIRNAME', '-'))}</td></tr>
+<tr><td class="e">sys.path</td><td class="v">${escape(chr(10).join(sys.path))}</td></tr>
 </table>
 
 <h2>Bridge API (injected names)</h2>
 <table>
 <tr><td class="h">Name</td><td class="h">Description</td></tr>
 <tr><td class="e">echo(*args)</td><td class="v">PHP 式输出：str 即时 UTF-8 编码、bytes 直通、None 输出空串</td></tr>
+<tr><td class="e">escape(value) / RESP.escape(value)</td><td class="v">PHP htmlspecialchars 等价：先 str() 再转义 &amp; &lt; &gt; " '，返回转义串（本页即用它转义所有输出）</td></tr>
 <tr><td class="e">RESP.header(name, value)</td><td class="v">设置响应头（Set-Cookie 追加、其余覆盖）</td></tr>
 <tr><td class="e">RESP.status(code)</td><td class="v">设置响应状态码</td></tr>
 <tr><td class="e">RESP.redirect(url, code=302)</td><td class="v">便捷重定向（不终止渲染，脚本自行 return）</td></tr>
@@ -141,8 +136,8 @@ ${_kv_rows(sorted(os.environ.items()))}
 </table>
 
 <p class="foot">
-makoinfo() - generated at ${_esc(_now)} by MakoServer ${_esc(_ms_version)}
-(Flask ${_esc(_flask.__version__)} / Werkzeug ${_esc(_wz.__version__)} / Mako ${_esc(_mako.__version__)})
+makoinfo() - generated at ${escape(_now)} by MakoServer ${escape(_ms_version)}
+(Flask ${escape(_flask.__version__)} / Werkzeug ${escape(_wz.__version__)} / Mako ${escape(_mako.__version__)})
 </p>
 
 </div>

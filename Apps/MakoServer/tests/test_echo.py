@@ -73,3 +73,38 @@ def test_mixed_text_and_echo (site, wf, client_factory):
     wf('t.mako', 'A<% echo("B") %>C')
     cli = client_factory(site)
     assert cli.get('/t.mako').data == b'ABC'
+
+
+def test_escape_html_chars (site, wf, client_factory):
+    # < > & " ' 全转义（quote=True）
+    wf('t.mako', """<% echo(escape("<a href='x'>&")) %>""")
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'&lt;a href=&#x27;x&#x27;&gt;&amp;'
+
+
+def test_escape_number_first_str (site, wf, client_factory):
+    # 整数/浮点先 str() 再转义
+    wf('t.mako', '<% echo(escape(42), "|", escape(1.5), "|", escape(None)) %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'42|1.5|None'
+
+
+def test_escape_returns_not_writes (site, wf, client_factory):
+    # escape 是纯转换：返回值用于插值，本身不写输出
+    wf('t.mako', '[${escape("<b>")}]')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'[&lt;b&gt;]'
+
+
+def test_resp_escape_same_function (site, wf, client_factory):
+    # RESP.escape 与注入的 escape 同一函数对象
+    wf('t.mako', '<% echo("T" if RESP.escape is escape else "F") %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'T'
+
+
+def test_resp_escape_shadow_fallback (site, wf, client_factory):
+    # escape 被局部变量覆盖时，规范名 RESP.escape 兜底
+    wf('t.mako', '<%\n escape = 123\n%><% echo(RESP.escape("<x>")) %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'&lt;x&gt;'

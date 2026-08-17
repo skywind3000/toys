@@ -418,6 +418,18 @@ def make_echo (buf):
     return echo
 
 
+def html_escape (value):
+    """escape(value)：模仿 PHP htmlspecialchars，返回转义后的字符串。
+
+    str() 后转义 & < > " '（quote=True）；str() 失败返回 '(unprintable)'。
+    纯转换函数，不输出；HTTP / CLI 两模式行为一致。
+    """
+    try:
+        return html.escape(str(value), quote=True)
+    except Exception:
+        return '(unprintable)'
+
+
 #======================================================================
 # Bridge：PHPDict / RespObject
 #======================================================================
@@ -472,6 +484,9 @@ class RespObject:
         self.__headers = []     # (name, value) 列表，Set-Cookie 追加其余覆盖
         self.__status = None
         self.__cookies = {}     # name -> 完整 cookie 串，同名后设覆盖
+        # escape 的规范名：与注入的 escape 同一函数对象（同 echo/RESP.write
+        # 关系）；纯转换函数，非响应控制，CLI 模式下照常可用
+        self.escape = html_escape
 
     def write (self, *args):
         self.__echo(*args)
@@ -975,6 +990,7 @@ class MakoServer:
 
         bridge = {
             'echo': echo,
+            'escape': html_escape,
             '_REQUEST': request_d,
             '_BODY': body,
             '_GET': get_d,
@@ -1133,6 +1149,7 @@ def render_cli (script, args):
     }
     bridge = {
         'echo': echo,
+        'escape': html_escape,
         '_REQUEST': PHPDict(),
         '_BODY': b'',
         '_GET': PHPDict(),
