@@ -41,13 +41,14 @@
 | 18 | 目录尾斜杠 301 | 请求映射到目录且 URL 末尾无 `/`（如 `/demo`）→ `301` 重定向补斜杠（`/demo/`，保留 query）——对齐 Apache `DirectorySlash`；否则页内相对链接会按 `/` 解析全部错链 |
 | 19 | session cookie 属性 | 固定 `Path=/; HttpOnly; SameSite=Lax`；**不设 Max-Age / Expires**（浏览器会话 cookie，对齐 PHP 默认 `session.cookie_lifetime=0`）——过期控制由服务端时间戳判定承担（cookie 即使被浏览器持久保留，过期后校验失败按无 session 处理） |
 | 20 | OPTIONS 交给脚本 | 路由注册 `provide_automatic_options=False`——否则 Flask 默认自动应答 OPTIONS（200 + Allow 头），view 永不被调用、`REQUEST_METHOD='OPTIONS'` 传不到脚本；关闭后 OPTIONS 到达模板分支照常渲染（Apache + mod_php 同为执行脚本） |
-| 21 | 模板文件访问基准 | **不 chdir**（cwd 是进程级状态，dev server / WSGI 多线程共享进程，并发请求互相切目录 = 数据竞争；PHP 敢切靠的是单请求同步 worker 模型）；补 `_SERVER['SCRIPT_FILENAME']` / `['DOCUMENT_ROOT']` / `['SCRIPT_DIRNAME']`（前两键 PHP `$_SERVER` 标配，第三键为便利键 = dirname，语义同 PHP `__DIR__`）；模板定位文件用三键拼绝对路径，裸相对路径基准为进程 cwd、行为不保证 |
+| 21 | 模板文件访问基准 | **不 chdir**（cwd 是进程级状态，dev server / WSGI 多线程共享进程，并发请求互相切目录 = 数据竞争；PHP 敢切靠的是单请求同步 worker 模型；启动时一次性 chdir 亦否决，见决策 #27）；补 `_SERVER['SCRIPT_FILENAME']` / `['DOCUMENT_ROOT']` / `['SCRIPT_DIRNAME']`（前两键 PHP `$_SERVER` 标配，第三键为便利键 = dirname，语义同 PHP `__DIR__`）；模板定位文件用三键拼绝对路径，裸相对路径基准为进程 cwd、行为不保证 |
 | 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
 | 23 | PathInfoNormMiddleware（实现期修正） | 实测 Werkzeug 2.2 两处行为与 spec 初版假设不符，用前置 middleware 显式兑现：① merge_slashes 仅在首次匹配失败时才触发归一 308，而本站 catch-all `<path:>` 路由首次必命中，归一永不发生——由 middleware 对含 `//` 的 PATH_INFO 发 308 归并（保留前缀与 query）；② 挂载根无斜杠（空 PATH_INFO）时 matcher 自行 308 丢 query、请求到不了视图——middleware 把空 PATH_INFO 归一成 `'/'`、原始值记 `MAKO_RAW_PATH_INFO`，由视图按 3.3 发 301（保留 query）。详见 3.1 |
 | 24 | CLI stdin 渲染标记用 `-` 非 `--` | `python makoserver.py - [args...]` 从 stdin 读模板源并渲染。选**单减号**：POSIX Utility Syntax Guideline 13 规定操作数 `-` 即 stdin/stdout，cat / grep / sed / tar / curl / gcc / python / jq / pandoc / `kubectl apply -f -` / `docker build -` 全线同约定，PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`（本项目对标 PHP，天然契合）；`--` 被否决——它是 getopt/argparse 的**选项终止符**（POSIX Guideline 10），argparse 会吞掉首个 `--`、根本到不了位置参数，语义冲突且技术不可行。细则见 10.3 |
 | 25 | 注入名作用域属模板编写约定而非框架缺陷 | demo 留言板实测踩坑：`<%! %>`（模块级）里定义的辅助函数调用 `escape` → 编译正常、**运行时**被调才报 `NameError`（注入名仅存在于渲染作用域，见 6.7）。框架不做任何修复/兜底——Mako 两级作用域系模板引擎固有语义，强行把注入名塞进模板模块 globals 会引入跨请求共享可变状态（与 9.4 每请求隔离原则冲突）；以文档约定收口（PRD「注入名作用域」节），见 6.7 |
 | 25 | 注入名作用域与 `<%! %>` 编写约定 | bridge 注入名仅在渲染体作用域可见（6.7）；`<%! %>` 模块级函数引用注入名编译期无错、**运行时首次调用才 NameError**（demo 留言板 debug 面板实测踩中）——约定 `<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参 |
 | 26 | root 尾部追加进 sys.path（站点本地模块 import） | dev / WSGI 启动时（create_app，启动校验后）把 `realpath(root)` **去重后 append 到 sys.path 尾部**，模板 `<%! %>` 即可点分 import root 下的 .py（py3 命名空间包，无需 `__init__.py`）。选尾部而非 insert(0)：标准库 / 已安装包优先，root 里同名 `json.py` 无法遮蔽标准库；CLI 无 root 概念不参与。细节见 2.5 |
+| 27 | 启动时 chdir 到 root 亦否决（#21 的补充论证） | #21 否的是每请求 chdir（多线程竞态）；启动时一次性 chdir 虽无竞态，仍否决，四条理由：① **cwd 是标量、sys.path 是集合**——同进程多 root（测试 / 多挂载）时 chdir 必然打架，sys.path 追加可共存；② **跨模式分裂**——HTTP chdir 到 root、CLI 无 root 只能留在启动目录，同一脚本裸相对路径两模式基准不同，违反 PRD 双模式契约（`SCRIPT_DIRNAME` 拼路径则两模式语义一致）；③ **WSGI 宿主公民**——cwd 是宿主进程级状态，mod_wsgi 同进程多应用 / gunicorn 多 app 会被改地板，mod_wsgi 官方明确警告；sys.path 追加是加法、chdir 是替换，侵入度不同量级；④ **漂移风险**——裸相对路径一旦有保证即被依赖，而任何代码 `os.chdir()` 都会让全进程线程的基准一起漂移。另：dev server 的 root 回退链默认值即 cwd，chdir 会永久丢失启动目录信息 |
 
 ## 1. 单文件内部布局
 
@@ -356,7 +357,7 @@ HTTP 模式（自 WSGI environ 透传 + 提炼）：
 | `DOCUMENT_ROOT` | root 的绝对路径（realpath 归一） |
 | `SCRIPT_DIRNAME` | `os.path.dirname(SCRIPT_FILENAME)`（便利键，PHP 无同名超全局，语义同其 `__DIR__` 魔法常量） |
 
-**模板内文件访问契约**：模板里 `open()` 等相对路径的基准是**服务进程 cwd**（dev server = 启动时 shell 目录、WSGI = 宿主 cwd），随启动方式漂移且多线程共享，**勿依赖**；定位文件用 `os.path.join(_SERVER['SCRIPT_DIRNAME'], ...)`（自身目录）或 `_SERVER['DOCUMENT_ROOT']`（站点根）拼绝对路径。PHP web「cwd = 脚本目录」的行为因线程安全不可 chdir，改以显式拼路径等价兑现。
+**模板内文件访问契约**：模板里 `open()` 等相对路径的基准是**服务进程 cwd**（dev server = 启动时 shell 目录、WSGI = 宿主 cwd），随启动方式漂移且多线程共享，**勿依赖**；定位文件用 `os.path.join(_SERVER['SCRIPT_DIRNAME'], ...)`（自身目录）或 `_SERVER['DOCUMENT_ROOT']`（站点根）拼绝对路径。PHP web「cwd = 脚本目录」的行为因线程安全不可 chdir（启动时一次性 chdir 亦否决，决策 #27），改以显式拼路径等价兑现。
 
 三键（连同整个 `_SERVER`）**仅存在于模板渲染上下文**——静态分支、301、404 等无模板执行的场景不构造 `_SERVER`（PHP 的 `$_SERVER` 亦只存在于其脚本内，同语义）。
 
