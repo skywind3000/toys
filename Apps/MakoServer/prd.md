@@ -16,15 +16,57 @@
 - 能够防止相对路径穿透到文档根目录以外；
 - 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码）；
 - 如果请求路径不包含文件名，依次尝试追加 `index.mako`、`index.html`、`index.htm`；
-- 在 Flask 端提供一系列 bridge 函数/对象，供 .mako 脚本使用：
-  - 设置返回的 header、返回码；
-  - 读取请求参数（类似 PHP 的 `$_ARGS` 字典）、请求方法（GET/POST）、请求 body；
-  - 读写 cookie；
-  - （可选/后续扩展）`response.raw(bytes, content_type)` 接口，让脚本直接返回二进制内容（如动态生成图片），跳过模板渲染的文本假设；
+- Flask 端提供 bridge 函数/对象供 .mako 脚本使用，详见下文「Bridge API」一节；
 - 更新检测：用户更新 .mako 脚本后能自动检测并 reload —— 采用**请求时检查 mtime** 的方式，不引入 watchdog；
 - 错误处理：.mako 脚本编译错误或运行时异常时，返回 5xx 状态码 + 错误内容页面；
 - 404 处理：请求的文件不存在（含 index 兜底全部未命中）、或路径穿透检查被拒绝时，统一返回 404 状态码 + 简单文本错误页，不区分"不存在"与"被拒绝"（避免探测目录结构）；
 - 编码：文本输出统一 UTF-8，第一期重点覆盖 `text/html`、`text/plain`、`application/json` 三种类型。
+
+## Bridge API
+
+Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局变量与常用函数：
+
+### 输出
+
+- `echo(text)` —— 模仿 PHP 的 `echo`，内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值；
+- 模板中 `<% %>` 块之外的普通文本照旧直接输出，两种方式可混用。
+
+### 请求（仿 PHP 超全局变量命名）
+
+命名一律大写下划线风格，避开与函数参数、requests 库等常见名字的冲突：
+
+- `_REQUEST` —— 合并的请求参数字典（对应 PHP 的 `$_REQUEST`），支持 `getlist(name)` 获取同名多值（如 `?tag=a&tag=b`）；
+- `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
+- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`、请求路径、`REMOTE_ADDR`（客户端 IP）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
+- `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；
+- `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）。
+
+### 响应
+
+- `echo(text)` —— 见上文输出节；
+- `header(name, value)` / `status(code)` —— 设置响应 header、状态码（对应 PHP 的 `header()` / `http_response_code()`）；
+- `redirect(url, code=302)` —— 便捷重定向（等价于 PHP 的 `header('Location: ...')`）；
+- `json(data)` —— 便捷 JSON 响应（自动设置 Content-Type 并序列化）；
+- `setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）；
+- （可选/后续扩展）`raw(bytes, content_type)` 接口，让脚本直接返回二进制内容（如动态生成图片），跳过模板渲染的文本假设。
+
+### 第二期扩展（暂不实现）
+
+- `_FILES` —— 文件上传（对应 PHP 的 `$_FILES` / `move_uploaded_file`）；
+- `_SESSION` —— 服务端会话（对应 PHP 的 `$_SESSION`），也可先用签名 cookie 的轻量方案过渡。
+
+### 说明
+
+- 跨请求持久化不提供内置支持，脚本自己读写文件即可（本机可信环境）；
+- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（随渲染结果写入 stdout）。
+
+## 路径解析
+
+- 程序与配置中统一用 **root** 指代文档根目录；
+- makoserver.py 可直接作为 WSGI 入口使用（文件导出 `application` 函数），无需另写入口脚本；
+- **WSGI 挂载场景**：假设 Apache 配置了 `WSGIScriptAlias /app1 /path/to/makoserver.py`，且配置中 root 为 `/home/data/mako`。用户请求 `http://192.168.1.11/app1/demo/demo.mako` 时，`/app1` 挂载前缀由 WSGI 环境（SCRIPT_NAME）提供并被剥除，剩余部分 `demo/demo.mako` 拼到 root 上，解析为模板文件 `/home/data/mako/demo/demo.mako`；
+- **独立 Flask 模式**：同一 root 下，请求 `http://localhost:5000/demo/demo.mako` 没有挂载前缀，直接解析为 `/home/data/mako/demo/demo.mako`——两种模式下相同的 URL 尾部对应同一个模板文件，方便本机开发与 WSGI 部署行为一致；
+- **index 兜底**：仍以 WSGI 场景为例，用户请求 `http://192.168.1.11/app1`（或 `/app1/`）时，在 root（`/home/data/mako`）下依次寻找 `index.mako`、`index.html`、`index.htm`，哪个存在就渲染/返回哪个，全部不存在则 404。
 
 ## 配置文件
 
