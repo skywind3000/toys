@@ -24,7 +24,7 @@
 | 2 | CLI 下 include/inherit 基准目录 | 模板查找目录 = 被渲染脚本所在目录（HTTP 模式为 root） |
 | 3 | `RESP.redirect()` 后是否终止渲染 | 不终止（对齐 PHP `header()`）；文档惯例建议其后 `return` |
 | 4 | `_JSON` 解析失败行为 | 为 `None`，不报错；脚本可通过 `_BODY` 拿原文自行处理 |
-| 5 | 静态文件 mimetypes 猜不出时 | `application/octet-stream`，绝不猜成 `text/html` |
+| 5 | 静态文件 Content-Type 兜底 | 并入 #12（弃用 mimetypes，改内置扩展名白名单，白名单外一律 404） |
 | 6 | 5xx 错误页内容 | 含完整 traceback（HTML 转义）+ 请求路径；traceback 同步写 error log |
 | 7 | 配置相对路径基准 | 通则：三条查找规则命中的配置文件，其中所有相对路径（含 `root`）均以**配置文件所在目录**为基准 |
 | 8 | `_SERVER` 的「请求路径」键名 | `PATH_INFO`（不引入 PHP/Apache 特有的 `REQUEST_URI`） |
