@@ -12,9 +12,9 @@
 - 基于 Mako / Flask，提供一套类似 .php 的网页服务；
 - 用户请求 `http://localhost:5000/web/demo.mako` 的话，就会解析出相对路径，到文档根目录下寻找对应 .mako 文件并渲染返回；
 - 启动后指定一个文档根目录，就能为下面的所有 .mako 脚本提供页面服务，用户写新的动态页面，新增 .mako 文件就行，不必改 Flask 端任何一行代码；
-- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404（无论请求谓词）**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；白名单内且存在的文件仅接受 GET/HEAD，其它谓词返回 405 Method Not Allowed（判定在白名单之后，404 优先，不因 405 泄露文件存在性；.mako 脚本则全谓词渲染，`REQUEST_METHOD` 如实传递给脚本）；
+- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404（无论请求谓词）**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；白名单内且存在的文件仅接受 GET/HEAD，其它谓词返回 405 Method Not Allowed（附 `Allow: GET, HEAD` 头；判定在白名单之后，404 优先，不因 405 泄露文件存在性；.mako 脚本则全谓词渲染，`REQUEST_METHOD` 如实传递给脚本）；
 - 能够防止相对路径穿透到文档根目录以外；
-- 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码）；
+- 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码；尾部点剥除仅 Windows 主动特判——Linux 下此类字面文件名不存在、自然 404 fail-closed，有意跨平台分裂）；
 - 服务自身与配置的防回吐：makoserver.py 自身与 `makoserver.ini`（.py / .ini 均不在静态白名单，天然 404）、实际加载命中的配置文件、已配置的日志文件（后两者路径启动时记录，请求解析全程对**最终目标文件**比对——初始路径先行、PATH_INFO 回溯与 index 兜底解析出的目标终点收口，命中即 404）——比对覆盖静态分支（回吐 secret 与访客日志）与模板分支（日志 / 配置若起名 `*.mako` 会被**当模板编译执行**），回溯与兜底旁路同堵；
 - 如果请求映射到目录（含 `/`）：URL 末尾无 `/` 时先 301 重定向补斜杠（对齐 Apache `DirectorySlash`，防页内相对链接错链），再依次尝试追加 `index.mako`、`index.html`、`index.htm`；
 - 支持 PHP 的 PATH_INFO 尾挂机制：请求 `xxx.mako/尾挂路径`（如 `/index.mako/hello`）时渲染 `xxx.mako`，尾挂部分（`/hello`）经 `_SERVER['PATH_INFO']` 传入，脚本可据此实现漂亮 URL 路由（无需 query string）；静态文件不带尾挂（`style.css/hello` → 404）；尾挂中的 `../` 已被路径规范化先行钳制，不构成穿透；
@@ -46,7 +46,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 - `_REQUEST` —— 合并的请求参数字典（对应 PHP 的 `$_REQUEST`），支持 `getlist(name)` 获取同名多值（如 `?tag=a&tag=b`）；
 - `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
-- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REQUEST_URI`（原始请求 URI 原文含 query，编码态不受解码 / 规范化影响）、`SCRIPT_FILENAME`（实际渲染脚本的绝对路径，尾挂 / 兜底场景跟随最终渲染目标）、`SCRIPT_DIRNAME`（脚本所在目录，语义同 PHP 的 `__DIR__`）、`DOCUMENT_ROOT`（文档根绝对路径）——模板内文件访问**勿依赖**进程 cwd（随启动方式漂移、多线程共享不保证），定位文件用此三键拼绝对路径（PHP web「cwd = 脚本目录」因线程安全不可 chdir，以显式拼路径等价兑现）、`REMOTE_ADDR`（客户端 IP）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
+- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REQUEST_URI`（原始请求 URI 原文含 query，编码态不受解码 / 规范化影响）、`SCRIPT_FILENAME`（实际渲染脚本的绝对路径，尾挂 / 兜底场景跟随最终渲染目标）、`SCRIPT_DIRNAME`（脚本所在目录，语义同 PHP 的 `__DIR__`）、`DOCUMENT_ROOT`（文档根绝对路径）——模板内文件访问**勿依赖**进程 cwd（随启动方式漂移、多线程共享不保证），定位文件用此三键拼绝对路径（PHP web「cwd = 脚本目录」因线程安全不可 chdir，以显式拼路径等价兑现）、`REMOTE_ADDR`（客户端 IP）、`CONTENT_TYPE` / `CONTENT_LENGTH`（请求体类型与长度，POST 场景高频）、`SERVER_NAME` / `SERVER_PORT` / `REQUEST_SCHEME`（服务端地址信息）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
 - `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；
 - `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；
 - `_SESSION` —— 会话字典（对应 `$_SESSION`），一期实现，方案如下：
@@ -56,7 +56,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
   - **两层超时独立控制**：cookie 自身的 HTTP 层过期（`RESP.setcookie()` 的 expires/max-age）与签名 session 的时间戳过期是两层，前者管浏览器是否携带，后者管服务端是否接受；
   - 支持两种超时语义（配置项切换）：绝对超时（签发时间起算）与滑动超时（每次响应重签刷新，仿 PHP 默认行为）；
   - 签名密钥优先读配置；配置缺失时由本机指纹（machine-id + 网卡 MAC 的 hash）派生，无需落盘即可同机稳定、跨机不同；
-  - 预期管理：容量受 cookie 限制（约 4KB）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
+  - 预期管理：容量受 cookie 限制（约 4KB，超限抛 500 错误页、错误信息说明容量限制）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
   - 更复杂的会话需求（主动淘汰、大容量存储等）由用户脚本自行搭配 Redis 等后端实现，bridge 提供 cookie 原语即可支撑（发 HttpOnly 的 sid cookie + 自管存储），MakoServer 不内置也不感知这些依赖。
 
 ### 响应
