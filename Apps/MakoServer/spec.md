@@ -12,6 +12,7 @@
 | 直接依赖 | Flask、Mako 两个第三方包，其余仅标准库 |
 | 版本约束 | `Flask<4` / `Mako<1.5`；开发/验证基准 Flask 2.2.x + Mako 1.4.x |
 | 语法约束 | Python 3.8（禁 walrus、`str.removeprefix` 等 3.9+ 特性），兼容 Win7 打包 |
+| 注释语言 | `makoserver.py` 全文件**不得出现中文**：注释、docstring、区块横幅一律英文（spec 章节引用如 `spec 3.2 step 1` 照写不译）；文件头注释须包含三种运行形态的详细用法（dev server 命令行示例、WSGI 挂载示例、CLI 渲染含 stdin 与 argv 透传）与配置查找链说明。本约束仅限源码文件；prd.md / spec.md / 测试注释仍用中文 |
 | 私有接口 | 自定义字节缓冲注入依赖 `mako.runtime` 内部协议；升级 Mako 小版本须回归验证。Flask 同理：上界 `<4` 允许 3.x，跨主版本相对开发基准 2.2 的行为差异（`get_data` / form 缓存时序、`redirect` 编码等实测锚点）同样须回归验证 |
 | 运行形态 | ① 独立 dev server ② WSGI 入口（导出 `application`）③ CLI 渲染单个 .mako |
 | 定位 | 本机/可信环境；安全检查以「可信环境下的健壮性」为准（Windows 路径陷阱），不做公网加固 |
