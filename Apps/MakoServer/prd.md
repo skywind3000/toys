@@ -8,7 +8,9 @@
 
 - 基于 Mako / Flask，提供一套类似 .php 的网页服务；
 - 用户请求 http://localhost/web/demo.mako 的话，就会解析出相对目录，并到根目录下寻找 .mako 文件并渲染返回；
+- 启动后指定个文档根目录，就能为下面的所有 .mako 脚本提供页面服务了，用户写新的动态页面，新增 .mako 文件就行，不必改到 flask 端任何一行代码；
 - 如果请求的是 .html / .jpg 等，就会读取并设置好对应的 content type 再返回内容；
+- 能够防止相对路径穿透到文档根目录以外；
 - 如果请求的不包含文件名，就会依次尝试追加 `index.mako` 和 `index.html` 和 `index.htm` 几个文件；
 - 在 Flask 端提供一系列 bridge 函数/对象，可以由 .mako 脚本使用并用来设置返回的 header，返回码，读取发送上来的 parameter，读取是 GET 还是 POST 等，读取 body 等，就像 PHP 的 `$_ARGS[xxx]` 字典一样，提供 cookie 设置；
 
