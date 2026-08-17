@@ -39,7 +39,14 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
 - `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`、请求路径、`REMOTE_ADDR`（客户端 IP）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
 - `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；
-- `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）。
+- `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；
+- `_SESSION` —— 会话字典（对应 `$_SESSION`），一期实现，方案如下：
+  - 基于**签名 cookie + 时间戳**，无服务端存储，天然兼容 WSGI 多进程；
+  - 时间戳在签名覆盖范围内，客户端无法篡改续命；过期判定以服务端时钟为准；
+  - 支持两种超时语义（配置项切换）：绝对超时（签发时间起算）与滑动超时（每次响应重签刷新，仿 PHP 默认行为）；
+  - 签名密钥首次运行自动生成（`secrets.token_hex`）写入全局配置文件，不写死在代码里；
+  - 预期管理：容量受 cookie 限制（约 4KB）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
+  - 更复杂的会话需求（主动淘汰、大容量存储等）由用户脚本自行搭配 Redis 等后端实现，bridge 提供 cookie 原语即可支撑（发 HttpOnly 的 sid cookie + 自管存储），MakoServer 不内置也不感知这些依赖。
 
 ### 响应
 
@@ -52,13 +59,12 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 第二期扩展（暂不实现）
 
-- `_FILES` —— 文件上传（对应 PHP 的 `$_FILES` / `move_uploaded_file`）；
-- `_SESSION` —— 服务端会话（对应 PHP 的 `$_SESSION`），也可先用签名 cookie 的轻量方案过渡。
+- `_FILES` —— 文件上传（对应 PHP 的 `$_FILES` / `move_uploaded_file`）。
 
 ### 说明
 
 - 跨请求持久化不提供内置支持，脚本自己读写文件即可（本机可信环境）；
-- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（随渲染结果写入 stdout）。
+- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（随渲染结果写入 stdout）；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
 
 ## 路径解析
 
@@ -70,7 +76,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ## 配置文件
 
-- 全局默认配置（默认端口、默认文档根目录等）：`~/.config/makoserver/settings.json`；
+- 全局默认配置（默认端口、默认文档根目录等）：`~/.config/makoserver/settings.json`；`_SESSION` 的签名密钥（secret）也存于此，首次运行自动生成；
 - 命令行参数优先级高于配置文件：单独运行时命令行指定的根目录、端口等覆盖配置文件中的同名项；
 - WSGI 模式下按以下顺序查找配置文件，命中即用：
   1. 环境变量 `MAKOSERVER_CONF` 指定的路径；
