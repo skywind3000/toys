@@ -230,7 +230,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 ### 6.1 注入机制
 
-`template.render(context, **bridge_names)` 或经 5.2 的 Context 构造注入。注入名固定为下表 11 个，未注入名在模板中引用时按 Mako 默认 NameError 报 500。
+`template.render(context, **bridge_names)` 或经 5.2 的 Context 构造注入。注入名固定为下表 10 个，未注入名在模板中引用时按 Mako 默认 NameError 报 500。
 
 **构造顺序（必须遵守）**：先 `_BODY = request.get_data(cache=True)`，再构造 `_GET` / `_POST`（读 `request.args` / `request.form`）。顺序颠倒（先 form 后 get_data）会让 body 读到 `b''`——Werkzeug 的表单解析直接消费底层流，`get_data` 晚于 form 则无流可读（Flask 2.2 实测）；`get_data(cache=True)` 先行缓存后，form 解析从缓存回填、两者兼得。
 
@@ -300,7 +300,7 @@ CLI 模式（降级值）：
 | `REMOTE_ADDR` / `SERVER_NAME` / `SERVER_PORT` / `CONTENT_TYPE` / `CONTENT_LENGTH` | `''` |
 | `argv` | `[脚本路径] + 其余命令行参数`（argv[0] = 被渲染脚本自身，对齐 PHP CLI `$argv`） |
 
-（`DOCUMENT_ROOT` 不设——CLI 模式无 root 概念，PHP CLI 亦无此键；`REQUEST_URI` 不设同理。）
+（`DOCUMENT_ROOT` / `REQUEST_URI` / `REQUEST_SCHEME` 不设——CLI 模式无 root / URL / scheme 概念，PHP CLI 亦无此三键。）
 
 ### 6.5 _BODY / _JSON
 
