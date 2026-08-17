@@ -1209,7 +1209,7 @@ def main (argv=None):
     except ConfigError as e:
         sys.stderr.write('makoserver: %s\n' % e)
         return 1
-    sys.stderr.write('makoserver: document root: %s\n' % app.mako_server.root)
+    sys.stderr.write('makoserver (%s):\n' % app.mako_server.root)
     app.run(host=opts.host, port=opts.port, threaded=True)
     return 0
 
