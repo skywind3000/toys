@@ -45,6 +45,8 @@
 | 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
 | 23 | PathInfoNormMiddleware（实现期修正） | 实测 Werkzeug 2.2 两处行为与 spec 初版假设不符，用前置 middleware 显式兑现：① merge_slashes 仅在首次匹配失败时才触发归一 308，而本站 catch-all `<path:>` 路由首次必命中，归一永不发生——由 middleware 对含 `//` 的 PATH_INFO 发 308 归并（保留前缀与 query）；② 挂载根无斜杠（空 PATH_INFO）时 matcher 自行 308 丢 query、请求到不了视图——middleware 把空 PATH_INFO 归一成 `'/'`、原始值记 `MAKO_RAW_PATH_INFO`，由视图按 3.3 发 301（保留 query）。详见 3.1 |
 | 24 | CLI stdin 渲染标记用 `-` 非 `--` | `python makoserver.py - [args...]` 从 stdin 读模板源并渲染。选**单减号**：POSIX Utility Syntax Guideline 13 规定操作数 `-` 即 stdin/stdout，cat / grep / sed / tar / curl / gcc / python / jq / pandoc / `kubectl apply -f -` / `docker build -` 全线同约定，PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`（本项目对标 PHP，天然契合）；`--` 被否决——它是 getopt/argparse 的**选项终止符**（POSIX Guideline 10），argparse 会吞掉首个 `--`、根本到不了位置参数，语义冲突且技术不可行。细则见 10.3 |
+| 25 | 注入名作用域属模板编写约定而非框架缺陷 | demo 留言板实测踩坑：`<%! %>`（模块级）里定义的辅助函数调用 `escape` → 编译正常、**运行时**被调才报 `NameError`（注入名仅存在于渲染作用域，见 6.7）。框架不做任何修复/兜底——Mako 两级作用域系模板引擎固有语义，强行把注入名塞进模板模块 globals 会引入跨请求共享可变状态（与 9.4 每请求隔离原则冲突）；以文档约定收口（PRD「注入名作用域」节），见 6.7 |
+| 25 | 注入名作用域与 `<%! %>` 编写约定 | bridge 注入名仅在渲染体作用域可见（6.7）；`<%! %>` 模块级函数引用注入名编译期无错、**运行时首次调用才 NameError**（demo 留言板 debug 面板实测踩中）——约定 `<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参 |
 
 ## 1. 单文件内部布局
 
@@ -259,6 +261,42 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 | `RESP` | RespObject | 见 6.6 |
 
 （`RESP.write` 是 RespObject 属性 = `echo` 同一函数对象；`RESP.escape` 同理 = `escape` 同一函数对象。）
+
+### 6.7 注入名作用域（模板编写约定）
+
+Mako 模板编译为一个 Python 模块，代码块分两级作用域：
+
+| 块 | 编译到 | 执行时机 | 名字解析 |
+|----|--------|----------|----------|
+| `<%! %>` | 模板模块级 | 模板加载编译时一次 | 模板模块 globals + builtins |
+| `<% %>` / `${ }` | `render_body()` 函数体 | 每请求一次 | 含 6.1 全部注入名 |
+
+注入名经 `template.render(context, **bridge)` 每请求传入，只是 `render_body` 的局部名，**不在模板模块 globals 里**——`<%! %>` 里的函数引用它们，Python 按常规模块级规则解析，调用时才 `NameError`（编译不报错；函数只在特定分支被调时平时页面一切正常，延迟暴露）。框架不兜底（决策 #25），编写约定三条：
+
+1. `<%! %>` 只放 import 与纯函数（参数进、结果出，不碰注入名）；
+2. 要用注入名的辅助函数定义在 `<% %>` 块内（每请求重定义，闭包捕获注入名）；
+3. 模块级工具函数需转义时，把 `escape` 作参数显式传入，或改用标准库 `html.escape(..., quote=True)`（与 6.2 `escape` 语义等价）。
+
+（注：`echo.__globals__` 指向 makoserver 模块命名空间——可从中读 `__version__` 等模块级常量，但 `echo` / `escape` 系 `make_bridge()` 内嵌套定义，不在该 globals 里，此路不通，勿用。）
+
+### 6.7 注入名作用域（模板编写约定）
+
+Mako 模板编译成一个 Python 模块，代码块分两层作用域：
+
+| 块 | 编译产物 | 执行时机 | 可见名字 |
+|----|----------|----------|----------|
+| `<%! %>` | 模块级代码 | 模板加载编译时**一次** | 模板模块 globals + builtins |
+| `<% %>` / `${ }` | `render_body()` 函数体 | **每请求**一次 | 上列 + 渲染注入名 |
+
+11 个注入名经 `template.render(context, **bridge)` 传入，是 `render_body` 的 kwargs/局部名，**不在模板模块的 globals 里**。因此 `<%! %>` 中定义的函数调用时按常规 Python 规则在模块 globals 查名，查不到 `escape` / `echo` / `_GET` 等 → `NameError`。失败形态的三个延迟叠加使其极具迷惑性：① 编译不报错（注入名是合法标识符）；② 运行时才查名（函数被调用那一刻）；③ 若该函数仅特定分支调用（如 `?debug=1` 面板），平时页面一切正常。
+
+编写约定（对模板作者）：
+
+1. `<%! %>` 只放 import 与纯函数（参数进、结果出，绝不引用注入名）；
+2. 需要注入名的辅助函数定义在 `<% %>` 块内（每请求定义，闭包捕获注入名，量小无所谓）；
+3. 模块级工具函数确需转义时：显式把 `escape` 作参数传入，或 `import html` 用 `html.escape(..., quote=True)`（与 6.2 的 `escape` 语义等价）。
+
+注：`echo.__globals__` 是 makoserver.py 的模块命名空间（6.4 注记的取 `__version__` 技巧同源），但 `echo` / `escape` 本身是 make_bridge 内的局部函数、不在该 globals 里，**勿**用 `echo.__globals__['escape']` 作模块级兑子。
 
 ### 6.2 echo(*args) / escape(value)
 
