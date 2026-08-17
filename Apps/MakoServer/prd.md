@@ -12,11 +12,12 @@
 - 基于 Mako / Flask，提供一套类似 .php 的网页服务；
 - 用户请求 `http://localhost:5000/web/demo.mako` 的话，就会解析出相对路径，到文档根目录下寻找对应 .mako 文件并渲染返回；
 - 启动后指定一个文档根目录，就能为下面的所有 .mako 脚本提供页面服务，用户写新的动态页面，新增 .mako 文件就行，不必改 Flask 端任何一行代码；
-- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；
+- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；静态文件仅接受 GET/HEAD，其它谓词一律 405 Method Not Allowed（.mako 脚本则全谓词渲染，`REQUEST_METHOD` 如实传递给脚本）；
 - 能够防止相对路径穿透到文档根目录以外；
 - 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码）；
 - 服务自身与配置的防回吐：makoserver.py 自身与 `makoserver.ini`（.py / .ini 均不在静态白名单，天然 404）、实际加载命中的配置文件、已配置的日志文件（后两者路径启动时记录、请求时比对，命中即 404，覆盖经 `MAKOSERVER_CONF` 指到白名单类型文件名、日志起名 `access.txt` 等情形）——即使位于文档根目录内也不会被静态分支回吐 secret 与访客日志；
 - 如果请求路径不包含文件名，依次尝试追加 `index.mako`、`index.html`、`index.htm`；
+- 支持 PHP 的 PATH_INFO 尾挂机制：请求 `xxx.mako/尾挂路径`（如 `/index.mako/hello`）时渲染 `xxx.mako`，尾挂部分（`/hello`）经 `_SERVER['PATH_INFO']` 传入，脚本可据此实现漂亮 URL 路由（无需 query string）；静态文件不带尾挂（`style.css/hello` → 404）；尾挂中的 `../` 已被路径规范化先行钳制，不构成穿透；
 - Flask 端提供 bridge 函数/对象供 .mako 脚本使用，详见下文「Bridge API」一节；
 - 更新检测：用户更新 .mako 脚本后能自动检测并 reload —— 采用**请求时检查 mtime** 的方式，不引入 watchdog；
 - 错误处理：.mako 脚本编译错误或运行时异常时，返回 5xx 状态码 + 错误内容页面；
@@ -45,7 +46,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 - `_REQUEST` —— 合并的请求参数字典（对应 PHP 的 `$_REQUEST`），支持 `getlist(name)` 获取同名多值（如 `?tag=a&tag=b`）；
 - `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
-- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`、请求路径、`REMOTE_ADDR`（客户端 IP）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
+- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REMOTE_ADDR`（客户端 IP）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
 - `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；
 - `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；
 - `_SESSION` —— 会话字典（对应 `$_SESSION`），一期实现，方案如下：

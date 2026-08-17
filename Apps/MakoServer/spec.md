@@ -35,6 +35,7 @@
 | 13 | WSGI 零配置 root | 配置缺失时回退 makoserver.py 所在目录（`__file__` 目录，与配置查找第 2 条同锚点），单文件拷进站点目录即部署 |
 | 14 | 配置文件格式 | INI（`configparser` 标准库）：单节 `[makoserver]`、`#`/`;` 行注释、手写友好；`session_lifetime` 显式 int 转换；文件名 `makoserver.ini` / `settings.ini` |
 | 15 | port / host 不进配置 | 仅 dev server 用得到（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性——纯命令行 `-p` / `--host`，schema 不设死键 |
+| 16 | 尾挂 PATH_INFO（PHP AcceptPathInfo） | 路径不存在时逐级回溯找存在的文件，命中 `.mako` 即渲染、尾挂作 `_SERVER['PATH_INFO']` 传入；命中非 `.mako` 文件 → 404（静态不带尾挂）；回溯碰到存在的目录即停、转 index 兜底；`SCRIPT_NAME` 同步改为脚本路径部分（PHP `$_SERVER` 分工） |
 
 ## 1. 单文件内部布局
 
@@ -68,7 +69,7 @@ makoserver.py 内部代码区块（自上而下）：
 | `access_log` | str | 空（不落盘） | access log 文件路径 |
 | `error_log` | str | 空（stderr） | error log 文件路径 |
 
-未知键忽略不报错（向前兼容）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
+未知键忽略不报错（向前兼容）；若未知键与已知键拼写相近（如 `session_lifetim`），向 stderr 打一条 warning（非阻塞，防拼写错被静默吞掉回落默认值）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
 
 `port` / `host` **不进配置文件**（决策 #15）：它们只对 dev server 一个模式生效（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性，纯命令行 `-p` / `--host` 提供（见 10.1）。
 
@@ -99,31 +100,42 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 
 Flask app 仅注册两条路由（catch-all，禁用 static 路由）：
 
-- `GET/HEAD /` → `view('')`
-- `GET/HEAD/POST/... /<path:url_path>` → `view(url_path)`（methods 放开全谓词；HEAD 由 Werkzeug 自动处理 body 剥离）
+- `/` → `view('')`
+- `/<path:url_path>` → `view(url_path)`
 
-WSGI 挂载前缀（SCRIPT_NAME）由 Flask/Werkzeug 自动剥除，view 收到的即 URL 尾部。非 GET/POST 谓词到达模板时 `_SERVER['REQUEST_METHOD']` 如实反映。
+两条路由 methods 同集放开全谓词（GET / HEAD / POST / PUT / DELETE / PATCH / OPTIONS）——`POST /` 等根路径请求同样到达模板，不出现 Flask 默认 405。HEAD 由 Werkzeug 自动处理 body 剥离。
+
+WSGI 挂载前缀（SCRIPT_NAME）由 Flask/Werkzeug 自动剥除，view 收到的即 URL 尾部。全谓词的作用域：POST / PUT / DELETE / PATCH 到达**模板分支**时正常渲染，`_SERVER['REQUEST_METHOD']` 如实传递（REST 风格 API 由 .mako 脚本自行处理）；**静态分支不接受非 GET/HEAD**（405，见 3.5）。
 
 ### 3.2 路径解析算法（resolve_path）
 
 输入：URL 尾部 `url_path`（已 URL 解码）。步骤：
 
-1. **POSIX 规范化**：`rel = posixpath.normpath('/' + url_path).lstrip('/')`，得到如 `demo/demo.mako`；任何 `..` 在 normpath 后仍残留于头部（即逃出 root）→ 拒绝；
+1. **POSIX 规范化**：`rel = posixpath.normpath('/' + url_path).lstrip('/')`，得到如 `demo/demo.mako`。前置 `/` 使 normpath 将越界 `..` **钳制回根**（`/../../etc` → `/etc`，rel 永不含头部 `..`）——注意这是钳制而非拒绝，逃逸防护实际由第 3 步 commonpath 收口承担（实测 normpath 不会让 `..` 残留，实现勿依赖本步做拒绝）；
 2. **NTFS 特判**（`os.name == 'nt'` 下）：
    - `rel` 含 `:`（盘符 / `::$DATA` 数据流）→ 拒绝；
-   - `rel` 每个路径段的结尾 `.` 与空格视为被文件系统剥掉（Windows 语义），对 `rel.rstrip(' .')` 后的形态做后续判断——防 `demo.mako.` 绕过；
-3. **拼合与真实路径收口**：`full = os.path.join(root, rel)`；`real = os.path.realpath(full)`、`root_real = os.path.realpath(root)`；`os.path.commonpath([real, root_real]) != root_real`（或 real == root_real，即指向 root 本身）→ 拒绝。realpath 一并覆盖符号链接 / junction 指出 root 的场景；
+   - Windows 会剥掉路径段末尾的 `.` 与空格，此处对 `rel` 整体 `rstrip(' .')`（等效作用于末段 basename）后再做后续判断——防 `demo.mako.` 绕过；中间段的点/空格交由文件系统自身语义，不额外模拟；
+3. **拼合与真实路径收口**：`full = os.path.join(root, rel)`；`real = os.path.realpath(full)`、`root_real = os.path.realpath(root)`；仅当 `os.path.commonpath([real, root_real]) != root_real`（逃出 root）→ 拒绝。`real == root_real`（请求 `/` 本身）**放行**，进入 3.3 目录分支走 index 兜底，不得拒绝。realpath 一并覆盖符号链接 / junction 指出 root 的场景；
 4. **拒绝即 404**：与「文件不存在」同响应（见 3.6），不区分。
 
 realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓，避免缓存失效漏洞）。
 
 ### 3.3 分支判定（在规范化后的 basename 上）
 
-对步骤 3 的 `real`：`name = os.path.basename(os.path.normcase(real))`
+对步骤 3 的 `real`：`name = os.path.basename(real).lower()`
 
 - `name.endswith('.mako')` → **模板分支**（即使文件不存在也走此分支：渲染时自然 404/500，见 3.4）；
-- `os.path.isfile(real)` → **静态分支**（.mako 已被上一条拦截，不会以静态形式吐出源码；大小写变体 `demo.MAKO` 经 normcase 同样落入模板分支）；
-- `os.path.isdir(real)` 或 `real` 不存在 → **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理），全不中 → 404。
+- `os.path.isfile(real)` → **静态分支**（.mako 已被上一条拦截，不会以静态形式吐出源码）；
+- `os.path.isdir(real)` → **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理），全不中 → 404；
+- `real` 不存在 → **尾挂回溯**（PATH_INFO 机制，对齐 PHP `AcceptPathInfo`）：逐级去掉末段向上——
+  - 父路径是**存在的文件**且 `.mako` → 渲染该文件，被去掉的部分（含前导 `/`）作为 `_SERVER['PATH_INFO']` 传入（如 `/index.mako/hello` → 渲染 `index.mako`，`PATH_INFO = '/hello'`）；
+  - 父路径是存在的文件但**非 .mako** → 404（静态文件不带尾挂，PHP 同语义，`style.css/hello` → 404）；
+  - 父路径是**存在的目录** → 停止回溯，对该目录走 index 兜底（`dir/x` 且 `dir` 是目录 → 兜底，与旧行为一致）；
+  - 父路径仍不存在 → 继续向上；回溯到 root 耗尽 → 404。
+
+  原第三分支「不存在 → index 兜底」系死逻辑（路径不存在则其下 index.* 更不可能存在），由回溯取代；`/`、`/dir/` 等目录请求行为不变。尾挂仅为传入脚本的字符串（URL 解码、规范化后的残余），不参与文件查找，无需额外防穿透（`..` 已在 3.2 step1 被钳制）。
+
+大小写归一用显式 `lower()` 而非 `os.path.normcase`——后者仅 Windows 转小写，Linux / 容器下恒等，会造成 `demo.MAKO` 在 Windows 走模板分支、在 Linux 走静态分支 404 的跨平台分裂；显式 `lower()` 保证「扩展名判断大小写不敏感」在所有平台行为一致（Linux 下磁盘真有 `demo.MAKO` 文件时同样渲染）。
 
 ### 3.4 模板分支
 
@@ -134,7 +146,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 ### 3.5 静态分支（扩展名白名单）
 
-判定在规范化后的 basename 上（3.3 已 normcase/lower，Windows 大小写变体统一）。内置白名单表（模块级 dict 常量，**弃用 mimetypes 模块**——其映射来自系统注册表，装软件即变，不可控）：
+判定在规范化后的 basename 上（3.3 已 lower 归一，各平台大小写变体统一）。内置白名单表（模块级 dict 常量，**弃用 mimetypes 模块**——其映射来自系统注册表，装软件即变，不可控）：
 
 | 类别 | 扩展名 | Content-Type |
 |------|--------|--------------|
@@ -145,15 +157,16 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 | 数据 | `.json` | `application/json`（无 charset，与 RESP.json 一致，RFC 8259） |
 | 图片 | `.png` / `.jpg` `.jpeg` / `.gif` / `.svg` / `.ico` / `.webp` | `image/png` / `image/jpeg` / `image/gif` / `image/svg+xml` / `image/x-icon` / `image/webp` |
 | 文档 | `.pdf` | `application/pdf` |
-| 压缩 | `.zip` / `.rar` / `.7z` / `.tar` / `.gz` `.tgz` | `application/zip` / `application/vnd.rar` / `application/x-7z-compressed` / `application/x-tar` / `application/gzip` |
+| 压缩 | `.zip` / `.rar` / `.7z` / `.tar` / `.gz` `.tgz` / `.xz` | `application/zip` / `application/vnd.rar` / `application/x-7z-compressed` / `application/x-tar` / `application/gzip` / `application/x-xz` |
 
 规则：
 
 1. 扩展名在白名单 → 按表设 Content-Type，读文件字节原样为 body（不转码；二进制类无 charset，文本类声明 utf-8——与 PRD「文本输出统一 UTF-8」契约对齐）；
 2. **白名单外一律 404**（`.py` / `.pyw` / `.pyo` / `.pyc` / `.php` / `.ini` / `.bak` / `.db` / `.log` / 无扩展名 / ...），与「不存在」同响应体（3.6，防探测原则）——fail-closed：源码、备份、数据库等杂物默认不可下载（makoserver.py 自身即被此条挡住）；
-3. **运行时敏感路径屏蔽**：请求 realpath 命中「实际加载的配置文件路径」或「已配置的 error_log / access_log 路径」→ 404。`.ini` 本就不在静态白名单（`makoserver.ini` / `settings.ini` 天然 404），但 `MAKOSERVER_CONF` 可指向任意文件名（含 `secret.json` 等白名单类型），日志路径亦可起名 `access.txt`，故屏蔽逻辑对所有命中的敏感路径生效（启动时记入集合，静态分支比对）——防 secret 与访客日志回吐；
-4. 读文件失败（权限/占用）→ 500；
-5. `If-Modified-Since` / 304 一期不做，一律 200 全量返回（本机场景带宽免费）。
+3. **谓词限制**：静态分支仅接受 GET / HEAD；其它谓词（POST / PUT / DELETE / PATCH）命中**白名单内且存在**的文件 → `405 Method Not Allowed`（附 `Allow: GET, HEAD`）。判定顺序在白名单之后——白名单外路径无论谓词一律 404（保持与「不存在」同体，不因 405 泄露文件存在性）。index 兜底落到 `index.html` / `index.htm` 时同受此限（`index.mako` 属模板分支，照常全谓词渲染）；
+4. **运行时敏感路径屏蔽**：请求 realpath 命中「实际加载的配置文件路径」或「已配置的 error_log / access_log 路径」→ 404。`.ini` 本就不在静态白名单（`makoserver.ini` / `settings.ini` 天然 404），但 `MAKOSERVER_CONF` 可指向任意文件名（含 `secret.json` 等白名单类型），日志路径亦可起名 `access.txt`，故屏蔽逻辑对所有命中的敏感路径生效（启动时记入集合，静态分支比对）——防 secret 与访客日志回吐；
+5. 读文件失败（权限/占用）→ 500；
+6. `If-Modified-Since` / 304 一期不做，一律 200 全量返回（本机场景带宽免费）。
 
 ### 3.6 404 响应
 
@@ -235,7 +248,17 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 
 HTTP 模式（自 WSGI environ 透传 + 提炼）：
 
-`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`、`PATH_INFO`、`CONTENT_TYPE`、`CONTENT_LENGTH`、`REMOTE_ADDR`、`SERVER_NAME`、`SERVER_PORT`、`REQUEST_SCHEME`（自 `wsgi.url_scheme`），以及全部 `HTTP_*` 头（environ 原名透传）。
+`REQUEST_METHOD`、`QUERY_STRING`、`CONTENT_TYPE`、`CONTENT_LENGTH`、`REMOTE_ADDR`、`SERVER_NAME`、`SERVER_PORT`、`REQUEST_SCHEME`（自 `wsgi.url_scheme`），以及全部 `HTTP_*` 头（environ 原名透传）。
+
+`SCRIPT_NAME` / `PATH_INFO` 按分支判定结果**覆写构造**（PHP `$_SERVER` 语义，非 environ 原样透传——脚本路径永远在 `SCRIPT_NAME`，尾挂在 `PATH_INFO`）：
+
+| 场景 | SCRIPT_NAME | PATH_INFO |
+|------|-------------|-----------|
+| 普通请求（`/demo.mako`，无尾挂） | 挂载前缀 + `/demo.mako` | `''` |
+| 尾挂请求（`/index.mako/hello`） | 挂载前缀 + `/index.mako` | `'/hello'` |
+| index 兜底渲染（`/dir/` → `dir/index.mako`） | 挂载前缀 + `/dir/` | `''` |
+
+（挂载前缀即 environ 原始 SCRIPT_NAME，如 `/app1`，无挂载时为空串。）
 
 CLI 模式（降级值）：
 
@@ -250,14 +273,14 @@ CLI 模式（降级值）：
 
 ### 6.5 _BODY / _JSON
 
-`_BODY` 为原始 body bytes（CLI 恒 `b''`）。`_JSON`：Content-Type 字符串包含子串 `json`（覆盖 `application/json`、`+json`、`text/json`）时 `json.loads(_BODY)`，**解析失败 → None**；不含 json → None。body 为空也 → None。
+`_BODY` 为原始 body bytes（CLI 恒 `b''`）。一期不设 `MAX_CONTENT_LENGTH`，body 全量读入内存（可信环境定位，公网上限见 hardening.md）。`_JSON`：Content-Type 字符串包含子串 `json`（覆盖 `application/json`、`+json`、`text/json`）时 `json.loads(_BODY)`，**解析失败 → None**；不含 json → None。body 为空也 → None。
 
 ### 6.6 RespObject 方法
 
 | 方法 | 行为（HTTP 模式） | CLI 模式 |
 |------|--------------------|-----------|
 | `write(*args)` | = `echo` | 同 echo（正常输出） |
-| `header(name, value)` | 记入待发 headers，后设覆盖先设；`Content-Type` 经此设置时完全覆盖默认值 | no-op |
+| `header(name, value)` | 记入待发 headers，后设覆盖先设；例外：`Set-Cookie` **追加不覆盖**（对齐 PHP `header('Set-Cookie: ...')` 可多次调用逐条下发，见 8）；`Content-Type` 经此设置时完全覆盖默认值 | no-op |
 | `status(code)` | 记入状态码，后设覆盖 | no-op |
 | `redirect(url, code=302)` | `header('Location', url)` + `status(code)`，**不终止渲染** | no-op |
 | `json(data)` | `header('Content-Type', 'application/json')` + `buffer.write(json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))`，**不终止渲染**（脚本自行 `return`） | Content-Type 丢弃，序列化文本照常写 buffer |
@@ -276,7 +299,9 @@ ts      = 十进制秒级时间戳（签发时刻）
 sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 ```
 
-校验：split 成三段（多段/缺段 → 无效）→ `hmac.compare_digest` 常量时间比签 → `now - ts` 按模式判过期。任一步失败视为**无 session**（`_SESSION` 为空 dict），不报错。
+校验：split 成三段（多段/缺段 → 无效）→ `hmac.compare_digest` 常量时间比签 → 过期判定 `now - ts >= lifetime`（到点即过期，等号含入，sliding/absolute 同式）。任一步失败视为**无 session**（`_SESSION` 为空 dict），不报错。
+
+解码注意：`data_b64` 签发时去掉了 `=` padding，校验通过后须补回 `data_b64 + b'=' * (-len(data_b64) % 4)` 再 `urlsafe_b64decode`——否则直接 `binascii.Error: Incorrect padding`（必踩实现坑）。
 
 ### 7.2 密钥派生（本机指纹）
 
@@ -295,7 +320,7 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 
 **缓存**：模块级计算一次后缓存（对应原函数 `fetch_uuid()` 的 memoize 做法）。
 
-效果与原函数一致：多分量容错（单一来源读取失败或漂移不影响整体稳定）、同机稳定、跨机不同、无需落盘。
+效果与原函数一致：多分量容错（单一来源读取失败或漂移不影响整体稳定）、同机稳定、跨机不同、无需落盘。极端退化警示：若全部分量采集失败（无 hostname、无 machine-id、无 MAC 的异常环境），secret 退化为固定常量、跨机相同——可信环境可接受，知悉即可。
 
 ### 7.3 签发 / 重签 / 过期规则表
 
@@ -310,6 +335,8 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 | 校验失败 / 过期 | `_SESSION` = 空 dict，按「无 session」行处理 | 同左 |
 
 （清空 `_SESSION` 属「改了数据」：absolute 下重签空数据 ts 继承，sliding 下 ts=now。）
+
+变更检测基于框架持有 dict 的快照比对，仅覆盖**原地修改**（`_SESSION['k'] = v` / `.update()` / `.clear()` / `del`）；模板中 `_SESSION = {...}` 属局部名重绑定，框架侧对象不变，判为「未写」、修改丢失——Python 语义使然（与 PHP `$_SESSION` 可整体重赋值不同），模板代码须原地增删改。
 
 ### 7.4 容量上限
 
@@ -326,7 +353,7 @@ sig     = hmac_sha256(secret, data_b64 + b'.' + ts).hexdigest()
 1. body = `buffer.getvalue()`；
 2. status = RESP 记录的 code（未设 → 200）；
 3. Content-Type：RESP 显式设置值 > 默认 `text/html; charset=utf-8`；
-4. 其余 RESP headers 逐个加入（后设覆盖先设；同名 Set-Cookie 多条并存）；
+4. 其余 RESP headers 逐个加入（后设覆盖先设；**Set-Cookie 例外**——`RESP.header` 设置的逐条追加、`RESP.setcookie` 按 cookie name 后设覆盖、session 的 Set-Cookie 独立追加，三者并存下发）；
 5. session 规则（7.3）决定是否追加 Set-Cookie；
 6. 组装 `flask.Response(body, status, headers)` 返回。
 
@@ -406,7 +433,7 @@ python makoserver.py [options] script [args...]
 | 通道 | 默认 | 配置后 |
 |------|------|--------|
 | error log | stderr | `error_log` 文件；logging `FileHandler`（append，UTF-8） |
-| access log | 不落盘（dev 走 Werkzeug 控制台自带输出；WSGI 交宿主） | `access_log` 文件；WSGI middleware 包裹 app 记录 |
+| access log | 不落盘（dev 走 Werkzeug 控制台自带输出；WSGI 交宿主） | `access_log` 文件；middleware 包裹 app 记录，**dev server 与 WSGI 两模式同样生效**（装配于 app 本身，与运行形态无关；dev 下与 Werkzeug 控制台输出并存） |
 
 - error log 内容：5xx traceback、启动错误、模板编译错误；格式 `%(asctime)s %(levelname)s %(message)s`；
 - access log 行格式：`{iso_time} {remote_addr} {method} {path} {status} {bytes}`（状态码与字节数自 WSGI 响应回读）；
@@ -418,19 +445,19 @@ python makoserver.py [options] script [args...]
 | 文件 | 覆盖点 |
 |------|--------|
 | `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录 |
-| `test_paths.py` | `../` 逃逸、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO`、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；拒绝与不存在同 404 响应体 |
+| `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、`dir/x`（dir 为目录）兜底不受影响 |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/` |
-| `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404；图片/压缩字节原样；404 与不存在响应体一致 |
+| `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
-| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
-| `test_session.py` | 签发/回带往返；篡改 data/ts/签名 → 空 dict；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime）；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
+| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
+| `test_session.py` | 签发/回带往返；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出 / `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
-| `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言） |
+| `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
 
 ## 13. 明确不做（一期）
 
-- `_FILES` 上传、限速、安全响应头、错误页脱敏开关（公网加固见 hardening.md）；
+- `_FILES` 上传、限速、请求体大小上限（`MAX_CONTENT_LENGTH`，一期 body 全量进内存）、安全响应头、错误页脱敏开关（公网加固见 hardening.md）；
 - 静态文件 304/Range；
 - 日志轮转、多 app 多 root 路由；
 - watchdog 及任何第三方依赖。
