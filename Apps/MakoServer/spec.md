@@ -27,7 +27,7 @@
 | 5 | 静态文件 Content-Type 兜底 | 并入 #12（弃用 mimetypes，改内置扩展名白名单，白名单外一律 404） |
 | 6 | 5xx 错误页内容 | 含完整 traceback（HTML 转义）+ 请求路径；traceback 同步写 error log |
 | 7 | 配置相对路径基准 | 通则：三条查找规则命中的配置文件，其中所有相对路径（含 `root`）均以**配置文件所在目录**为基准 |
-| 8 | `_SERVER` 的「请求路径」键名 | `PATH_INFO`（不引入 PHP/Apache 特有的 `REQUEST_URI`） |
+| 8 | `_SERVER` 的「请求路径」键名 | `PATH_INFO`（不引入 PHP/Apache 特有的 `REQUEST_URI`）——**后被 #16 / #17 修订**：`PATH_INFO` 收窄为尾挂语义（脚本路径并入 `SCRIPT_NAME`），`REQUEST_URI` 补入，以修订后为准 |
 | 9 | `_REQUEST` 合并顺序 | GET 与 POST 合并（POST 覆盖同名 GET），不含 cookie——对齐现代 PHP `request_order="GP"` 默认 |
 | 10 | `getlist` 可用范围 | `_GET` / `_POST` / `_REQUEST` 三者均支持（同一 PHPDict 实现） |
 | 11 | CLI 下 `_SERVER` 内容 | 固定降级值 + `argv`，详见 6.4 |
@@ -134,9 +134,9 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 - `name.endswith('.mako')` **且 `os.path.isfile(real)`** → **模板分支**（见 3.4）。`endswith` 不带 isfile 的旧写法会把**名为 `foo.mako` 的目录**送进模板分支，`open()` 抛 `IsADirectoryError` → 500，故加 isfile 收口；
 - `name.endswith('.mako')` 但**不是文件**（目录或不存在）→ 404（不进回溯——`/nonexist.mako/x` 回溯到 `nonexist.mako` 亦非文件、再到 root 是目录，结果同为 404，规则闭合）；
 - `os.path.isfile(real)` → **静态分支**（.mako 已被上面拦截，不会以静态形式吐出源码）；
-- `os.path.isdir(real)` → **目录请求**：先看 URL 尾部有无 `/`（`request.path.endswith('/')`；`request.path` 为解码态，`%2F` 会被解码成 `/` 而直接按带斜杠处理——边角行为，声明接受）——无（如 `/demo`）→ **301** 重定向，`Location = request.path + '/' + ('?' + QUERY_STRING)`（`request.path` 天然含 WSGI 挂载前缀如 `/app1`，实测确认；保留 query）；有（如 `/demo/`、`/`）→ **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理；**命中文件先过屏蔽集合比对**，命中 → 404，防 `error_log` 起名 `sub/index.mako` 经兜底旁路执行），全不中 → 404；
-- `real` 不存在 → **尾挂回溯**（PATH_INFO 机制，对齐 PHP `AcceptPathInfo`）：逐级去掉末段向上，**只找文件**——
-  - 父路径是**存在的文件**且 `.mako` → **先过屏蔽集合比对**（命中 → 404，防 `/log.mako/hello` 经回溯绕过初始 real 比对、旁路执行被屏蔽日志），通过则渲染该文件，被去掉的部分（含前导 `/`）作为 `_SERVER['PATH_INFO']` 传入（如 `/index.mako/hello` → 渲染 `index.mako`，`PATH_INFO = '/hello'`）；
+- `os.path.isdir(real)` → **目录请求**：先看 URL 尾部有无 `/`（`request.path.endswith('/')`；`request.path` 为解码态，`%2F` 会被解码成 `/` 而直接按带斜杠处理——边角行为，声明接受）——无（如 `/demo`）→ **301** 重定向，`Location = request.path + '/'`（QUERY_STRING 非空时才追加 `?query`，空 query 不挂裸 `?`）。`request.path` 天然含 WSGI 挂载前缀如 `/app1`（实测确认）；`request.path` 是解码态，但 **Werkzeug `redirect()` 会对 Location 自动重新百分号编码**（中文目录名实测出 `/%E4%B8%AD.../`，无碍）——实现者勿自行 `quote`，防双重编码。有尾斜杠（如 `/demo/`、`/`）→ **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理；**命中文件先 `os.path.realpath` 归一再过屏蔽集合比对**——`index.*` 本身可能是指向被屏蔽文件的符号链接，未解析直接比对即旁路，命中 → 404），全不中 → 404；
+- `real` 不存在 → **尾挂回溯**（PATH_INFO 机制，对齐 PHP `AcceptPathInfo`）：**在 `real`（realpath 产物）链上**逐级去掉末段向上（不得在未解析链接的 `full` / `rel` 拼合路径上判定——`isfile` 对符号链接返回 True，打开时才被 OS 重定向，`link.mako` → `log.mako` 的软链会在判定层蒙混），**只找文件**——
+  - 父路径是**存在的文件**且 `.mako` → **先过屏蔽集合比对**（real 链上的路径天然是真实路径，直接比对；防 `/log.mako/hello` 经回溯绕过初始 real 比对、旁路执行被屏蔽日志），通过则渲染该文件，被去掉的部分（含前导 `/`）作为 `_SERVER['PATH_INFO']` 传入（如 `/index.mako/hello` → 渲染 `index.mako`，`PATH_INFO = '/hello'`）；
   - 父路径是存在的文件但**非 .mako** → 404（静态文件不带尾挂，PHP 同语义，`style.css/hello` → 404）；
   - 父路径是**存在的目录** → 404（**不兜底**：Apache `mod_dir` 仅对显式目录请求生效，`/dir/x`（x 不存在）本就是 404）；
   - 父路径仍不存在 → 继续向上；回溯链耗尽（含到达 root）→ 404。root 是目录、按目录规则同样归 404，两条终止条件自然闭合，无「永不 404」漏洞。
@@ -172,7 +172,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 1. 扩展名在白名单 → 按表设 Content-Type，读文件字节原样为 body（不转码；二进制类无 charset，文本类声明 utf-8——与 PRD「文本输出统一 UTF-8」契约对齐）；
 2. **白名单外一律 404**（`.py` / `.pyw` / `.pyo` / `.pyc` / `.php` / `.ini` / `.bak` / `.db` / `.log` / 无扩展名 / ...），与「不存在」同响应体（3.6，防探测原则）——fail-closed：源码、备份、数据库等杂物默认不可下载（makoserver.py 自身即被此条挡住）；
 3. **谓词限制**：静态分支仅接受 GET / HEAD；其它谓词（POST / PUT / DELETE / PATCH）命中**白名单内且存在**的文件 → `405 Method Not Allowed`（附 `Allow: GET, HEAD`）。判定顺序在白名单之后——白名单外路径无论谓词一律 404（保持与「不存在」同体，不因 405 泄露文件存在性）。index 兜底落到 `index.html` / `index.htm` 时同受此限（`index.mako` 属模板分支，照常全谓词渲染）；
-4. **运行时敏感路径屏蔽**：比对对象是**最终解析到的目标文件路径**——初始 real（3.2 step5 先行比对，快速路径）、尾挂回溯命中的父文件、index 兜底命中的 index.*（3.3 各自终点比对），打开 / 渲染前收口，静态与模板两分支一体防护。屏蔽集合 =「实际加载的配置文件路径」+「已配置的 error_log / access_log 路径」（realpath 归一后存入，启动时构建）。`.ini` 本就不在静态白名单（`makoserver.ini` / `settings.ini` 天然 404），但 `MAKOSERVER_CONF` 可指向任意文件名（含 `secret.json` 等白名单类型），日志路径亦可起名 `access.txt` / **`log.mako`**——后者若不屏蔽，模板分支会把日志**当模板编译执行**（内容变可执行代码，兼泄露与 RCE；仅比对初始 real 挡不住 `/log.mako/hello` 的回溯旁路与 `/sub/` 的兜底旁路）。include / inherit 系模板作者自身行为、不经请求路由，不在屏蔽范围（与 PHP `include` 同理，信任边界内）；
+4. **运行时敏感路径屏蔽**：比对对象是**最终解析到的目标文件路径**——初始 real（3.2 step5 先行比对，快速路径）、尾挂回溯命中的父文件（real 链上操作、天然真实路径，见 3.3）、index 兜底命中的 index.*（**realpath 归一后比对**，见 3.3），打开 / 渲染前收口，静态与模板两分支一体防护；比对双方均以 realpath 归一（集合存 realpath，比对前对目标也 realpath），防 root 内指向被屏蔽文件的符号链接旁路。屏蔽集合 =「实际加载的配置文件路径」+「已配置的 error_log / access_log 路径」（启动时构建）。`.ini` 本就不在静态白名单（`makoserver.ini` / `settings.ini` 天然 404），但 `MAKOSERVER_CONF` 可指向任意文件名（含 `secret.json` 等白名单类型），日志路径亦可起名 `access.txt` / **`log.mako`**——后者若不屏蔽，模板分支会把日志**当模板编译执行**（内容变可执行代码，兼泄露与 RCE；仅比对初始 real 挡不住 `/log.mako/hello` 的回溯旁路与 `/sub/` 的兜底旁路）。include / inherit 系模板作者自身行为、不经请求路由，不在屏蔽范围（与 PHP `include` 同理，信任边界内）；
 5. 读文件失败（权限/占用）→ 500；
 6. `If-Modified-Since` / 304 一期不做，一律 200 全量返回（本机场景带宽免费）。
 
@@ -281,6 +281,8 @@ HTTP 模式（自 WSGI environ 透传 + 提炼）：
 | `SCRIPT_DIRNAME` | `os.path.dirname(SCRIPT_FILENAME)`（便利键，PHP 无同名超全局，语义同其 `__DIR__` 魔法常量） |
 
 **模板内文件访问契约**：模板里 `open()` 等相对路径的基准是**服务进程 cwd**（dev server = 启动时 shell 目录、WSGI = 宿主 cwd），随启动方式漂移且多线程共享，**勿依赖**；定位文件用 `os.path.join(_SERVER['SCRIPT_DIRNAME'], ...)`（自身目录）或 `_SERVER['DOCUMENT_ROOT']`（站点根）拼绝对路径。PHP web「cwd = 脚本目录」的行为因线程安全不可 chdir，改以显式拼路径等价兑现。
+
+三键（连同整个 `_SERVER`）**仅存在于模板渲染上下文**——静态分支、301、404 等无模板执行的场景不构造 `_SERVER`（PHP 的 `$_SERVER` 亦只存在于其脚本内，同语义）。
 
 CLI 模式（降级值）：
 
@@ -475,7 +477,7 @@ python makoserver.py [options] script [args...]
 | `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录 |
 | `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀（`/app1/demo` → `/app1/demo/`，不跳出应用）；带斜杠 `/demo/` 照常兜底**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）** |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/` |
-| `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；图片/压缩字节原样；404 与不存在响应体一致 |
+| `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；**root 内 `link.mako` 符号链接指向 `log.mako` → 直接请求与尾挂请求均 404（realpath 归一比对回归，防软链蒙混判定层）**；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底 |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False |
