@@ -42,6 +42,7 @@
 | 20 | OPTIONS 交给脚本 | 路由注册 `provide_automatic_options=False`——否则 Flask 默认自动应答 OPTIONS（200 + Allow 头），view 永不被调用、`REQUEST_METHOD='OPTIONS'` 传不到脚本；关闭后 OPTIONS 到达模板分支照常渲染（Apache + mod_php 同为执行脚本） |
 | 21 | 模板文件访问基准 | **不 chdir**（cwd 是进程级状态，dev server / WSGI 多线程共享进程，并发请求互相切目录 = 数据竞争；PHP 敢切靠的是单请求同步 worker 模型）；补 `_SERVER['SCRIPT_FILENAME']` / `['DOCUMENT_ROOT']` / `['SCRIPT_DIRNAME']`（前两键 PHP `$_SERVER` 标配，第三键为便利键 = dirname，语义同 PHP `__DIR__`）；模板定位文件用三键拼绝对路径，裸相对路径基准为进程 cwd、行为不保证 |
 | 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
+| 23 | PathInfoNormMiddleware（实现期修正） | 实测 Werkzeug 2.2 两处行为与 spec 初版假设不符，用前置 middleware 显式兑现：① merge_slashes 仅在首次匹配失败时才触发归一 308，而本站 catch-all `<path:>` 路由首次必命中，归一永不发生——由 middleware 对含 `//` 的 PATH_INFO 发 308 归并（保留前缀与 query）；② 挂载根无斜杠（空 PATH_INFO）时 matcher 自行 308 丢 query、请求到不了视图——middleware 把空 PATH_INFO 归一成 `'/'`、原始值记 `MAKO_RAW_PATH_INFO`，由视图按 3.3 发 301（保留 query）。详见 3.1 |
 
 ## 1. 单文件内部布局
 
@@ -53,6 +54,7 @@ makoserver.py 内部代码区块（自上而下）：
 | 常量 | 默认配置、扩展名、cookie 名等 |
 | 配置 | `load_config()` / 配置查找与合并 |
 | 路径 | `resolve_path()` 规范化与防穿透 |
+| 中间件 | `PathInfoNormMiddleware`（斜杠归一/308）/ `AccessLogMiddleware` |
 | 模板 | `TemplateStore`（自定义模板集合 + mtime 缓存） |
 | 缓冲 | `BytesBuffer` |
 | Bridge | `PHPDict` / `RespObject` / `make_bridge()` |
@@ -114,7 +116,7 @@ Flask app 仅注册两条路由（catch-all，禁用 static 路由）：
 
 WSGI 挂载前缀（SCRIPT_NAME）由 Flask/Werkzeug 自动剥除，view 收到的即 URL 尾部。全谓词的作用域：POST / PUT / DELETE / PATCH 到达**模板分支**时正常渲染，`_SERVER['REQUEST_METHOD']` 如实传递（REST 风格 API 由 .mako 脚本自行处理）；**静态分支不接受非 GET/HEAD**（405，见 3.5）。
 
-**Werkzeug 前置行为声明**（发生在本框架任何路径逻辑之前）：路由层默认 `merge_slashes=True`，`//a///b` 这类重复斜杠会被 Werkzeug 先发 **308** 归并重定向到 `/a/b`，view 收不到——属宿主层标准行为，保留默认（显式关闭则 `//` 请求直达 normpath、URL 不归一即服务，缓存键与 `REQUEST_URI` 呈现不一致）。故「全部路径逻辑在 resolve_path 收口」指 **merge_slashes 归一之后**的路径。
+**Werkzeug 前置行为声明与 PathInfoNormMiddleware**：spec 初版假设 `merge_slashes=True` 由 Werkzeug 在路由层自动发 **308** 归并重定向——**实测不成立**：Werkzeug 2.2 的 merge_slashes 仅在**首次匹配失败**时才重试归并（matcher 源码 `if self.merge_slashes and rv is None`），而本站 catch-all `<path:url_path>` 路由首次即可匹配任何带斜杠的路径（`//a` 直接命中、url_path 含双斜杠），归一重定向永不触发、view 直接拿到 `//a` 形态的路径（缓存键与 `REQUEST_URI` 呈现不一致）。故本框架用前置 **PathInfoNormMiddleware**（包裹于 `app.wsgi_app` 最内层、路由之前）显式兑现两件事：① `PATH_INFO` 含连续斜杠 → **308** 归并重定向到合并后路径（`SCRIPT_NAME` 前缀 + query 保留），对齐 spec 声明的行为；② 空/无前导斜杠的 `PATH_INFO` 归一成 `'/'`——Werkzeug 2.2 的 matcher 对空 `PATH_INFO`（挂载根无斜杠请求）会自行 308 到 `script_root + '/'` 且**丢失 query**、请求到不了视图，归一后由视图按 3.3 规则发 301（保留 query）；归一前的原始值记入 `MAKO_RAW_PATH_INFO` 供视图判定。故「全部路径逻辑在 resolve_path 收口」指 **middleware 归一之后**的路径。
 
 ### 3.2 路径解析算法（resolve_path）
 
@@ -139,7 +141,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 - `name.endswith('.mako')` 但**不是文件**（目录或不存在）→ 404（不进回溯——`/nonexist.mako/x` 回溯到 `nonexist.mako` 亦非文件、再到 root 是目录，结果同为 404，规则闭合。其中名为 `foo.mako` 的**目录**有意不做目录处理、不走 301 / index 兜底：目录名以 `.mako` 结尾系病态命名，若按目录处理则兜底 `foo.mako/index.*` 命中后 `SCRIPT_NAME` 以 `.mako` 结尾、与「.mako 后缀 = 可执行模板文件」的直觉契约冲突，简单一致的选择是一律 404）；
 - `os.path.isfile(real)` → **静态分支**（.mako 已被上面拦截，不会以静态形式吐出源码。**原始请求带尾斜杠（`trailing`）→ 404**：文件非目录，对齐 Apache「文件路径带尾斜杠 404」，与「静态不带尾挂」（`style.css/hello` → 404）精神一致——不查则 normpath 吃掉斜杠后照常 200，与尾挂 404 行为分裂。**trailing 规则仅作用于「初始 real 直接命中文件」的场景**：index 兜底目标（`/dir/` → `dir/index.html`）经目录分支「按对应分支处理」进入本分支，**豁免 trailing 判定**——目录请求的 trailing 恒为真，不豁免则所有落到 index.html / index.htm 的兜底全部 404，与 3.5 规则 3、test_http 的 405 预期直接冲突）；
 - `os.path.isdir(real)` → **目录请求**，按序两查：
-  - **挂载根无斜杠**（前置边角）：environ `PATH_INFO` 为空（`''`）且 `SCRIPT_NAME` 非空（挂载根如 `/app1`）→ **301** 到 `SCRIPT_NAME + '/'`（+ query）。必须本步先行拦截：Werkzeug 的 `request.path` 会把空 `PATH_INFO` **归一成 `'/'`**（源码 `raw_path.lstrip("/") and "/" + ... or "/"`），`endswith('/')` 判定失灵、静默走 index 兜底 → 页面挂在无斜杠 URL `/app1` 下，页内相对链接全按 `/` 解析错链——正是 301 补斜杠（决策 #18）要防的事故，判定须用 environ 原始 `PATH_INFO` 而非 `request.path`；
+  - **挂载根无斜杠**（前置边角）：**原始** `PATH_INFO` 为空（`''`）且 `SCRIPT_NAME` 非空（挂载根如 `/app1`）→ **301** 到 `SCRIPT_NAME + '/'`（+ query）。判定用 environ 的 `MAKO_RAW_PATH_INFO`（PathInfoNormMiddleware 归一前记录的原始值，见 3.1）——中间件已把空 `PATH_INFO` 归一成 `'/'` 使请求能到达视图，直接看 environ `PATH_INFO` 恒非空、判定失灵。必须本步先行拦截：Werkzeug 的 `request.path` 会把空 `PATH_INFO` **归一成 `'/'`**（源码 `raw_path.lstrip("/") and "/" + ... or "/"`），`endswith('/')` 判定失灵、静默走 index 兜底 → 页面挂在无斜杠 URL `/app1` 下，页内相对链接全按 `/` 解析错链——正是 301 补斜杠（决策 #18）要防的事故；
   - 其余：看 URL 尾部有无 `/`（`request.path.endswith('/')`；`request.path` 为解码态，`%2F` 会被解码成 `/` 而直接按带斜杠处理——边角行为，声明接受）——无（如 `/demo`）→ **301** 重定向，`Location = request.script_root + request.path + '/'`（QUERY_STRING 非空时才追加 `?query`，空 query 不挂裸 `?`）。**必须拼 `script_root`**：Werkzeug `Request.path` 只派生自 `PATH_INFO`、**不含**挂载前缀（前缀在 `request.script_root`，即 environ `SCRIPT_NAME`）——曾误判「request.path 天然含前缀」，系 test client 默认 `SCRIPT_NAME=''`、全路径进了 `PATH_INFO` 所致，测不出两者分离；真实挂载（`WSGIScriptAlias /app1`）下只拼 path 会得到 `/demo/` 而非 `/app1/demo/`、301 跳出应用。`request.path` 是解码态，但 **Werkzeug `redirect()` 会对 Location 自动重新百分号编码**（中文目录名实测无碍）——实现者勿自行 `quote`，防双重编码。有尾斜杠（如 `/demo/`、`/`）→ **index 兜底**：依次试 `<real>/index.mako`、`<real>/index.html`、`<real>/index.htm`（存在即按对应分支处理；**命中文件先 `os.path.realpath` 归一再过屏蔽集合比对**——`index.*` 本身可能是指向被屏蔽文件的符号链接，未解析直接比对即旁路，命中 → 404），全不中 → 404；
 - `real` 不存在 → **尾挂回溯**（PATH_INFO 机制，对齐 PHP `AcceptPathInfo`）：**在 `real`（realpath 产物）链上**逐级去掉末段向上，**只找文件**（不得在未解析链接的 `full` / `rel` 拼合路径上判定——注意两条链上 `isfile` 的存在性判定结果并无差异，**必须用 real 链的理由是屏蔽比对要拿真实路径**：realpath 已把符号链接解析掉，`link.mako` → `log.mako` 的软链在 real 链上天然是 `root/log.mako`、与屏蔽集合（存 realpath）正确比对；full 链上参与比对的 `root/link.mako` 不在集合而其真实目标在，比对放行、`open()` 时才被 OS 重定向到被屏蔽文件，旁路即成）——
   - 父路径是**存在的文件**且 `.mako` → **先过屏蔽集合比对**（real 链上的路径天然是真实路径，直接比对；防 `/log.mako/hello` 经回溯绕过初始 real 比对、旁路执行被屏蔽日志），通过则渲染该文件，被去掉的部分（含前导 `/`）作为 `_SERVER['PATH_INFO']` 传入——原始请求带尾斜杠时以 `trailing` 补回（`/index.mako/hello` → `PATH_INFO = '/hello'`；`/index.mako/hello/` → `PATH_INFO = '/hello/'`，对齐 Apache/mod_php——不补则 normpath 吃掉尾斜杠、原文丢失）；
@@ -470,7 +472,7 @@ python makoserver.py [options] script [args...]
 
 | 通道 | 默认 | 配置后 |
 |------|------|--------|
-| error log | stderr | `error_log` 文件；logging `FileHandler`（append，UTF-8） |
+| error log | stderr | `error_log` 文件；自实现 `_AppendFileHandler`（每条日志即时 append 打开写入，不长期持有句柄——避免 Windows 下持续锁文件影响清理/滚动；本机场景写入量小，开销可忽略；UTF-8） |
 | access log | 不落盘（dev 走 Werkzeug 控制台自带输出；WSGI 交宿主） | `access_log` 文件；middleware 包裹 app 记录，**dev server 与 WSGI 两模式同样生效**（装配于 app 本身，与运行形态无关；dev 下与 Werkzeug 控制台输出并存） |
 
 - error log 内容：5xx traceback、启动错误、模板编译错误；格式 `%(asctime)s %(levelname)s %(message)s`；
@@ -483,7 +485,7 @@ python makoserver.py [options] script [args...]
 | 文件 | 覆盖点 |
 |------|--------|
 | `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录；**root 不存在 / 非目录 → 启动报错退出（stderr 含 root 路径与来源；决策 #22）**；**`error_log` / `access_log` 父目录不存在 / 不可写 → 启动报错退出（append 探测失败；决策 #22 同哲学）** |
-| `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root、**跨盘符 junction 与 DOS 设备名（`/nul`、`/con.txt`，Windows）→ 404（commonpath ValueError 兜底回归，非 500）**；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀——`environ_overrides={'SCRIPT_NAME': '/app1'}` 构造（test client 默认 SCRIPT_NAME=''、测不出 script_root/path 分离），`/app1/demo` → `/app1/demo/` 不跳出应用；挂载根无斜杠（`/app1`，environ PATH_INFO=''）→ 301 `/app1/`（Werkzeug 空 PATH_INFO 归一 '/' 的静默兜底回归）；带斜杠 `/demo/` 照常兜底**；**裸尾斜杠：`/style.css/` → 404、`/demo.mako/` → 渲染 + `PATH_INFO='/'`、`/index.mako/hello/` → 渲染 + `PATH_INFO='/hello/'`（回溯场景 trailing 补回尾斜杠）**；**`//a` → 308（Werkzeug merge_slashes 前置归一，声明性断言）**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）** |
+| `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root、**跨盘符 junction 与 DOS 设备名（`/nul`、`/con.txt`，Windows）→ 404（commonpath ValueError 兜底回归，非 500）**；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀——`environ_overrides={'SCRIPT_NAME': '/app1'}` 构造（test client 默认 SCRIPT_NAME=''、测不出 script_root/path 分离），`/app1/demo` → `/app1/demo/` 不跳出应用；挂载根无斜杠（`/app1`，environ PATH_INFO=''）→ 301 `/app1/`（Werkzeug 空 PATH_INFO 归一 '/' 的静默兜底回归）；带斜杠 `/demo/` 照常兜底**；**裸尾斜杠：`/style.css/` → 404、`/demo.mako/` → 渲染 + `PATH_INFO='/'`、`/index.mako/hello/` → 渲染 + `PATH_INFO='/hello/'`（回溯场景 trailing 补回尾斜杠）**；**`//a` → 308（PathInfoNormMiddleware 归一，决策 #23）**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）** |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/`；**`/dir/`（有 index.html）→ 200（index 兜底豁免 trailing 判定回归——不豁免则目录请求恒 404）** |
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；**root 内 `link.mako` 符号链接指向 `log.mako` → 直接请求与尾挂请求均 404（real 链比对回归：full 链上链接路径不在集合、真实目标在，real 链已解析为真实路径直接命中）**；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；源码尾部空白截断（单块二进制脚本 `%>` 后空白/EOF 换行不污染）；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |

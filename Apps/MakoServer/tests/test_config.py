@@ -1,0 +1,243 @@
+# -*- coding: utf-8 -*-
+#======================================================================
+#
+# test_config.py - 配置查找 / 加载 / 启动校验 测试
+#
+#======================================================================
+
+import os
+import pytest
+
+
+#----------------------------------------------------------------------
+# 配置加载（load_config）
+#----------------------------------------------------------------------
+
+def test_load_basic (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('\n'.join([
+        '[makoserver]',
+        '# a comment',
+        '; another comment',
+        'root = ./www',
+        'session_lifetime = 600',
+        'session_mode = absolute',
+        'session_cookie = MYSESS',
+    ]), encoding='utf-8')
+    c = mako_mod.load_config(str(conf))
+    # 相对 root 以配置文件所在目录为基准
+    assert c['root'] == os.path.abspath(os.path.join(str(tmp_path), 'www'))
+    assert c['session_lifetime'] == 600
+    assert isinstance(c['session_lifetime'], int)
+    assert c['session_mode'] == 'absolute'
+    assert c['session_cookie'] == 'MYSESS'
+
+
+def test_load_secret_with_percent (tmp_path, mako_mod):
+    # interpolation=None 回归：含 % 的 secret 不抛 InterpolationSyntaxError
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nsecret = 100%sure%d\n', encoding='utf-8')
+    c = mako_mod.load_config(str(conf))
+    assert c['secret'] == '100%sure%d'
+
+
+def test_load_missing_section (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[other]\nx = 1\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.load_config(str(conf))
+    assert 'makoserver' in str(ei.value)
+
+
+def test_load_parse_error (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('this is not ini at all\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_load_bad_lifetime (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nsession_lifetime = abc\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_load_bad_mode (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nsession_mode = weird\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_unknown_key_ignored (tmp_path, mako_mod, capsys):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nport = 8080\nunknown_xyz = 1\n',
+                    encoding='utf-8')
+    c = mako_mod.load_config(str(conf))
+    assert 'port' not in c
+    assert 'unknown_xyz' not in c
+
+
+def test_close_miss_key_warns (tmp_path, mako_mod, capsys):
+    # session_lifetim 与 session_lifetime 相近 → stderr warning
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nsession_lifetim = 10\n', encoding='utf-8')
+    mako_mod.load_config(str(conf))
+    err = capsys.readouterr().err
+    assert 'session_lifetim' in err
+
+
+def test_relative_log_paths (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\naccess_log = logs/a.log\n'
+                    'error_log = logs/e.log\n', encoding='utf-8')
+    c = mako_mod.load_config(str(conf))
+    assert c['access_log'] == os.path.abspath(
+        os.path.join(str(tmp_path), 'logs', 'a.log'))
+    assert c['error_log'] == os.path.abspath(
+        os.path.join(str(tmp_path), 'logs', 'e.log'))
+
+
+#----------------------------------------------------------------------
+# 四级查找（find_config_file）
+#----------------------------------------------------------------------
+
+@pytest.fixture
+def conf_env (tmp_path, mako_mod, monkeypatch):
+    """构造四级查找的全部锚点：cli / env / 模块目录 / home。"""
+    module_dir = tmp_path / 'moddir'
+    module_dir.mkdir()
+    home_dir = tmp_path / 'home'
+    (home_dir / '.config' / 'makoserver').mkdir(parents=True)
+    monkeypatch.setattr(mako_mod, 'MODULE_DIR', str(module_dir))
+    monkeypatch.setattr(os.path, 'expanduser', lambda p: str(home_dir))
+    monkeypatch.delenv('MAKOSERVER_CONF', raising=False)
+    return {
+        'cli': tmp_path / 'cli.ini',
+        'env': tmp_path / 'env.ini',
+        'module': module_dir / 'makoserver.ini',
+        'home': home_dir / '.config' / 'makoserver' / 'settings.ini',
+    }
+
+
+def _touch (path):
+    path.write_text('[makoserver]\n', encoding='utf-8')
+    return str(path)
+
+
+def test_find_order_cli_first (conf_env, mako_mod, monkeypatch):
+    _touch(conf_env['cli'])
+    _touch(conf_env['env'])
+    _touch(conf_env['module'])
+    _touch(conf_env['home'])
+    monkeypatch.setenv('MAKOSERVER_CONF', str(conf_env['env']))
+    assert mako_mod.find_config_file(str(conf_env['cli'])) == \
+        os.path.abspath(str(conf_env['cli']))
+
+
+def test_find_order_env_second (conf_env, mako_mod, monkeypatch):
+    _touch(conf_env['env'])
+    _touch(conf_env['module'])
+    _touch(conf_env['home'])
+    monkeypatch.setenv('MAKOSERVER_CONF', str(conf_env['env']))
+    assert mako_mod.find_config_file() == \
+        os.path.abspath(str(conf_env['env']))
+
+
+def test_find_order_module_third (conf_env, mako_mod):
+    _touch(conf_env['module'])
+    _touch(conf_env['home'])
+    assert mako_mod.find_config_file() == \
+        os.path.abspath(str(conf_env['module']))
+
+
+def test_find_order_home_last (conf_env, mako_mod):
+    _touch(conf_env['home'])
+    assert mako_mod.find_config_file() == \
+        os.path.abspath(str(conf_env['home']))
+
+
+def test_find_none (conf_env, mako_mod):
+    assert mako_mod.find_config_file() is None
+
+
+def test_find_missing_file_continues (conf_env, mako_mod, monkeypatch):
+    # cli / env 指向不存在的文件 → 继续下寻
+    _touch(conf_env['home'])
+    monkeypatch.setenv('MAKOSERVER_CONF', str(conf_env['env']))
+    assert mako_mod.find_config_file(str(conf_env['cli'])) == \
+        os.path.abspath(str(conf_env['home']))
+
+
+#----------------------------------------------------------------------
+# root 优先级与启动校验
+#----------------------------------------------------------------------
+
+def test_cli_root_overrides_config (site, tmp_path, mako_mod):
+    www = tmp_path / 'www'
+    www.mkdir()
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\n' % str(www).replace('\\', '/'),
+                    encoding='utf-8')
+    app = mako_mod.create_app(root=str(site), conf_file=str(conf))
+    assert app.mako_server.root == os.path.abspath(str(site))
+
+
+def test_config_root_used (site, tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\n' % str(site).replace('\\', '/'),
+                    encoding='utf-8')
+    app = mako_mod.create_app(conf_file=str(conf))
+    assert app.mako_server.root == os.path.abspath(str(site))
+
+
+def test_default_root_fallback (site, tmp_path, mako_mod):
+    app = mako_mod.create_app(default_root=str(site))
+    assert app.mako_server.root == os.path.abspath(str(site))
+
+
+def test_root_missing_raises (tmp_path, mako_mod):
+    bad = str(tmp_path / 'nonexistent')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.create_app(root=bad)
+    msg = str(ei.value)
+    assert bad in msg or 'nonexistent' in msg
+    assert 'command line' in msg
+
+
+def test_root_not_dir_raises (tmp_path, mako_mod):
+    f = tmp_path / 'afile.txt'
+    f.write_text('x', encoding='utf-8')
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\n'
+                    % str(f).replace('\\', '/'), encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.create_app(conf_file=str(conf))
+    assert 'config' in str(ei.value)
+
+
+def test_log_parent_missing_raises (site, tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\nerror_log = nodir/e.log\n'
+                    % str(site).replace('\\', '/'), encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.create_app(conf_file=str(conf))
+    assert 'error_log' in str(ei.value)
+
+
+def test_access_log_parent_missing_raises (site, tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\naccess_log = nodir/a.log\n'
+                    % str(site).replace('\\', '/'), encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.create_app(conf_file=str(conf))
+    assert 'access_log' in str(ei.value)
+
+
+def test_config_with_root_missing_raises (tmp_path, mako_mod):
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = nowhere_dir\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError) as ei:
+        mako_mod.create_app(conf_file=str(conf))
+    assert 'config' in str(ei.value)
