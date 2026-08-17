@@ -32,10 +32,10 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 输出
 
-- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值。输出缓冲只有一个，统一存 bytes：参数是 bytes（含 bytearray）时直接追加，其它类型先 `str()` 再即时 UTF-8 编码追加——因此二进制内容（动态生成图片 / 文件下载等）直接 `echo(字节串)` 即可，无需单独的 raw 接口；
+- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值。输出缓冲只有一个，统一存 bytes：参数是 bytes（含 bytearray）时直接追加，`None` 输出空串（对齐 PHP 的 `echo null`），其它类型先 `str()` 再即时 UTF-8 编码追加——因此二进制内容（动态生成图片 / 文件下载等）直接 `echo(字节串)` 即可，无需单独的 raw 接口；
 - `RESP.write(*args)` —— `echo` 的规范名，挂在 `RESP` 对象上不受模板局部变量影响：即便 `echo` 被覆盖，规范名永远可用；
 - 模板中 `<% %>` 块之外的普通文本照旧直接输出，以上方式可混用；
-- **输出全程缓冲**：`echo()` / 文本块写入内部缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output，返回干净的 5xx 错误页；
+- **输出全程缓冲**：`echo()` / 文本块写入内部缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output，返回干净的 5xx 错误页；缓冲在实现上以自定义 Mako buffer 兑现（`write(str)` 即时 UTF-8 编码追加、`write(bytes)` 直通），不依赖 Mako 默认的文本 buffer；
 - **源码末尾空白截断**：读取 .mako 源文件后、编译前，统一删除源码末尾空白（空格 / tab / 换行）——文件末尾空白永远不属于输出内容。由此写精确二进制脚本（整文件单一 `<% %>` 块、二进制经 `echo(bytes)` 输出）时无需关心编辑器的 EOF 换行，`%>` 后的尾部空白不会污染输出；普通文本模板也获得统一行为（响应体末尾不保留源文件的尾部换行）。
 
 ### 请求（仿 PHP 超全局变量命名）
@@ -63,7 +63,8 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - `RESP.header(name, value)` / `RESP.status(code)` —— 设置响应 header、状态码（对应 PHP 的 `header()` / `http_response_code()`）；
 - `RESP.redirect(url, code=302)` —— 便捷重定向（等价于 PHP 的 `header('Location: ...')`）；
 - `RESP.json(data)` —— 便捷 JSON 响应（自动设置 Content-Type 并序列化）；参考 PHP 实现，**不主动退出**渲染，脚本需自行终止后续输出以防残留文本污染 body（Mako 模板顶层 `<% %>` 块内 `return` 即可终止渲染）；
-- `RESP.setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）。
+- `RESP.setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）；
+- 默认 Content-Type：脚本未显式设置时为 `text/html; charset=utf-8`（对齐 PHP 默认行为），二进制输出脚本（动态图片 / 下载等）需用 `RESP.header()` 显式指定类型。
 
 ### 第二期扩展（暂不实现）
 
@@ -72,7 +73,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 ### 说明
 
 - 跨请求持久化不提供内置支持，脚本自己读写文件即可（本机可信环境）；
-- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（随渲染结果写入 stdout）；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
+- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（渲染结果以原始字节写入 stdout 的 `sys.stdout.buffer`，保证二进制内容不损坏）；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
 
 ## 路径解析
 
