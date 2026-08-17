@@ -324,6 +324,14 @@ redirect 场景：脚本设了 302 + Location 但 body 已有内容 → 照发�
 
 traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 
+### 9.4 隔离边界（脚本 vs 宿主进程）
+
+.mako **不在沙箱中运行**（PRD 定位：等同本机运行脚本）。隔离程度分两层：
+
+- **已隔离**：Python 异常（编译错 / 运行错 / 脚本主动 raise）→ 500 页面，进程无恙；每请求的 bridge / buffer / session 均为一次性对象，脚本对其的污染不跨请求；partial buffer 渲染异常即丢弃；
+- **不设防**：进程级故障真实影响 makoserver——`os._exit()`、C 扩展段错误直接杀死进程；死循环请求挂起且一期无超时（GIL 调度下其他请求仍可服务，但该请求永不返回）；内存泄漏累加在宿主进程；模板亦可经 `echo.__globals__` 等路径触达模块全局（无沙箱的应有之义，信任边界靠「可信环境」定位承担）；
+- 进程级健壮性交部署层兜底：WSGI 多进程（gunicorn prefork）+ `--max-requests` 定期回收 + `--timeout` 杀死死循环（与 hardening.md「两层账」一致）；一期 dev server 单进程形态不提供。
+
 ## 10. 运行形态
 
 ### 10.1 独立 dev server
