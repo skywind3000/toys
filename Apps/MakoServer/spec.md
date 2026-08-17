@@ -43,6 +43,7 @@
 | 21 | 模板文件访问基准 | **不 chdir**（cwd 是进程级状态，dev server / WSGI 多线程共享进程，并发请求互相切目录 = 数据竞争；PHP 敢切靠的是单请求同步 worker 模型）；补 `_SERVER['SCRIPT_FILENAME']` / `['DOCUMENT_ROOT']` / `['SCRIPT_DIRNAME']`（前两键 PHP `$_SERVER` 标配，第三键为便利键 = dirname，语义同 PHP `__DIR__`）；模板定位文件用三键拼绝对路径，裸相对路径基准为进程 cwd、行为不保证 |
 | 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
 | 23 | PathInfoNormMiddleware（实现期修正） | 实测 Werkzeug 2.2 两处行为与 spec 初版假设不符，用前置 middleware 显式兑现：① merge_slashes 仅在首次匹配失败时才触发归一 308，而本站 catch-all `<path:>` 路由首次必命中，归一永不发生——由 middleware 对含 `//` 的 PATH_INFO 发 308 归并（保留前缀与 query）；② 挂载根无斜杠（空 PATH_INFO）时 matcher 自行 308 丢 query、请求到不了视图——middleware 把空 PATH_INFO 归一成 `'/'`、原始值记 `MAKO_RAW_PATH_INFO`，由视图按 3.3 发 301（保留 query）。详见 3.1 |
+| 24 | CLI stdin 渲染标记用 `-` 非 `--` | `python makoserver.py - [args...]` 从 stdin 读模板源并渲染。选**单减号**：POSIX Utility Syntax Guideline 13 规定操作数 `-` 即 stdin/stdout，cat / grep / sed / tar / curl / gcc / python / jq / pandoc / `kubectl apply -f -` / `docker build -` 全线同约定，PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`（本项目对标 PHP，天然契合）；`--` 被否决——它是 getopt/argparse 的**选项终止符**（POSIX Guideline 10），argparse 会吞掉首个 `--`、根本到不了位置参数，语义冲突且技术不可行。细则见 10.3 |
 
 ## 1. 单文件内部布局
 
@@ -211,7 +212,7 @@ realpath 结果缓存每请求重算（不做跨请求缓存，量小无所谓�
 | 模式 | `base_dir` |
 |------|-----------|
 | HTTP（serve / WSGI） | root |
-| CLI 渲染 | 被渲染脚本所在目录 |
+| CLI 渲染 | 被渲染脚本所在目录（stdin 渲染时为 cwd，见 10.3） |
 
 `adjust_uri`：`posixpath.join(posixpath.dirname(filenm), uri)` 归一化后返回，Mako 用其回调 `get_template`。
 
@@ -304,12 +305,12 @@ CLI 模式（降级值）：
 |----|----|
 | `REQUEST_METHOD` | `'GET'` |
 | `QUERY_STRING` | `''` |
-| `SCRIPT_NAME` | 脚本绝对路径 |
-| `SCRIPT_FILENAME` | 脚本绝对路径（= `SCRIPT_NAME`，对齐 PHP CLI 的同名键） |
-| `SCRIPT_DIRNAME` | 脚本所在目录 |
+| `SCRIPT_NAME` | 脚本绝对路径（stdin 渲染时为 `'-'`） |
+| `SCRIPT_FILENAME` | 脚本绝对路径（= `SCRIPT_NAME`，对齐 PHP CLI 的同名键；stdin 渲染时为 `'-'`） |
+| `SCRIPT_DIRNAME` | 脚本所在目录（stdin 渲染时为 cwd） |
 | `PATH_INFO` | `''` |
 | `REMOTE_ADDR` / `SERVER_NAME` / `SERVER_PORT` / `CONTENT_TYPE` / `CONTENT_LENGTH` | `''` |
-| `argv` | `[脚本路径] + 其余命令行参数`（argv[0] = 被渲染脚本自身，对齐 PHP CLI `$argv`） |
+| `argv` | `[脚本路径] + 其余命令行参数`（argv[0] = 被渲染脚本自身，stdin 渲染时为 `'-'`——对齐 PHP CLI `$argv`） |
 
 （`DOCUMENT_ROOT` / `REQUEST_URI` / `REQUEST_SCHEME` 不设——CLI 模式无 root / URL / scheme 概念，PHP CLI 亦无此三键。）
 
@@ -435,7 +436,7 @@ traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 ### 10.0 模式判定（互斥三分支）
 
 1. `__name__ != '__main__'`（被 import：mod_wsgi / gunicorn / uWSGI）→ **WSGI 模式**，模块级构建 `application`；
-2. `__main__` 且存在首个非选项位置参数 → **CLI 渲染模式**，该参数即脚本路径（**不限制 .mako 扩展名**，对齐 `php foo.txt` 照跑的习惯；文件不存在 → stderr 报错 exit 1）；
+2. `__main__` 且存在首个非选项位置参数 → **CLI 渲染模式**，该参数即脚本路径（**不限制 .mako 扩展名**，对齐 `php foo.txt` 照跑的习惯；文件不存在 → stderr 报错 exit 1；**单独一个 `-` 亦属位置参数**（argparse 对裸 `-` 按位置参数处理）→ stdin 渲染，见 10.3 与决策 #24）；
 3. `__main__` 且无位置参数 → **dev server 模式**。
 
 「检测 WSGI 环境」以 import 语义判定（`__name__`），不依赖环境变量——gunicorn / uWSGI 不设统一标志，mod_wsgi import 时请求 environ 尚不存在。
@@ -462,12 +463,14 @@ python makoserver.py [options]
 
 ```
 python makoserver.py [options] script [args...]
-  script    被渲染脚本路径（不限 .mako 扩展名，文件不存在 → stderr 报错 exit 1）
+  script    被渲染脚本路径（不限 .mako 扩展名，文件不存在 → stderr 报错 exit 1）；
+            传 `-` 时从 stdin 读取模板源渲染（POSIX 约定，决策 #24）
   args...   脚本名之后的一切参数不解析、原样透传（argparse REMAINDER），
             脚本经 _SERVER['argv'] 读取，argv[0] = script 自身（对齐 PHP $argv）
 ```
 
 - 不读配置文件（`--conf` / `-r` / `-p` / `--host` 在此模式静默忽略，PHP 式宽容。「静默忽略」= argparse 照常解析接受（如 `makoserver.py -r dir script.mako` 中 `dir` 作为 `-r` 的值被吞、`script.mako` 仍为位置参数）但**不产生任何副作用**——不读配置、不设 root；非报错，亦不逐参数剔除）；`TemplateStore.base_dir` = 脚本所在目录（4.3）；
+- **stdin 渲染**（`script` = `-`，决策 #24）：从 `sys.stdin.buffer` 读原始字节，按 `utf-8-sig` 解码（BOM 容忍，与文件加载一致；解码失败 → stderr 报错 exit 1），源码同样做尾部空白截断（rstrip，与 4.1 契约一致）后以 `Template(text=..., uri='<stdin>', lookup=store)` 纯内存编译；`TemplateStore.base_dir` = **cwd**（无脚本文件时 include/inherit 的唯一自然锚点）；`_SERVER` 三键降级：`SCRIPT_NAME` / `SCRIPT_FILENAME` = `'-'`、`SCRIPT_DIRNAME` = cwd；`argv[0]` = `'-'`（PHP CLI 读 stdin 时同为 `'-'`），其余参数照常透传（`makoserver.py - a b` → `argv = ['-', 'a', 'b']`）；
 - bridge 按 6.4/6.6 CLI 列降级；
 - 成功：`sys.stdout.buffer.write(body)`（原始字节，二进制安全）；
 - 失败：见 9.3。
@@ -498,7 +501,7 @@ python makoserver.py [options] script [args...]
 | `test_echo.py` | echo 类型矩阵：str/bytes/bytearray/None/int/混合多参；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底；**escape：HTML 五字符全转义（quote=True）、整数/浮点先 str() 再转义、纯返回值不写缓冲、RESP.escape 同一函数对象与覆盖兜底、CLI 照常可用** |
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False；setcookie `expires` 数值时间戳 → IMF-fixdate（UTC）格式断言 |
 | `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出（**含嵌套层级：`_SESSION['cart'].append(x)` 判「已写」重签——规范化 JSON 串深比较回归，absolute 模式防嵌套修改静默丢失**）/ `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；**值不可 JSON 序列化（datetime 等）→ 500（错误信息说明仅支持 JSON 类型）**；**`RESP.setcookie('MAKO_SESSION', ...)` 同名 → 丢弃不下发 + error log warning（session cookie 名独占回归）**；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
-| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1 |
+| `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1；**stdin 渲染（`-`，决策 #24）：基本渲染、argv[0]='-' 与三键降级（SCRIPT_NAME/FILENAME='-'、SCRIPT_DIRNAME=cwd）、include 基准 = cwd、尾部空白截断、BOM 容忍、渲染异常 exit 1** |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；**OPTIONS 请求 .mako 到达脚本渲染（`REQUEST_METHOD='OPTIONS'`，非 Flask 自动 Allow 应答——provide_automatic_options=False 回归）**；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
 
 ## 13. 明确不做（一期）

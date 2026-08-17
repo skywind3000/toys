@@ -106,7 +106,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - 整个 MakoServer 自身代码只有 `makoserver.py` 一个文件，第三方依赖仅 Flask、Mako 两个，除此之外不依赖任何第三方库，拷走单文件就能部署；
 - 这个 MakoServer 可以单独运行，指定一个根目录和端口就能启动一个 HTTP Server 提供页面服务；
 - 这个 MakoServer 也可以按 WSGI 的模式运行，它会寻找配置文件，从里面解析出根目录；找不到配置文件时，以 makoserver.py 自身所在目录为文档根目录（零配置即拷即用）；
-- 还可以单独传入一个 .mako 脚本，就像命令行运行 `php xxx.php` 那样渲染出来，结果写到 stdout；
+- 还可以单独传入一个 .mako 脚本，就像命令行运行 `php xxx.php` 那样渲染出来，结果写到 stdout；脚本名传 `-` 时从标准输入读取模板源渲染（POSIX 约定，`echo '<% echo(42) %>' | python makoserver.py -`，与 `cat` / `python -` / `jq` 等工具同习惯；PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`），include 基准为当前工作目录；
 - CLI 模式下 bridge 对象参考 PHP CLI 的降级语义：请求参数字典为空、请求方法为 `GET`、请求 body 为空、cookie 读取为空；`RESP.header()` / `RESP.status()` / `RESP.setcookie()` 等响应控制调用静默无效（no-op），不报错——保证同一个 .mako 脚本在 HTTP 和 CLI 两种模式下都能运行。
 
 ## 非功能需求

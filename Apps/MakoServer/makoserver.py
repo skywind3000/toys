@@ -5,7 +5,7 @@
 # makoserver.py - PHP-like dynamic page server based on Mako + Flask
 #
 # Created by skywind on 2026/08/18
-# Last Modified: 2026/08/18 05:34:46
+# Last Modified: 2026/08/18 05:45:53
 #
 # Serve .mako templates the way PHP serves .php files: drop files
 # into a document root and every "*.mako" is rendered per request
@@ -34,10 +34,13 @@
 #
 #   3. CLI rendering (like "php script.php"):
 #        python makoserver.py script.mako [args...]
+#        echo '<% echo(6 * 7) %>' | python makoserver.py -
 #      Renders a single script and writes the raw bytes to stdout;
-#      everything after the script name is passed through verbatim
-#      as _SERVER['argv'] (argv[0] = the script itself). No config
-#      file is read in this mode.
+#      a script name of "-" reads the template source from stdin
+#      (POSIX convention; includes resolve against cwd). Everything
+#      after the script name is passed through verbatim as
+#      _SERVER['argv'] (argv[0] = the script itself, "-" for stdin).
+#      No config file is read in this mode.
 #
 # Configuration is a single-section INI ([makoserver]), searched in
 # order: --conf FILE > env MAKOSERVER_CONF > makoserver.ini next to
@@ -1226,14 +1229,28 @@ def create_app (root=None, conf_file=None, default_root=None,
 
 def render_cli (script, args):
     """Render a single script like "php xxx.php", writing the result
-    to stdout. Exits with 1 on failure."""
-    script_abs = os.path.abspath(script)
-    if not os.path.isfile(script_abs):
-        sys.stderr.write('makoserver: no such file: %s\n' % script)
-        sys.exit(1)
-    base_dir = os.path.dirname(script_abs)
+    to stdout. A script name of '-' reads the template source from
+    stdin (POSIX convention; PHP CLI likewise uses argv[0] = '-' for
+    stdin scripts). Exits with 1 on failure."""
+    if script == '-':
+        # stdin mode: read raw bytes and decode like a template file
+        # (utf-8-sig, BOM tolerated); includes resolve against cwd,
+        # the only natural anchor when there is no script file
+        base_dir = os.getcwd()
+        try:
+            text = sys.stdin.buffer.read().decode('utf-8-sig')
+        except UnicodeDecodeError:
+            sys.stderr.write('makoserver: stdin is not valid UTF-8\n')
+            sys.exit(1)
+        script_abs = '-'
+    else:
+        text = None
+        script_abs = os.path.abspath(script)
+        if not os.path.isfile(script_abs):
+            sys.stderr.write('makoserver: no such file: %s\n' % script)
+            sys.exit(1)
+        base_dir = os.path.dirname(script_abs)
     store = TemplateStore(base_dir)
-    uri = os.path.basename(script_abs)
     buf = BytesBuffer()
     echo = make_echo(buf)
     resp = RespObject(echo, cli=True)
@@ -1265,7 +1282,14 @@ def render_cli (script, args):
         'RESP': resp,
     }
     try:
-        tpl = store.get_template(uri)
+        if text is not None:
+            # stdin source: same trailing-whitespace truncation
+            # contract as file loading (whitespace at EOF is never
+            # part of the output)
+            tpl = Template(text=text.rstrip(), lookup=store,
+                           uri='<stdin>', input_encoding='utf-8')
+        else:
+            tpl = store.get_template(os.path.basename(script_abs))
         ctx = mako_runtime.Context(buf, **bridge)
         ctx._outputting_as_unicode = False
         ctx._set_with_template(tpl)
@@ -1299,7 +1323,8 @@ def main (argv=None):
     parser.add_argument('--version', action='version',
                         version='makoserver.py ' + __version__)
     parser.add_argument('script', nargs='?', default=None,
-                        help='render a single script and exit (CLI mode)')
+                        help='render a single script and exit (CLI mode); '
+                             "use '-' to read the script from stdin")
     parser.add_argument('args', nargs=argparse.REMAINDER,
                         help='arguments passed to the script verbatim')
     opts = parser.parse_args(argv)

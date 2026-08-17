@@ -13,9 +13,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MAKO = os.path.join(os.path.dirname(HERE), 'makoserver.py')
 
 
-def run_cli (args, cwd=None):
+def run_cli (args, cwd=None, data=None):
     return subprocess.run([sys.executable, MAKO] + list(args),
-                          capture_output=True, cwd=cwd)
+                          capture_output=True, cwd=cwd, input=data)
 
 
 def test_stdout_bytes_exact (tmp_path):
@@ -176,3 +176,61 @@ def test_escape_cli (tmp_path):
     r = run_cli([str(script)], cwd=str(tmp_path))
     assert r.returncode == 0
     assert r.stdout == b'&lt;b&gt;|42'
+
+
+#----------------------------------------------------------------------
+# stdin 渲染（script = '-'，POSIX 约定）
+#----------------------------------------------------------------------
+
+def test_stdin_render (tmp_path):
+    r = run_cli(['-'], cwd=str(tmp_path), data=b'<% echo("IN", 6 * 7) %>')
+    assert r.returncode == 0
+    assert r.stdout == b'IN42'
+
+
+def test_stdin_argv_and_script_keys (tmp_path):
+    # argv[0]='-'（对齐 PHP CLI stdin），SCRIPT_NAME/FILENAME='-'，
+    # SCRIPT_DIRNAME=cwd
+    tpl = ('<% s = _SERVER %>'
+           '<% echo(";".join(s["argv"]), "|", s["SCRIPT_NAME"], "|", '
+           's["SCRIPT_FILENAME"], "|", s["SCRIPT_DIRNAME"]) %>')
+    r = run_cli(['-', 'one', '--flag'], cwd=str(tmp_path),
+                data=tpl.encode('utf-8'))
+    assert r.returncode == 0
+    argv, name, filename, dirname = r.stdout.decode('utf-8').split('|')
+    assert argv == '-;one;--flag'
+    assert name == '-' and filename == '-'
+    assert os.path.normcase(dirname) == os.path.normcase(str(tmp_path))
+
+
+def test_stdin_include_base_is_cwd (tmp_path):
+    # stdin 模式 include 基准 = cwd
+    (tmp_path / 'inc.mako').write_text('INC', encoding='utf-8')
+    r = run_cli(['-'], cwd=str(tmp_path),
+                data=b'[<%include file="inc.mako"/>]')
+    assert r.returncode == 0
+    assert r.stdout == b'[INC]'
+
+
+def test_stdin_trailing_whitespace_stripped (tmp_path):
+    # 尾部空白截断契约与文件加载一致
+    r = run_cli(['-'], cwd=str(tmp_path),
+                data=b'<% echo(b"\\x89PNG") %>\n\n  \n')
+    assert r.returncode == 0
+    assert r.stdout == b'\x89PNG'
+
+
+def test_stdin_bom_tolerated (tmp_path):
+    # utf-8-sig：BOM 前缀不进输出
+    r = run_cli(['-'], cwd=str(tmp_path),
+                data=b'\xef\xbb\xbf<% echo("BOM-OK") %>')
+    assert r.returncode == 0
+    assert r.stdout == b'BOM-OK'
+
+
+def test_stdin_render_exception_exit1 (tmp_path):
+    r = run_cli(['-'], cwd=str(tmp_path),
+                data=b'PARTIAL<% raise RuntimeError("boom") %>')
+    assert r.returncode == 1
+    assert r.stdout == b''
+    assert b'Traceback' in r.stderr and b'boom' in r.stderr
