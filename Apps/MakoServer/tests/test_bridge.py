@@ -7,6 +7,18 @@
 
 import os
 import json
+import inspect
+
+
+def _set_cookie (cli, name, value):
+    """test client 塞 cookie，兼容 Werkzeug 两代签名：
+    >=2.3 为 set_cookie(key, value)，旧版为 (server_name, key, value)。
+    值原样透传（不做编码），适合构造读侧解码用例。"""
+    params = list(inspect.signature(cli.set_cookie).parameters)
+    if params and params[0] == 'server_name':
+        cli.set_cookie('localhost', name, value)
+    else:
+        cli.set_cookie(name, value)
 
 
 #----------------------------------------------------------------------
@@ -211,15 +223,28 @@ def test_json_empty_body_none (site, wf, client_factory):
 def test_cookie_dict (site, wf, client_factory):
     wf('t.mako', '<% echo(_COOKIE.get("ck", "-")) %>')
     cli = client_factory(site)
-    # 兼容 Werkzeug 两代 test client set_cookie 签名
-    import inspect
-    params = list(inspect.signature(cli.set_cookie).parameters)
-    if params and params[0] == 'server_name':
-        cli.set_cookie('localhost', 'ck', 'vv')
-    else:
-        cli.set_cookie('ck', 'vv')
+    _set_cookie(cli, 'ck', 'vv')
     r = cli.get('/t.mako')
     assert r.data == b'vv'
+
+
+def test_cookie_value_percent_decoded (site, wf, client_factory):
+    # _COOKIE 值 percent-decode（PHP $_COOKIE urldecode 语义，决策 #31）
+    wf('t.mako', '<% echo(_COOKIE.get("ck", "-")) %>')
+    cli = client_factory(site)
+    _set_cookie(cli, 'ck', 'a%3Bb')
+    r = cli.get('/t.mako')
+    assert r.data == b'a;b'
+
+
+def test_cookie_raw_plus_kept (site, wf, client_factory):
+    # 字面 + 保留不解为空格——与 PHP 的有意分歧（决策 #31），
+    # 防解坏第三方原样下发的含裸 + 的 base64 cookie
+    wf('t.mako', '<% echo(_COOKIE.get("ck", "-")) %>')
+    cli = client_factory(site)
+    _set_cookie(cli, 'ck', 'YWJj+dGVzdA')
+    r = cli.get('/t.mako')
+    assert r.data == b'YWJj+dGVzdA'
 
 
 #----------------------------------------------------------------------

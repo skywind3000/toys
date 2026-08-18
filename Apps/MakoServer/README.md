@@ -148,7 +148,7 @@ root/common/siteutil.py   →   <%! from common.siteutil import tagline %>
 | `RESP.status(code)` | 设置状态码 |
 | `RESP.redirect(url, code=302)` | 重定向 |
 | `RESP.json(data)` | JSON 响应（自动设 Content-Type）；**不主动退出**，需要时在 `<% %>` 块内 `return` 终止渲染 |
-| `RESP.setcookie(name, value, *, max_age=None, expires=None, path='/', domain=None, secure=False, httponly=False, samesite=None)` | 设置 cookie，参数语义同 PHP `setcookie()` |
+| `RESP.setcookie(name, value, *, max_age=None, expires=None, path='/', domain=None, secure=False, httponly=False, samesite=None)` | 设置 cookie，参数语义同 PHP `setcookie()`；值默认 percent-encode（`_COOKIE` 读取侧自动解码），原样下发用 `RESP.header('Set-Cookie', ...)`（= `setrawcookie()`） |
 | `RESP.write(*args)` / `RESP.writeraw(*args)` / `RESP.escape(value)` | 见输出节 |
 
 默认 Content-Type 为 `text/html; charset=utf-8`；输出二进制（动态图片 / 下载等）用 `echoraw()` 并以 `RESP.header('Content-Type', ...)` 显式指定类型（`echoraw` 不代设）。
@@ -194,6 +194,7 @@ secret = s3cr3t-key             # _SESSION 签名密钥（缺省=本机指纹派
 session_lifetime = 3600         # 会话超时秒数
 session_mode = sliding          # sliding / absolute
 session_cookie = MAKO_SESSION   # 会话 cookie 名
+max_body = 67108864             # 请求体上限（字节），默认 64MB，<=0 不限制
 access_log = /var/log/makoserver/access.log   # 可选，缺省不落盘
 error_log  = /var/log/makoserver/error.log    # 可选，缺省写 stderr
 ```

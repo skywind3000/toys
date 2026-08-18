@@ -45,13 +45,14 @@
 | 22 | 启动校验（root 与日志路径） | dev / WSGI 启动时校验最终 root 存在且为目录，否则**报错退出**（stderr 带 root 路径与来源）——静默带病运行会 realpath 照算、全站 404，极具迷惑性；已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写，append 模式探测打开），失败同样报错退出——否则延迟到装配 FileHandler 或首条日志才炸，WSGI 下 stderr 无人看；CLI 无 root / 日志概念不校验 |
 | 23 | PathInfoNormMiddleware（实现期修正） | 实测 Werkzeug 2.2 两处行为与 spec 初版假设不符，用前置 middleware 显式兑现：① merge_slashes 仅在首次匹配失败时才触发归一 308，而本站 catch-all `<path:>` 路由首次必命中，归一永不发生——由 middleware 对含 `//` 的 PATH_INFO 发 308 归并（保留前缀与 query）；② 挂载根无斜杠（空 PATH_INFO）时 matcher 自行 308 丢 query、请求到不了视图——middleware 把空 PATH_INFO 归一成 `'/'`、原始值记 `MAKO_RAW_PATH_INFO`，由视图按 3.3 发 301（保留 query）。详见 3.1 |
 | 24 | CLI stdin 渲染标记用 `-` 非 `--` | `python makoserver.py - [args...]` 从 stdin 读模板源并渲染。选**单减号**：POSIX Utility Syntax Guideline 13 规定操作数 `-` 即 stdin/stdout，cat / grep / sed / tar / curl / gcc / python / jq / pandoc / `kubectl apply -f -` / `docker build -` 全线同约定，PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`（本项目对标 PHP，天然契合）；`--` 被否决——它是 getopt/argparse 的**选项终止符**（POSIX Guideline 10），argparse 会吞掉首个 `--`、根本到不了位置参数，语义冲突且技术不可行。细则见 10.3 |
-| 25 | 注入名作用域属模板编写约定而非框架缺陷 | demo 留言板实测踩坑：`<%! %>`（模块级）里定义的辅助函数调用 `escape` → 编译正常、**运行时**被调才报 `NameError`（注入名仅存在于渲染作用域，见 6.7）。框架不做任何修复/兜底——Mako 两级作用域系模板引擎固有语义，强行把注入名塞进模板模块 globals 会引入跨请求共享可变状态（与 9.4 每请求隔离原则冲突）；以文档约定收口（PRD「注入名作用域」节），见 6.7 |
-| 25 | 注入名作用域与 `<%! %>` 编写约定 | bridge 注入名仅在渲染体作用域可见（6.7）；`<%! %>` 模块级函数引用注入名编译期无错、**运行时首次调用才 NameError**（demo 留言板 debug 面板实测踩中）——约定 `<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参 |
+| 25 | 注入名作用域属模板编写约定而非框架缺陷 | demo 留言板实测踩坑：`<%! %>`（模块级）里定义的辅助函数调用 `escape` → 编译正常、**运行时**首次被调才报 `NameError`（注入名仅存在于渲染作用域，见 6.7）。框架不做任何修复/兜底——Mako 两级作用域系模板引擎固有语义，强行把注入名塞进模板模块 globals 会引入跨请求共享可变状态（与 9.4 每请求隔离原则冲突）；以文档约定收口：`<%! %>` 只放 import 与纯函数，要碰注入名的辅助函数放 `<% %>` 或显式传参（PRD「注入名作用域」节，spec 6.7） |
 | 26 | root 尾部追加进 sys.path（站点本地模块 import） | dev / WSGI 启动时（create_app，启动校验后）把 `realpath(root)` **去重后 append 到 sys.path 尾部**，模板 `<%! %>` 即可点分 import root 下的 .py（py3 命名空间包，无需 `__init__.py`）。选尾部而非 insert(0)：标准库 / 已安装包优先，root 里同名 `json.py` 无法遮蔽标准库；CLI 无 root 概念不参与。细节见 2.5 |
 | 27 | 启动时 chdir 到 root 亦否决（#21 的补充论证） | #21 否的是每请求 chdir（多线程竞态）；启动时一次性 chdir 虽无竞态，仍否决，四条理由：① **cwd 是标量、sys.path 是集合**——同进程多 root（测试 / 多挂载）时 chdir 必然打架，sys.path 追加可共存；② **跨模式分裂**——HTTP chdir 到 root、CLI 无 root 只能留在启动目录，同一脚本裸相对路径两模式基准不同，违反 PRD 双模式契约（`SCRIPT_DIRNAME` 拼路径则两模式语义一致）；③ **WSGI 宿主公民**——cwd 是宿主进程级状态，mod_wsgi 同进程多应用 / gunicorn 多 app 会被改地板，mod_wsgi 官方明确警告；sys.path 追加是加法、chdir 是替换，侵入度不同量级；④ **漂移风险**——裸相对路径一旦有保证即被依赖，而任何代码 `os.chdir()` 都会让全进程线程的基准一起漂移。另：dev server 的 root 回退链默认值即 cwd，chdir 会永久丢失启动目录信息 |
 | 28 | Template 构造传 filename=（实测后收窄收益） | TemplateStore 构造 `Template(..., filename=模板绝对路径)`，CLI stdin 分支传 `'-'`。**实测修正预期**（初版假设「traceback 显示真实路径」不成立）：Mako 编译 `co_filename` 钉死为 module_id 变形名，运行时帧与 `__file__` 均不受 filename 影响；**唯一实证收益**：编译期 SyntaxException 消息多 `in file '<绝对路径>'` 子句（流入 500 页 / CLI stderr / error log）。不注入模块级 `__file__`（主人裁定：收益不抵行号偏移与双模式语义成本）；运行时帧换真路径留待有真实需求再做 |
 | 29 | CGI 模式检测与 root 回退 | 自动检测 `GATEWAY_INTERFACE` 以 `CGI` 开头（RFC 3875 主标志），兜底启发式 `REQUEST_METHOD` + `SCRIPT_FILENAME` / `PATH_TRANSLATED`（CGI 独有组合，交互 shell 不会出现）；检测先于 argparse（mod_cgi 无参数调起，argv 无位置参数，不先判会落入 dev server 分支）。零配置 root 回退服务器提供的 `DOCUMENT_ROOT`（而非 makoserver.py 所在目录——cgi-bin 放置下脚本目录无站点语义，与 #13 的 WSGI 零配置锚点有意区分）；配置搜索链不变、优先于 DOCUMENT_ROOT。实现为 `wsgiref.CGIHandler` 桥接同一个 Flask app，每请求一个进程；定位兜底运行形态（免 mod_wsgi）；不引入 FastCGI（flup 多年无人维护，要进程常驻请用 mod_wsgi daemon）。详见 10.4 |
 | 30 | 文本/二进制输出双通道重构（writeraw 短路） | 初版「单一 bytes 缓冲 + echo 兼容文本/二进制 + 源码 rstrip」三件套被整体替换，动机三条：① 字节缓冲注入依赖 `mako.runtime` 私有协议（`_outputting_as_unicode` / `_render_context`），Mako 升级即脆断；② echo 同时兼容 str/bytes 的 flaky 分支消除——**echo 只收文本**，bytes 抛 TypeError（快速失败，报错指引 writeraw）；③ 文本模板末尾 rstrip 反直觉——**源码全程不 rstrip**，尾部换行忠实保留。二进制改走 `RESP.writeraw(*args)` / 别名 `echoraw`：只收 bytes-like（str 亦抛 TypeError，通道严格对偶）、追加写独立二进制缓冲；**调用过即置 raw 标志（零参数也算）**，组装时短路丢弃全部文本输出、body 只取二进制缓冲；短路仅作用于 body（header / status / cookie / session 照常），Content-Type 不代设（默认仍 text/html，脚本自行 `RESP.header`）。文本缓冲退化为 StringIO，渲染改用公开 API `Context` + `render_context`（rstrip 一删，TemplateStore 拒绝 TemplateLookup 的原始理由消失，但 mtime_ns+size 缓存 / BOM / 错误形态已钉死有测试覆盖，保留不重构） |
+| 31 | setcookie 值 percent-encode（语义对齐 PHP，字节形态有意分歧） | 外部 review 实测：`setcookie('k', 'a;b,c=d e')` 原样下发，含 `;` 的值被浏览器截断——与对标的 PHP `setcookie()`（默认 urlencode）行为分裂。修正为**写侧 `urllib.parse.quote(str(value), safe='')`、读侧 `_COOKIE` 值 `unquote`**（PHP `$_COOKIE` urldecode 的对应物，往返闭合）。**与 PHP 非逐字节一致，三处分歧（有意取舍）**：① 写侧空格 → `%20`（PHP urlencode 为 `+`）；② 写侧 `~` 不编码（PHP 为 `%7E`，纯外观、无互操作影响）；③ 读侧字面 `+` **保留不解为空格**（PHP 会解）——不选 `unquote_plus` 是为了不解坏同域第三方系统原样下发的含裸 `+` 的 base64 cookie（PHP `$_COOKIE` 会坏，著名坑）。**JS 互操作结论**：主流 `encodeURIComponent` / `decodeURIComponent` 系代码双向直用；PHP 惯用的读侧加固 `v.replace(/\+/g,' ')` 亦兼容（本框架输出无裸 `+`，replace 恒为 no-op）；唯一不兼容是写侧刻意 `空格→+` 模仿 urlencode 的 JS（值会读出字面 `+`）。session codec 直读 `request.cookies` 不受读侧解码影响（其值域为 base64url/数字/hex，无 `%`）。**原样逃生舱** = `RESP.header('Set-Cookie', ...)`（对标 PHP `setrawcookie()`，8 节既有语义不变）。副作用声明：非本框架写入、值恰含 `%XX` 字面量的第三方 cookie 会被 `_COOKIE` 解码——PHP 同病，对标即接受 |
+| 32 | 请求体上限 max_body（默认 64MB） | `_BODY` 经 `get_data(cache=True)` 全量进内存，无上限时一次误操作的大 POST 即可耗尽内存——即使可信环境也给宽松默认。配置键 `max_body`（int 字节，默认 67108864 = 64MB，**≤ 0 = 不限制**），映射 Flask `MAX_CONTENT_LENGTH`，超限由 Werkzeug 标准 413 应答（不自绘错误页）；CLI 模式无请求体不参与。原「一期不设上限」条目（13 节）由此收回 |
 
 ## 1. 单文件内部布局
 
@@ -83,10 +84,11 @@ makoserver.py 内部代码区块（自上而下）：
 | `session_lifetime` | int | 3600 | session 有效期（秒） |
 | `session_mode` | str | `sliding` | `sliding` / `absolute` |
 | `session_cookie` | str | `MAKO_SESSION` | session cookie 名 |
+| `max_body` | int | 67108864（64MB） | 请求体大小上限（字节），映射 Flask `MAX_CONTENT_LENGTH`，超限 413；`<= 0` 不限制（决策 #32） |
 | `access_log` | str | 空（不落盘） | access log 文件路径 |
 | `error_log` | str | 空（stderr） | error log 文件路径 |
 
-未知键忽略不报错（向前兼容）；若未知键与已知键拼写相近（如 `session_lifetim`），向 stderr 打一条 warning（非阻塞，防拼写错被静默吞掉回落默认值）——「相近」**钉死为 `difflib.get_close_matches(name, 已知键列表, n=1, cutoff=0.8)` 非空即 warn**（实现唯一、无裁量空间；无相近匹配的未知键静默忽略）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；**构造 `ConfigParser(interpolation=None)`**——默认的 `BasicInterpolation` 会对 `%` 做插值展开，含 `%` 的值（如手写 secret）直接抛 `InterpolationSyntaxError`，必须显式关闭；`session_lifetime` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
+未知键忽略不报错（向前兼容）；若未知键与已知键拼写相近（如 `session_lifetim`），向 stderr 打一条 warning（非阻塞，防拼写错被静默吞掉回落默认值）——「相近」**钉死为 `difflib.get_close_matches(name, 已知键列表, n=1, cutoff=0.8)` 非空即 warn**（实现唯一、无裁量空间；无相近匹配的未知键静默忽略）。配置文件格式为 **INI**（`configparser`，标准库）：单节 `[makoserver]`，键值均为字符串，支持 `#` / `;` 行注释；**构造 `ConfigParser(interpolation=None)`**——默认的 `BasicInterpolation` 会对 `%` 做插值展开，含 `%` 的值（如手写 secret）直接抛 `InterpolationSyntaxError`，必须显式关闭；`session_lifetime` / `max_body` 读出后显式 `int()` 转换。值按 configparser 语义 strip 首尾空白（secret 勿带首尾空格）。配置非法（缺 `[makoserver]` 节、解析错、int 转换失败）按用途分级处理——WSGI/serve 启动时直接报错退出（带文件路径，configparser 异常自带行号）；仅 CLI 渲染模式不读配置、不受影响。
 
 `port` / `host` **不进配置文件**（决策 #15）：它们只对 dev server 一个模式生效（WSGI 监听由宿主决定、CLI 不读配置），属进程启动参数而非站点属性，纯命令行 `-p` / `--host` 提供（见 10.1）。
 
@@ -109,7 +111,7 @@ serve 模式下第 2 条的「入口脚本同目录」即 makoserver.py 所在�
 - dev server：`-r/--root` > 配置文件 `root` > **当前工作目录**（对齐 `php -S` 默认 docroot = cwd 的行为；默认 host=127.0.0.1 仅监听回环，暴露面可控）；
 - **root 存在性启动校验**（决策 #22）：dev / WSGI 启动时校验最终确定的 root 存在且为目录（`os.path.isdir`）——不存在或非目录 → **报错退出**（stderr 带 root 路径与来源，如 `root=/nonexistent (from config)`），不静默带病运行（否则 realpath 照算、全站 404，极具迷惑性）；CLI 无 root 概念不校验。回退链默认值（cwd）同样过此校验，路径统一。已配置的 `error_log` / `access_log` 同受启动校验（父目录存在且可写——探测方式：以 append 模式试开一次即关；失败报错退出，同「报错退出优于带病运行」哲学，否则延迟到装配 FileHandler 或首条日志才炸、WSGI 下 stderr 无人看）；
 - WSGI：配置文件 `root` > **makoserver.py 所在目录**（`__file__` 取 abspath 后 dirname；不回退 cwd——WSGI 进程的工作目录不可靠，如 mod_wsgi 常为 `/`）。零配置即拷即用：单文件放进站点目录就能跑；
-- 其余键（`secret` / `session_*` / `access_log` / `error_log`）：仅配置文件 > 内置默认（无命令行对应参数）；
+- 其余键（`secret` / `session_*` / `max_body` / `access_log` / `error_log`）：仅配置文件 > 内置默认（无命令行对应参数）；
 - `port` / `host` 为**纯命令行参数**（默认 5000 / `127.0.0.1`），不进配置文件——作用域分界：进程启动参数走命令行，站点与部署属性走配置文件；WSGI 模式监听由宿主决定，配置该键本就无效。
 
 ### 2.5 root 与 sys.path（站点本地模块 import，决策 #26）
@@ -131,7 +133,8 @@ root/
 3. **模块缓存预期**：导入的 .py 进 `sys.modules` 后常驻，**编辑后需重启服务才生效**（与 .mako 的 mtime 热重载不同）——长生命周期资源（DB / Redis 客户端等）放这里正合适，频繁改动的逻辑仍应写在 .mako 里；
 4. **模块级单例**：`sys.modules` 保证全进程（含所有模板）共享同一模块对象，不随任何模板重编译重建；注意它是跨请求共享状态，并发正确性由模块自己负责（同 9.4 边界声明）；
 5. **安全白送**：`.py` 不在静态白名单（3.5 规则 2），辅助模块放 root 内永远不会经 HTTP 泄露；
-6. **不自动加模板同目录**（曾考虑的首访追加方案被否）：跨目录同名模块先到先得、全局生效，静默拿错包的排查成本过高；root 相对点分路径足够覆盖需求且无歧义。
+6. **不自动加模板同目录**（曾考虑的首访追加方案被否）：跨目录同名模块先到先得、全局生效，静默拿错包的排查成本过高；root 相对点分路径足够覆盖需求且无歧义；
+7. **多站点同进程风险声明**：`sys.path` 是进程级集合——同进程挂多个 root（mod_wsgi 同 daemon 多应用 / gunicorn 单进程多 app）时各 root 依次追加，py3 命名空间包按 `sys.path` 顺序先到先得，**两个站点的同名顶层包（如都叫 `common/`）会互相串站**（先追加的 root 胜出，后者静默拿到别人的模块）。规避方式二选一：各站点顶层包名自行错开（如 `site1_common`），或生产部署给每个站点独立进程（mod_wsgi 独立 daemon process group / gunicorn 分实例——prefork 隔离本就是 9.4 推荐形态）。框架不做 import 隔离（PEP 302 钩子级隔离的复杂度远超本项目定位）。
 
 ## 3. 请求处理流水线
 
@@ -290,47 +293,11 @@ Mako 生成代码对模板文本块调用 `context.write(str)` 写入 StringIO�
 | `_POST` | PHPDict | `request.form` |
 | `_SERVER` | dict | 见 6.4 |
 | `_JSON` | dict/None | 见 6.5 |
-| `_COOKIE` | dict | `request.cookies` 普通 dict |
+| `_COOKIE` | dict | `request.cookies`，值逐个 `urllib.parse.unquote`（PHP `$_COOKIE` urldecode 的对应物，与 `RESP.setcookie` 写侧编码配对；**字面 `+` 保留不解为空格**——与 PHP 的有意分歧，见决策 #31；session codec 直读 `request.cookies` 不经此解码） |
 | `_SESSION` | dict | 见 7 |
 | `RESP` | RespObject | 见 6.6 |
 
 （`RESP.write` 是 RespObject 属性 = `echo` 同一函数对象；`RESP.escape` 同理 = `escape` 同一函数对象；`echoraw` = `RESP.writeraw` 绑定方法，规范名兜底关系与 echo/RESP.write 一致。）
-
-### 6.7 注入名作用域（模板编写约定）
-
-Mako 模板编译为一个 Python 模块，代码块分两级作用域：
-
-| 块 | 编译到 | 执行时机 | 名字解析 |
-|----|--------|----------|----------|
-| `<%! %>` | 模板模块级 | 模板加载编译时一次 | 模板模块 globals + builtins |
-| `<% %>` / `${ }` | `render_body()` 函数体 | 每请求一次 | 含 6.1 全部注入名 |
-
-注入名经 `template.render(context, **bridge)` 每请求传入，只是 `render_body` 的局部名，**不在模板模块 globals 里**——`<%! %>` 里的函数引用它们，Python 按常规模块级规则解析，调用时才 `NameError`（编译不报错；函数只在特定分支被调时平时页面一切正常，延迟暴露）。框架不兜底（决策 #25），编写约定三条：
-
-1. `<%! %>` 只放 import 与纯函数（参数进、结果出，不碰注入名）；
-2. 要用注入名的辅助函数定义在 `<% %>` 块内（每请求重定义，闭包捕获注入名）；
-3. 模块级工具函数需转义时，把 `escape` 作参数显式传入，或改用标准库 `html.escape(..., quote=True)`（与 6.2 `escape` 语义等价）。
-
-（注：`echo.__globals__` 指向 makoserver 模块命名空间——可从中读 `__version__` 等模块级常量，但 `echo` / `escape` 系 `make_bridge()` 内嵌套定义，不在该 globals 里，此路不通，勿用。）
-
-### 6.7 注入名作用域（模板编写约定）
-
-Mako 模板编译成一个 Python 模块，代码块分两层作用域：
-
-| 块 | 编译产物 | 执行时机 | 可见名字 |
-|----|----------|----------|----------|
-| `<%! %>` | 模块级代码 | 模板加载编译时**一次** | 模板模块 globals + builtins |
-| `<% %>` / `${ }` | `render_body()` 函数体 | **每请求**一次 | 上列 + 渲染注入名 |
-
-12 个注入名经 `template.render(context, **bridge)` 传入，是 `render_body` 的 kwargs/局部名，**不在模板模块的 globals 里**。因此 `<%! %>` 中定义的函数调用时按常规 Python 规则在模块 globals 查名，查不到 `escape` / `echo` / `_GET` 等 → `NameError`。失败形态的三个延迟叠加使其极具迷惑性：① 编译不报错（注入名是合法标识符）；② 运行时才查名（函数被调用那一刻）；③ 若该函数仅特定分支调用（如 `?debug=1` 面板），平时页面一切正常。
-
-编写约定（对模板作者）：
-
-1. `<%! %>` 只放 import 与纯函数（参数进、结果出，绝不引用注入名）；
-2. 需要注入名的辅助函数定义在 `<% %>` 块内（每请求定义，闭包捕获注入名，量小无所谓）；
-3. 模块级工具函数确需转义时：显式把 `escape` 作参数传入，或 `import html` 用 `html.escape(..., quote=True)`（与 6.2 的 `escape` 语义等价）。
-
-注：`echo.__globals__` 是 makoserver.py 的模块命名空间（6.4 注记的取 `__version__` 技巧同源），但 `echo` / `escape` 本身是 make_bridge 内的局部函数、不在该 globals 里，**勿**用 `echo.__globals__['escape']` 作模块级兑子。
 
 ### 6.2 echo(*args) / echoraw(*args) / escape(value)
 
@@ -391,7 +358,7 @@ CLI 模式（降级值）：
 
 ### 6.5 _BODY / _JSON
 
-`_BODY` 为原始 body bytes（CLI 恒 `b''`）。一期不设 `MAX_CONTENT_LENGTH`，body 全量读入内存（可信环境定位，公网上限见 hardening.md）。`_JSON`：Content-Type 字符串包含子串 `json`（覆盖 `application/json`、`+json`、`text/json`）时 `json.loads(_BODY)`，**解析失败 → None**；不含 json → None。body 为空也 → None。
+`_BODY` 为原始 body bytes（CLI 恒 `b''`）。大小受配置键 `max_body` 约束（默认 64MB，映射 Flask `MAX_CONTENT_LENGTH`，超限 Werkzeug 标准 413，`<= 0` 不限制，决策 #32），限内 body 全量读入内存（可信环境定位，公网加固另见 hardening.md）。`_JSON`：Content-Type 字符串包含子串 `json`（覆盖 `application/json`、`+json`、`text/json`）时 `json.loads(_BODY)`，**解析失败 → None**；不含 json → None。body 为空也 → None。
 
 ### 6.6 RespObject 方法
 
@@ -404,9 +371,28 @@ CLI 模式（降级值）：
 | `status(code)` | 记入状态码，后设覆盖 | no-op |
 | `redirect(url, code=302)` | `header('Location', url)` + `status(code)`，**不终止渲染** | no-op |
 | `json(data)` | `header('Content-Type', 'application/json')` + `buffer.write(json.dumps(data, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))`，**不终止渲染**（脚本自行 `return`） | Content-Type 丢弃，序列化文本照常写 buffer |
-| `setcookie(name, value='', *, max_age=None, expires=None, path='/', domain=None, secure=False, httponly=False, samesite=None)` | 记入待发 cookies，同名后设覆盖 | no-op |
+| `setcookie(name, value='', *, max_age=None, expires=None, path='/', domain=None, secure=False, httponly=False, samesite=None)` | 记入待发 cookies，同名后设覆盖；**值 `urllib.parse.quote(str(value), safe='')` 编码下发**（语义对齐 PHP `setcookie()` 的默认编码，含 `;` / `,` / 空格的值不被 cookie 语法截断；字节形态为 RFC 3986 percent-encode——空格 `%20` 非 PHP 的 `+`，与 PHP 的分歧明细及 JS 互操作结论见决策 #31；读侧 `_COOKIE` 对应解码）；原样通道用 `RESP.header('Set-Cookie', ...)`（= PHP `setrawcookie()`） | no-op |
 
 `json.dumps` 抛 TypeError（不可序列化对象）→ 渲染异常 → 500。`application/json` 不附加 charset（RFC 8259 默认 UTF-8）。
+
+### 6.7 注入名作用域（模板编写约定）
+
+Mako 模板编译成一个 Python 模块，代码块分两层作用域：
+
+| 块 | 编译产物 | 执行时机 | 可见名字 |
+|----|----------|----------|----------|
+| `<%! %>` | 模块级代码 | 模板加载编译时**一次** | 模板模块 globals + builtins |
+| `<% %>` / `${ }` | `render_body()` 函数体 | **每请求**一次 | 上列 + 渲染注入名 |
+
+12 个注入名经 `template.render(context, **bridge)` 传入，是 `render_body` 的 kwargs/局部名，**不在模板模块的 globals 里**。因此 `<%! %>` 中定义的函数调用时按常规 Python 规则在模块 globals 查名，查不到 `escape` / `echo` / `_GET` 等 → `NameError`。失败形态的三个延迟叠加使其极具迷惑性：① 编译不报错（注入名是合法标识符）；② 运行时才查名（函数被调用那一刻）；③ 若该函数仅特定分支调用（如 `?debug=1` 面板），平时页面一切正常。框架不做修复/兜底（决策 #25）。
+
+编写约定（对模板作者）：
+
+1. `<%! %>` 只放 import 与纯函数（参数进、结果出，绝不引用注入名）；
+2. 需要注入名的辅助函数定义在 `<% %>` 块内（每请求定义，闭包捕获注入名，量小无所谓）；
+3. 模块级工具函数确需转义时：显式把 `escape` 作参数传入，或 `import html` 用 `html.escape(..., quote=True)`（与 6.2 的 `escape` 语义等价）。
+
+注：`echo.__globals__` 是 makoserver.py 的模块命名空间（6.4 注记的取 `__version__` 技巧同源），但 `echo` / `escape` 本身是 make_bridge 内的局部函数、不在该 globals 里，**勿**用 `echo.__globals__['escape']` 作模块级兑子。
 
 ## 7. Session
 
@@ -581,22 +567,22 @@ Apache mod_cgi / mod_cgid 调起 makoserver.py（cgi-bin 放置或 `Action` 映�
 
 | 文件 | 覆盖点 |
 |------|--------|
-| `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录；**root 不存在 / 非目录 → 启动报错退出（stderr 含 root 路径与来源；决策 #22）**；**`error_log` / `access_log` 父目录不存在 / 不可写 → 启动报错退出（append 探测失败；决策 #22 同哲学）** |
+| `test_config.py` | 四级查找命中即用（`--conf` > `MAKOSERVER_CONF` > 同目录 ini > settings.ini）；`--conf`/`MAKOSERVER_CONF` 文件不存在继续下寻；相对路径基准（root/log 路径均相对配置文件目录）；`-r` 覆盖配置 `root`；配置含 `port` 键被忽略（不报错）；非法 INI 报错（缺 `[makoserver]` 节 / 解析错 / `session_lifetime` 非整数）；**含 `%` 的 secret 正常读出（interpolation=None 回归，不抛 InterpolationSyntaxError）**；注释行与未知键忽略；dev server root 三级回退（-r > 配置 > cwd）；WSGI 零配置回退 makoserver.py 所在目录；**root 不存在 / 非目录 → 启动报错退出（stderr 含 root 路径与来源；决策 #22）**；**`error_log` / `access_log` 父目录不存在 / 不可写 → 启动报错退出（append 探测失败；决策 #22 同哲学）**；**`max_body`：非整数 → 报错退出、自定义小值生效、`<= 0` 不限制（决策 #32）** |
 | `test_paths.py` | `../` 逃逸（钳制后落 root 内 404）、绝对路径注入、`..%2f` 解码后穿透、尾部点 `demo.mako.`、`demo.MAKO` 跨平台一致走模板分支（lower 归一，非 normcase）、`demo.mako::$DATA`（Windows）、realpath 符号链接出 root、**跨盘符 junction 与 DOS 设备名（`/nul`、`/con.txt`，Windows）→ 404（commonpath ValueError 兜底回归，非 500）**；**`%00` 空字节 → 404（非 500）**；**名为 `foo.mako` 的目录 → 404（非 500）**；拒绝与不存在同 404 响应体；请求 `/` 放行进 index 兜底（不被 root 本身拒绝）；**目录无尾斜杠（`/demo`，demo 为目录）→ 301 + Location `/demo/`（query 保留）；WSGI 挂载场景 Location 含前缀——`environ_overrides={'SCRIPT_NAME': '/app1'}` 构造（test client 默认 SCRIPT_NAME=''、测不出 script_root/path 分离），`/app1/demo` → `/app1/demo/` 不跳出应用；挂载根无斜杠（`/app1`，environ PATH_INFO=''）→ 301 `/app1/`（Werkzeug 空 PATH_INFO 归一 '/' 的静默兜底回归）；带斜杠 `/demo/` 照常兜底**；**裸尾斜杠：`/style.css/` → 404、`/demo.mako/` → 渲染 + `PATH_INFO='/'`、`/index.mako/hello/` → 渲染 + `PATH_INFO='/hello/'`（回溯场景 trailing 补回尾斜杠）**；**`//a` → 308（PathInfoNormMiddleware 归一，决策 #23）**；尾挂回溯：`index.mako/hello` 渲染 index.mako + `PATH_INFO='/hello'`、`style.css/hello` → 404、`a/b/c` 全不存在逐级回溯耗尽 404、**`dir/x`（dir 为目录、x 不存在）→ 404（不兜底 dir/index.*，对齐 Apache mod_dir）**；**非 ASCII 路径 308 归并 / 非 ASCII 挂载前缀 301 的 Location 百分号编码正确（latin-1 解码舞步回归，见 3.1）** |
 | `test_index.py` | 目录请求三级兜底顺序；全部未命中 404；root 请求 `/`；**`/dir/`（有 index.html）→ 200（index 兜底豁免 trailing 判定回归——不豁免则目录请求恒 404）** |
 | `test_static.py` | 白名单矩阵逐扩展名断言 Content-Type（html/htm/txt/css/js/json/png/jpg/gif/svg/ico/webp/pdf/zip/xz/...）；白名单外 404（.py/.pyc/.php/.ini/.bak/.db/.log/无扩展名）；非 GET/HEAD（PUT/DELETE）命中白名单内文件 → 405 + `Allow: GET, HEAD`，白名单外路径 PUT 仍 404；扩展名大写归一（`.PNG` → image/png）；makoserver.py 自身 404；命中的配置文件路径 404；已配置日志路径 404（**含起名 `log.mako` 的模板分支场景：直接请求、尾挂 `/log.mako/hello` 回溯、`/sub/` 兜底命中被屏蔽 `sub/index.mako`——三条路径全 404，旁路全堵**）；**root 内 `link.mako` 符号链接指向 `log.mako` → 直接请求与尾挂请求均 404（real 链比对回归：full 链上链接路径不在集合、真实目标在，real 链已解析为真实路径直接命中）**；图片/压缩字节原样；404 与不存在响应体一致 |
 | `test_template.py` | 基本渲染；mtime 变更后 reload；**尾部保留**：文本模板尾部换行忠实保留（不 rstrip）、二进制脚本经 echoraw 短路 `%>` 后空白/EOF 换行不污染；BOM 文件；include/inherit 相对解析（HTTP 与 CLI 两基准） |
 | `test_echo.py` | echo 文本类型矩阵：str/None/int/混合多参；**bytes/bytearray/memoryview → TypeError → 500（错误信息含 "echo() accepts text only"）**；RESP.write 同一函数；echo 被局部变量覆盖后 RESP.write 兜底；**writeraw/echoraw：二进制 body、多次调用/多参数追加、短路文本（文本块与 echo 输出整体丢弃）、EOF 换行不污染、不代设 Content-Type（默认仍 text/html）、手工 `RESP.header('Content-Type')` 生效、短路只作用于 body（status/header/cookie 照常）、零参数调用亦短路、`echoraw == RESP.writeraw`、echoraw 被覆盖后 RESP.writeraw 兜底、str 参数 → TypeError → 500**；escape：HTML 五字符全转义（quote=True）、整数/浮点先 str() 再转义、纯返回值不写缓冲、RESP.escape 同一函数对象与覆盖兜底、CLI 照常可用 |
 | `test_buffer.py` | 公开 API 渲染路径单元测试（Context + render_context + StringIO，不触私有成员）：文本块与 echo 交错、UTF-8、尾部换行保留、echo(bytes) TypeError、writeraw 追加与 raw 标志（含零参数）、writeraw(str) TypeError、未用 writeraw 时标志为假 |
-| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False；setcookie `expires` 数值时间戳 → IMF-fixdate（UTC）格式断言 |
+| `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False；setcookie `expires` 数值时间戳 → IMF-fixdate（UTC）格式断言；**`_COOKIE` 值 percent-decode（`%3B` → `;`）、字面 `+` 保留不解为空格（与 PHP 分歧钉死，决策 #31）** |
 | `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出（**含嵌套层级：`_SESSION['cart'].append(x)` 判「已写」重签——规范化 JSON 串深比较回归，absolute 模式防嵌套修改静默丢失**）/ `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；**值不可 JSON 序列化（datetime 等）→ 500（错误信息说明仅支持 JSON 类型）**；**`RESP.setcookie('MAKO_SESSION', ...)` 同名 → 丢弃不下发 + error log warning（session cookie 名独占回归）**；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含 echoraw 二进制输出与短路）；echo(bytes) → TypeError → exit 1；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1；**stdin 渲染（`-`，决策 #24）：基本渲染、argv[0]='-' 与三键降级（SCRIPT_NAME/FILENAME='-'、SCRIPT_DIRNAME=cwd）、include 基准 = cwd、尾部空白保留（不 rstrip）、echoraw 短路、BOM 容忍、渲染异常 exit 1** |
 | `test_cgi.py` | 子进程级模拟 CGI 环境（隔离 HOME 防 `~/.config` 泄漏）：模板渲染与 Content-Type；零配置 root = DOCUMENT_ROOT；GET/POST 参数；PATH_INFO 尾挂；静态白名单命中与白名单外 404；配置 root 覆盖 DOCUMENT_ROOT（MAKOSERVER_CONF）；无 GATEWAY_INTERFACE 时靠 REQUEST_METHOD + SCRIPT_FILENAME 兜底检测；CLI 渲染不被 CGI 检测劫持（shell 环境无 CGI 标志） |
-| `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；**OPTIONS 请求 .mako 到达脚本渲染（`REQUEST_METHOD='OPTIONS'`，非 Flask 自动 Allow 应答——provide_automatic_options=False 回归）**；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
+| `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；**OPTIONS 请求 .mako 到达脚本渲染（`REQUEST_METHOD='OPTIONS'`，非 Flask 自动 Allow 应答——provide_automatic_options=False 回归）**；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染；**setcookie 值编码往返（`a;b,c=d e` → percent-encode 下发、回带经 `_COOKIE` 解码复原，决策 #31）、字节形态钉死（空格 → `%20` 非 `+`、字面 `+` → `%2B`——输出无裸 `+`）与 `RESP.header('Set-Cookie')` 原样通道对照**；**POST 超 `max_body` → 413（默认 64MB 上限存在性回归，决策 #32）** |
 
 ## 13. 明确不做（一期）
 
-- `_FILES` 上传、限速、请求体大小上限（`MAX_CONTENT_LENGTH`，一期 body 全量进内存）、安全响应头、错误页脱敏开关（公网加固见 hardening.md）；
+- `_FILES` 上传、限速、安全响应头、错误页脱敏开关（公网加固见 hardening.md；请求体大小上限已由 `max_body` 提供，默认 64MB，决策 #32）；
 - 静态文件 304/Range；
 - 日志轮转、多 app 多 root 路由；
 - watchdog 及任何第三方依赖。

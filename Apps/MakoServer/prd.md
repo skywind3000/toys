@@ -52,8 +52,8 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - `_REQUEST` —— 合并的请求参数字典（对应 PHP 的 `$_REQUEST`），支持 `getlist(name)` 获取同名多值（如 `?tag=a&tag=b`）；
 - `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
 - `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REQUEST_URI`（原始请求 URI 原文含 query，编码态不受解码 / 规范化影响）、`SCRIPT_FILENAME`（实际渲染脚本的绝对路径，尾挂 / 兜底场景跟随最终渲染目标）、`SCRIPT_DIRNAME`（脚本所在目录，语义同 PHP 的 `__DIR__`）、`DOCUMENT_ROOT`（文档根绝对路径）——模板内文件访问**勿依赖**进程 cwd（随启动方式漂移、多线程共享不保证），定位文件用此三键拼绝对路径（PHP web「cwd = 脚本目录」因线程安全不可 chdir，以显式拼路径等价兑现）、`REMOTE_ADDR`（客户端 IP）、`CONTENT_TYPE` / `CONTENT_LENGTH`（请求体类型与长度，POST 场景高频）、`SERVER_NAME` / `SERVER_PORT` / `REQUEST_SCHEME`（服务端地址信息）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
-- `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；
-- `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；
+- `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；请求体大小受配置键 `max_body` 约束（默认 64MB，超限返回 413，配 `<= 0` 可解除限制）——即使可信环境，也防一次误操作的大 POST 吃光内存；
+- `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；值经 percent-decode（对应 PHP `$_COOKIE` 的 urldecode，与 `RESP.setcookie` 的写侧编码配对；字面 `+` 保留不解为空格——与 PHP 的有意分歧，防解坏第三方 base64 cookie，见 spec 决策 #31）；
 - `_SESSION` —— 会话字典（对应 `$_SESSION`），一期实现，方案如下：
   - 基于**签名 cookie + 时间戳**，无服务端存储，天然兼容 WSGI 多进程；
   - session cookie 固定 `Path=/; HttpOnly; SameSite=Lax`，不设 Max-Age / Expires（浏览器会话 cookie，对齐 PHP 默认 `session.cookie_lifetime=0`）；过期控制由服务端时间戳判定独立承担；
@@ -71,7 +71,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - `RESP.header(name, value)` / `RESP.status(code)` —— 设置响应 header、状态码（对应 PHP 的 `header()` / `http_response_code()`）；
 - `RESP.redirect(url, code=302)` —— 便捷重定向（等价于 PHP 的 `header('Location: ...')`）；
 - `RESP.json(data)` —— 便捷 JSON 响应（自动设置 Content-Type 并序列化）；参考 PHP 实现，**不主动退出**渲染，脚本需自行终止后续输出以防残留文本污染 body（Mako 模板顶层 `<% %>` 块内 `return` 即可终止渲染）；
-- `RESP.setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）；
+- `RESP.setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）；**值默认 percent-encode 下发**（语义对齐 PHP `setcookie()` 的默认编码：含 `;` / `,` / 空格的值不会被 cookie 语法截断；字节形态与 PHP urlencode 有意分歧——空格编为 `%20` 而非 `+`，明细与 JS 互操作结论见 spec 决策 #31），`_COOKIE` 读取侧对应解码、往返闭合；需要原样下发时用 `RESP.header('Set-Cookie', ...)`（对标 PHP 的 `setrawcookie()`）；
 - 默认 Content-Type：脚本未显式设置时为 `text/html; charset=utf-8`（对齐 PHP 默认行为），二进制输出脚本（动态图片 / 下载等）需用 `RESP.header()` 显式指定类型——`RESP.writeraw()`/`echoraw()` 只短路 body，**不会**代为设置 Content-Type。
 
 ### 第二期扩展（暂不实现）
@@ -80,7 +80,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 说明
 
-- **模板辅助函数的作用域约定**：Mako 模板有两层 Python 作用域——`<%! %>` 是模块级（模板加载时执行一次）、`<% %>` / `${ }` 是渲染体（每请求执行一次）。bridge 注入的 12 个名字（`echo` / `echoraw` / `escape` / `_GET` / `_SESSION` / `RESP` 等）只存在于渲染作用域，`<%! %>` 里的函数引用它们会在**运行时首次被调用时**才报 NameError（编译不报错，极具迷惑性）。约定：`<%! %>` 里只放 import 与纯函数（参数进、结果出，不碰注入名）；要用注入名的辅助函数放 `<% %>` 里，或把注入名作为参数显式传入；
+- **模板辅助函数的作用域约定**：见下文「注入名作用域（模板编写约定）」一节（bridge 注入名只存在于渲染作用域，`<%! %>` 模块块里引用会延迟到运行时才报 NameError——完整规则与失败形态见该节，此处不复述）；
 - 跨请求持久化不提供内置支持，脚本自己读写文件即可（本机可信环境）；
 - CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（文本缓冲 UTF-8 编码后写入 stdout 的 `sys.stdout.buffer`）；`echoraw()` 同样生效——用过即短路文本、stdout 只输出二进制缓冲的原始字节；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
 
@@ -96,7 +96,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 站点本地模块 import
 
-HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sys.path` 尾部，因此模板可以在 `<%! %>` 模块块里直接 import 根目录下的 .py 辅助模块（点分路径，py3 命名空间包，无需 `__init__.py`），例如 `root/common/siteutil.py` → `from common.siteutil import tagline`。两点预期：追加在尾部，标准库与已安装包永远优先，root 下同名文件无法遮蔽标准库；导入的 .py 常驻 `sys.modules`，**编辑后需重启服务才生效**（与 .mako 的 mtime 热重载不同），适合放 DB / Redis 客户端等长生命周期单例。CLI 模式无文档根概念不参与；`.py` 不在静态白名单，辅助模块放根目录内不会经 HTTP 泄露。
+HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sys.path` 尾部，因此模板可以在 `<%! %>` 模块块里直接 import 根目录下的 .py 辅助模块（点分路径，py3 命名空间包，无需 `__init__.py`），例如 `root/common/siteutil.py` → `from common.siteutil import tagline`。两点预期：追加在尾部，标准库与已安装包永远优先，root 下同名文件无法遮蔽标准库；导入的 .py 常驻 `sys.modules`，**编辑后需重启服务才生效**（与 .mako 的 mtime 热重载不同），适合放 DB / Redis 客户端等长生命周期单例。CLI 模式无文档根概念不参与；`.py` 不在静态白名单，辅助模块放根目录内不会经 HTTP 泄露。**多站点注意**：`sys.path` 是进程级的，同进程挂多个站点（mod_wsgi 同 daemon 多应用等）时，不同 root 下的**同名顶层包会互相串站**（先加载者胜出）——辅助模块命名需自行错开，或生产部署给每个站点独立进程（prefork 隔离，详见 spec 2.5 第 7 条）。
 
 ## 路径解析
 
@@ -108,7 +108,7 @@ HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sy
 
 ## 配置文件
 
-- 全局默认配置（默认文档根目录、session 相关等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
+- 全局默认配置（默认文档根目录、session 相关、请求体上限 `max_body` 等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
 - 可选键 `access_log` / `error_log`：值为文件路径，配置后请求日志 / 错误日志分别写入对应文件；不配置时的默认流向：access log 不落盘、error log 走 stderr（详见「非功能需求」日志一节）。日志文件路径不建议指向文档根目录；即使指向，框架也会对该路径做运行时 404 屏蔽（见「模板服务」防回吐一条），不会回吐泄露；
 - 命令行参数：`-r` 指定的根目录覆盖配置文件中的 `root`；`-p` / `--host` 为纯命令行参数（端口、监听地址属进程启动属性，只对 dev server 有意义，不进配置文件——WSGI 模式监听由宿主决定，CLI 模式不读配置）；
 - WSGI 模式下按以下顺序查找配置文件，命中即用：

@@ -183,3 +183,80 @@ def test_concurrent_apps_isolated (site, tmp_path, mako_mod, wf):
     app_b = mako_mod.create_app(root=str(site_b))
     assert app_a.test_client().get('/t.mako').data == b'A'
     assert app_b.test_client().get('/t.mako').data == b'B'
+
+
+#----------------------------------------------------------------------
+# setcookie 值编码（决策 #31）与请求体上限（决策 #32）
+#----------------------------------------------------------------------
+
+def test_setcookie_value_percent_encoded (site, wf, client_factory):
+    # 含 ; , = 空格的值 percent-encode 下发，不被 cookie 语法截断
+    wf('t.mako', '<%\nRESP.setcookie("k", "a;b,c=d e")\necho("S")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert 'k=a%3Bb%2Cc%3Dd%20e' in r.headers['Set-Cookie']
+
+
+def test_setcookie_roundtrip_special_chars (site, wf, client_factory):
+    # 写侧编码 + _COOKIE 读侧解码，特殊字符值往返闭合
+    wf('r.mako', '<% echo(_COOKIE.get("k", "-")) %>')
+    cli = client_factory(site)
+    # Werkzeug >=2.3 的 test client 丢弃手工 Cookie 头（jar 接管），
+    # 用 set_cookie 原样塞入编码后的值
+    import inspect
+    params = list(inspect.signature(cli.set_cookie).parameters)
+    if params and params[0] == 'server_name':
+        cli.set_cookie('localhost', 'k', 'a%3Bb%2Cc%3Dd%20e')
+    else:
+        cli.set_cookie('k', 'a%3Bb%2Cc%3Dd%20e')
+    r = cli.get('/r.mako')
+    assert r.data == 'a;b,c=d e'.encode('utf-8')
+
+
+def test_setcookie_raw_channel_untouched (site, wf, client_factory):
+    # RESP.header('Set-Cookie') 原样逃生舱（= PHP setrawcookie）不做编码
+    wf('t.mako', '<%\nRESP.header("Set-Cookie", "raw=a;b; Path=/")\necho("S")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert 'raw=a;b; Path=/' in r.headers.get_all('Set-Cookie')
+
+
+def test_setcookie_space_and_plus_form (site, wf, client_factory):
+    # 与 PHP urlencode 的字节分歧钉死（决策 #31）：空格 → %20（非 +），
+    # 字面 + → %2B——输出永远没有裸 +，PHP 惯用的读侧
+    # replace(/\+/g,' ') 加固对本框架恒为 no-op
+    wf('t.mako', '<%\nRESP.setcookie("k", "a+b c")\necho("S")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert 'k=a%2Bb%20c' in r.headers['Set-Cookie']
+
+
+def test_max_body_default_64mb (site, app_factory):
+    # 默认上限 64MB 存在（映射 Flask MAX_CONTENT_LENGTH）
+    app = app_factory(root=str(site))
+    assert app.config['MAX_CONTENT_LENGTH'] == 67108864
+
+
+def test_max_body_413 (site, wf, app_factory, tmp_path):
+    # POST 超过配置的 max_body → 413
+    wf('t.mako', '<% echo(len(_BODY)) %>')
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\nmax_body = 1000\n' % (
+        str(site).replace('\\', '/')), encoding='utf-8')
+    cli = app_factory(conf_file=str(conf)).test_client()
+    ok = cli.post('/t.mako', data=b'x' * 500)
+    assert ok.status_code == 200 and ok.data == b'500'
+    r = cli.post('/t.mako', data=b'x' * 2000)
+    assert r.status_code == 413
+
+
+def test_max_body_zero_unlimited (site, wf, app_factory, tmp_path):
+    # max_body <= 0 解除限制
+    wf('t.mako', '<% echo(len(_BODY)) %>')
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\nmax_body = 0\n' % (
+        str(site).replace('\\', '/')), encoding='utf-8')
+    app = app_factory(conf_file=str(conf))
+    assert app.config['MAX_CONTENT_LENGTH'] is None
+    r = app.test_client().post('/t.mako', data=b'x' * 2000)
+    assert r.status_code == 200 and r.data == b'2000'

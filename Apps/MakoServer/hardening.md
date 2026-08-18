@@ -12,7 +12,7 @@
 
 1. **5xx 错误页脱敏**：公网模式下错误页只返回简短文本，不吐 traceback（traceback 记入日志）；用环境变量或配置项切换 debug 模式，本机调试仍可看完整栈；
 2. **符号链接防护**：路径规范化时用 `realpath`，解析后的真实路径必须仍在文档根目录内——防止根目录内放一个符号链接指出去（PRD 现有的"规范化真实路径"检查要覆盖到符号链接场景）；
-3. **请求体大小上限**：设置 Flask 的 `MAX_CONTENT_LENGTH`（如 1MB），防大 body 打爆内存；
+3. **请求体大小上限**：已内置——配置键 `max_body` 默认 64MB（映射 Flask 的 `MAX_CONTENT_LENGTH`，超限 413）；公网场景建议按业务收紧（如 1MB）；
 4. **安全响应头**：统一追加 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`（或可配置的 CSP）、`Cache-Control: no-store`（对动态 .mako 响应）;
 5. **cookie 属性**：bridge 写 cookie 时默认带 `HttpOnly`、`SameSite=Lax`，公网（HTTPS）下带 `Secure`，脚本可显式覆盖；
 6. **Content-Type 纪律**：静态文件类型猜不出来时兜底 `application/octet-stream`，绝不猜成 `text/html`（防浏览器把未知文件当 HTML 渲染出 XSS）；

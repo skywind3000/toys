@@ -83,6 +83,7 @@ import threading
 import traceback
 import datetime
 import configparser
+import urllib.parse
 
 import flask
 from werkzeug.utils import redirect as wz_redirect
@@ -110,6 +111,7 @@ DEFAULT_CONFIG = {
     'session_lifetime': 3600,
     'session_mode': 'sliding',
     'session_cookie': 'MAKO_SESSION',
+    'max_body': 67108864,
     'access_log': '',
     'error_log': '',
 }
@@ -219,6 +221,12 @@ def load_config (path):
         conf['session_lifetime'] = int(str(conf['session_lifetime']).strip())
     except ValueError:
         raise ConfigError('session_lifetime must be an integer in %s' % path)
+    # explicit int conversion for max_body (request body size limit
+    # in bytes; <= 0 means unlimited)
+    try:
+        conf['max_body'] = int(str(conf['max_body']).strip())
+    except ValueError:
+        raise ConfigError('max_body must be an integer in %s' % path)
     # validate session_mode
     mode = str(conf['session_mode']).strip().lower()
     if mode not in ('sliding', 'absolute'):
@@ -623,7 +631,15 @@ class RespObject:
                    samesite=None):
         if self.__cli:
             return
-        parts = ['%s=%s' % (name, value)]
+        # the cookie VALUE is percent-encoded (RFC 3986 quote, space
+        # becomes %20 -- deliberately NOT PHP urlencode's '+'), the
+        # semantic counterpart of PHP setcookie() which encodes by
+        # default (raw values with ; , = or spaces would be
+        # truncated/corrupted by cookie syntax); _COOKIE decodes on
+        # read (spec decision #31). The raw escape hatch is
+        # RESP.header('Set-Cookie', ...), equivalent to PHP
+        # setrawcookie()
+        parts = ['%s=%s' % (name, urllib.parse.quote(str(value), safe=''))]
         if expires is not None:
             if isinstance(expires, (int, float)):
                 # fromtimestamp + utc tz (utcfromtimestamp deprecated in 3.12)
@@ -1109,6 +1125,16 @@ class MakoServer:
                 session_state['snapshot'] = json.dumps(
                     session_dict, sort_keys=True, separators=(',', ':'))
 
+        # _COOKIE values are percent-decoded (the counterpart of PHP
+        # $_COOKIE urldecode, paired with RESP.setcookie encoding);
+        # a literal '+' is kept as-is, deliberately NOT decoded to a
+        # space like PHP does (protects third-party base64 cookies
+        # with raw '+', spec decision #31); the session codec reads
+        # request.cookies directly and is not affected
+        cookie_d = {}
+        for key in req.cookies:
+            cookie_d[key] = urllib.parse.unquote(req.cookies[key])
+
         bridge = {
             'echo': echo,
             'echoraw': resp.writeraw,
@@ -1119,7 +1145,7 @@ class MakoServer:
             '_POST': post_d,
             '_SERVER': server,
             '_JSON': json_data,
-            '_COOKIE': dict(req.cookies),
+            '_COOKIE': cookie_d,
             '_SESSION': session_dict,
             'RESP': resp,
         }
@@ -1245,6 +1271,12 @@ def create_app (root=None, conf_file=None, default_root=None,
     server = MakoServer(final_root, config, conf_path)
 
     app = flask.Flask('makoserver', static_folder=None)
+    # request body size cap (config key max_body, default 64MB,
+    # <= 0 disables the limit): a stray oversized POST would otherwise
+    # be read fully into memory by get_data(cache=True); oversize
+    # requests get Werkzeug's standard 413 response
+    max_body = int(config.get('max_body', 67108864))
+    app.config['MAX_CONTENT_LENGTH'] = max_body if max_body > 0 else None
     app.mako_server = server
     app.wsgi_app = PathInfoNormMiddleware(app.wsgi_app)
 

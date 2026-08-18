@@ -63,6 +63,25 @@ def test_load_bad_lifetime (tmp_path, mako_mod):
         mako_mod.load_config(str(conf))
 
 
+def test_load_bad_max_body (tmp_path, mako_mod):
+    # max_body 非整数 → ConfigError（决策 #32）
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nmax_body = huge\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_load_max_body_default_and_custom (tmp_path, mako_mod):
+    # 缺省 64MB；显式配置读出为 int
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\n', encoding='utf-8')
+    assert mako_mod.load_config(str(conf))['max_body'] == 67108864
+    conf.write_text('[makoserver]\nmax_body = 1024\n', encoding='utf-8')
+    c = mako_mod.load_config(str(conf))
+    assert c['max_body'] == 1024
+    assert isinstance(c['max_body'], int)
+
+
 def test_load_bad_mode (tmp_path, mako_mod):
     conf = tmp_path / 'makoserver.ini'
     conf.write_text('[makoserver]\nsession_mode = weird\n', encoding='utf-8')
