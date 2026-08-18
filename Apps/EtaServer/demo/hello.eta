@@ -1,0 +1,9 @@
+<%
+// hello.eta - PATH_INFO demo: request /hello.eta/a/b/c
+const parts = _SERVER.PATH_INFO.split('/').filter(Boolean)
+RESP.header('Content-Type', 'text/plain; charset=utf-8')
+%>PATH_INFO demo
+================
+SCRIPT_NAME : <%= _SERVER.SCRIPT_NAME %>
+PATH_INFO   : <%= _SERVER.PATH_INFO %>
+segments    : <%~ JSON.stringify(parts) %>

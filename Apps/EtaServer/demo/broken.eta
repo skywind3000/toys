@@ -1,0 +1,5 @@
+<%
+// broken.eta - intentionally broken for 500 testing
+const x = nonExistentFunction()
+%>
+never gets here

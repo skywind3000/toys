@@ -1,0 +1,12 @@
+<%
+// api.eta - JSON API demo, RESP.json() with early return
+RESP.json({
+  method: _SERVER.REQUEST_METHOD,
+  query: _GET,
+  post: _POST,
+  json: _JSON,
+  bodySize: _BODY.length,
+  time: new Date().toISOString(),
+})
+return
+%>
