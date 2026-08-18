@@ -4,9 +4,9 @@
 # conftest.py - MakoServer 测试公共 fixture 与工具
 #
 # 说明：
-#   makoserver 的模块级 application 为惰性构造（PEP 562 __getattr__，
-#   决策 #37），import 本身零副作用；这里显式把 import 路径指向
-#   Apps/MakoServer。
+#   makoserver 的模块级 application 是惰性包装对象（LazyApplication，
+#   决策 #37 修订版，首个请求才构建），import 本身零副作用；这里显式
+#   把 import 路径指向 Apps/MakoServer。
 #
 #======================================================================
 

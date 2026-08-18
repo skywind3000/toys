@@ -82,18 +82,23 @@ def test_load_bad_static_types (tmp_path, mako_mod):
 
 
 def test_import_side_effect_free (tmp_path):
-    # 决策 #37：import makoserver 零副作用（不查配置链、不派生密钥、
-    # 不构造 app）；application 属性按需惰性构造
+    # 决策 #37（修订版）：import makoserver 零副作用（不查配置链、
+    # 不派生密钥、不构造真实 app）；application 是模块级真实绑定的
+    # 惰性包装（mod_wsgi 按命名空间字典直查名字，PEP 562 __getattr__
+    # 不生效——实机踩坑回归），首个 WSGI 请求才构建
     import subprocess
     import sys as _sys
     code = (
         "import sys\n"
         "sys.path.insert(0, %r)\n"
         "import makoserver\n"
-        "assert 'application' not in vars(makoserver), 'eager build!'\n"
-        "app = makoserver.application\n"
-        "assert app is not None\n"
-        "assert 'application' in vars(makoserver)   # cached\n"
+        "assert 'application' in vars(makoserver)   # mod_wsgi 可直查\n"
+        "assert makoserver.application.app is None  # import 未构建\n"
+        "from werkzeug.test import Client\n"
+        "c = Client(makoserver.application)\n"
+        "r = c.get('/no-such-page-xyz')\n"
+        "assert r.status_code == 404, r.status_code\n"
+        "assert makoserver.application.app is not None  # 首请求已构建\n"
         "print('LAZY-OK')\n" % APPDIR)
     env = dict(os.environ)
     # 隔离用户级配置，防 ~/.config 泄漏影响惰性构造
