@@ -4,7 +4,7 @@
 
 - 单文件实现（`makoserver.py`），第三方依赖仅 Flask、Mako 两个，拷走单文件即可部署；
 - 内置 PHP 风格超全局变量（`_GET` / `_POST` / `_SESSION` / ...）、`echo()` / `escape()`、`RESP` 响应控制对象；
-- 三种运行模式：独立 dev server、WSGI 应用（mod_wsgi / gunicorn / uWSGI）、CLI 渲染（像 `php xxx.php`）；
+- 三种运行模式：独立 dev server、WSGI 应用（mod_wsgi / gunicorn / uWSGI）、CLI 渲染（像 `php xxx.php`）；另支持普通 CGI 脚本作为兜底部署形态（免 mod_wsgi）；
 - 零配置即拷即用：把 `makoserver.py` 放进站点目录作为 WSGI 入口，文档根目录就是它所在的目录。
 
 > **定位与安全边界**：本项目定位为**本机 / 可信环境**使用的轻量动态页面服务，不做公网暴露场景的安全加固。`.mako` 模板本质是执行任意 Python 代码，等同在本机运行脚本，使用者须知悉。完整设计见 [prd.md](prd.md) 与 [spec.md](spec.md)。
@@ -23,6 +23,7 @@
   - [零配置单文件部署](#零配置单文件部署)
   - [Debian 13 + Apache mod_wsgi](#debian-13--apache-mod_wsgi)
   - [nginx + gunicorn + supervisor](#nginx--gunicorn--supervisor)
+  - [普通 CGI（兜底模式）](#普通-cgi兜底模式)
 - [常见问题](#常见问题)
 
 ## 安装
@@ -331,6 +332,47 @@ sudo systemctl reload nginx
 ```
 
 也可以用 systemd unit 代替 supervisor（gunicorn 自带 daemonize 能力有限，systemd 写法与常见 Flask 部署一致），二选一即可。
+
+### 普通 CGI（兜底模式）
+
+连 mod_wsgi 都懒得装（或装不上）的机器，makoserver.py 可以直接当普通 CGI 脚本跑（Apache mod_cgi / mod_cgid），CGI 环境自动检测，零配置时文档根回退服务器提供的 `DOCUMENT_ROOT`。需要启用 `mod_cgi` / `mod_cgid` 并给目录加 `Options +ExecCGI`（cgi-bin 目录默认已有）。
+
+**形态一：cgi-bin 放置**
+
+把 `makoserver.py` 拷进 `/var/www/cgi-bin/`，请求 URL 为 `/cgi-bin/makoserver.py/index.mako`。能用，但 URL 丑，且静态文件请求也全部经 Python 进程处理。
+
+**形态二（推荐）：Action 映射**
+
+```apache
+AddHandler mako-script .mako
+Action mako-script /cgi-bin/makoserver.py
+```
+
+URL 保持 `/web/demo.mako` 原样（Apache 自动以 `PATH_INFO=/web/demo.mako` 调脚本），`.css` / `.png` 等静态文件由 Apache 直接服务，根本不进 Python——这是 PHP 时代 `Action application/x-httpd-php /cgi-bin/php` 的经典配法。
+
+站点配置示例：
+
+```apache
+<VirtualHost *:80>
+    ServerName mysite.local
+    DocumentRoot /srv/www/mysite
+
+    <Directory /srv/www/mysite>
+        Require all granted
+        AddHandler mako-script .mako
+    </Directory>
+
+    # makoserver.py 放 cgi-bin（或任何可执行位置）
+    ScriptAlias /cgi-bin/ /var/www/cgi-bin/
+    Action mako-script /cgi-bin/makoserver.py
+</VirtualHost>
+```
+
+注意：
+
+- **每请求冷启动一个 Python 进程**（约 100~300ms），内网低频场景够用，别指望生产性能；要进程常驻请用 mod_wsgi daemon 或 gunicorn；
+- 配置搜索链与 WSGI 模式相同（`MAKOSERVER_CONF` > 脚本同目录 `makoserver.ini` > `~/.config/makoserver/settings.ini`），配置里的 `root` 优先于 `DOCUMENT_ROOT`；
+- 不引入 FastCGI：flup 多年无人维护，进程常驻需求由 mod_wsgi daemon 承接。
 
 ### 进程健壮性建议
 

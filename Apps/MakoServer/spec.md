@@ -50,6 +50,7 @@
 | 26 | root 尾部追加进 sys.path（站点本地模块 import） | dev / WSGI 启动时（create_app，启动校验后）把 `realpath(root)` **去重后 append 到 sys.path 尾部**，模板 `<%! %>` 即可点分 import root 下的 .py（py3 命名空间包，无需 `__init__.py`）。选尾部而非 insert(0)：标准库 / 已安装包优先，root 里同名 `json.py` 无法遮蔽标准库；CLI 无 root 概念不参与。细节见 2.5 |
 | 27 | 启动时 chdir 到 root 亦否决（#21 的补充论证） | #21 否的是每请求 chdir（多线程竞态）；启动时一次性 chdir 虽无竞态，仍否决，四条理由：① **cwd 是标量、sys.path 是集合**——同进程多 root（测试 / 多挂载）时 chdir 必然打架，sys.path 追加可共存；② **跨模式分裂**——HTTP chdir 到 root、CLI 无 root 只能留在启动目录，同一脚本裸相对路径两模式基准不同，违反 PRD 双模式契约（`SCRIPT_DIRNAME` 拼路径则两模式语义一致）；③ **WSGI 宿主公民**——cwd 是宿主进程级状态，mod_wsgi 同进程多应用 / gunicorn 多 app 会被改地板，mod_wsgi 官方明确警告；sys.path 追加是加法、chdir 是替换，侵入度不同量级；④ **漂移风险**——裸相对路径一旦有保证即被依赖，而任何代码 `os.chdir()` 都会让全进程线程的基准一起漂移。另：dev server 的 root 回退链默认值即 cwd，chdir 会永久丢失启动目录信息 |
 | 28 | Template 构造传 filename=（实测后收窄收益） | TemplateStore 构造 `Template(..., filename=模板绝对路径)`，CLI stdin 分支传 `'-'`。**实测修正预期**（初版假设「traceback 显示真实路径」不成立）：Mako 编译 `co_filename` 钉死为 module_id 变形名，运行时帧与 `__file__` 均不受 filename 影响；**唯一实证收益**：编译期 SyntaxException 消息多 `in file '<绝对路径>'` 子句（流入 500 页 / CLI stderr / error log）。不注入模块级 `__file__`（主人裁定：收益不抵行号偏移与双模式语义成本）；运行时帧换真路径留待有真实需求再做 |
+| 29 | CGI 模式检测与 root 回退 | 自动检测 `GATEWAY_INTERFACE` 以 `CGI` 开头（RFC 3875 主标志），兜底启发式 `REQUEST_METHOD` + `SCRIPT_FILENAME` / `PATH_TRANSLATED`（CGI 独有组合，交互 shell 不会出现）；检测先于 argparse（mod_cgi 无参数调起，argv 无位置参数，不先判会落入 dev server 分支）。零配置 root 回退服务器提供的 `DOCUMENT_ROOT`（而非 makoserver.py 所在目录——cgi-bin 放置下脚本目录无站点语义，与 #13 的 WSGI 零配置锚点有意区分）；配置搜索链不变、优先于 DOCUMENT_ROOT。实现为 `wsgiref.CGIHandler` 桥接同一个 Flask app，每请求一个进程；定位兜底运行形态（免 mod_wsgi）；不引入 FastCGI（flup 多年无人维护，要进程常驻请用 mod_wsgi daemon）。详见 10.4 |
 
 ## 1. 单文件内部布局
 
@@ -496,11 +497,12 @@ traceback 写 stderr，`sys.exit(1)`；stdout 不输出 partial 内容。
 
 ## 10. 运行形态与模式判定
 
-### 10.0 模式判定（互斥三分支）
+### 10.0 模式判定（互斥四分支）
 
 1. `__name__ != '__main__'`（被 import：mod_wsgi / gunicorn / uWSGI）→ **WSGI 模式**，模块级构建 `application`；
-2. `__main__` 且存在首个非选项位置参数 → **CLI 渲染模式**，该参数即脚本路径（**不限制 .mako 扩展名**，对齐 `php foo.txt` 照跑的习惯；文件不存在 → stderr 报错 exit 1；**单独一个 `-` 亦属位置参数**（argparse 对裸 `-` 按位置参数处理）→ stdin 渲染，见 10.3 与决策 #24）；
-3. `__main__` 且无位置参数 → **dev server 模式**。
+2. `__main__` 且**检测到 CGI 环境标志** → **CGI 模式**（检测先于 argparse：mod_cgi 无参数调起脚本，argv 只有脚本自身，不先判会落入 dev server 分支；检测规则见 10.4）；
+3. `__main__` 且非 CGI、存在首个非选项位置参数 → **CLI 渲染模式**，该参数即脚本路径（**不限制 .mako 扩展名**，对齐 `php foo.txt` 照跑的习惯；文件不存在 → stderr 报错 exit 1；**单独一个 `-` 亦属位置参数**（argparse 对裸 `-` 按位置参数处理）→ stdin 渲染，见 10.3 与决策 #24）；
+4. `__main__` 且非 CGI、无位置参数 → **dev server 模式**。
 
 「检测 WSGI 环境」以 import 语义判定（`__name__`），不依赖环境变量——gunicorn / uWSGI 不设统一标志，mod_wsgi import 时请求 environ 尚不存在。
 
@@ -540,6 +542,17 @@ python makoserver.py [options] script [args...]
 
 模式判定与扩展名规则见 10.0。
 
+### 10.4 普通 CGI
+
+Apache mod_cgi / mod_cgid 调起 makoserver.py（cgi-bin 放置或 `Action` 映射两种形态），每请求一个进程、服务一次后退出。定位兜底运行形态（决策 #29）：
+
+- **检测**：`is_cgi_environment()` 两级判定——主标志 `GATEWAY_INTERFACE` 以 `CGI` 开头（RFC 3875）；部分服务器省略该变量，兜底启发式 `REQUEST_METHOD` + `SCRIPT_FILENAME` / `PATH_TRANSLATED`（CGI 独有组合，交互 shell 不会出现）；
+- **构建**：`create_app(conf_file=正常搜索链, default_root=DOCUMENT_ROOT)`，随后 `wsgiref.handlers.CGIHandler().run(app)`；bridge / 路径解析 / 静态白名单 / session 全部复用 WSGI 实现（CGIHandler 组装 PEP 3333 environ；`SCRIPT_NAME` / `PATH_INFO` 由 Apache 按 RFC 3875 提供，与 WSGI 挂载前缀同构——`/cgi-bin/makoserver.py/index.mako` 拆为 `SCRIPT_NAME=/cgi-bin/makoserver.py`、`PATH_INFO=/index.mako`）；
+- **零配置 root 回退 `DOCUMENT_ROOT`**（非 makoserver.py 所在目录：cgi-bin 是共享脚本目录，无站点语义，与 #13 的 WSGI 锚点有意区分）；配置 `root` / `MAKOSERVER_CONF` / makoserver.ini 搜索链不变，优先于 DOCUMENT_ROOT；
+- **推荐部署形态**是 `Action` 映射：`AddHandler mako-script .mako` + `Action mako-script /cgi-bin/makoserver.py`——URL 保持 `/web/demo.mako` 原样（PATH_INFO 自动携带），静态文件由 Apache 直出、不进 Python；cgi-bin URL 形态（`/cgi-bin/makoserver.py/index.mako`）亦可用，但静态请求也全部经 Python 进程处理；
+- **性能预期**：每请求进程冷启动（Python + Flask + Mako 导入约 100~300ms），内网低频场景够用；不引入 FastCGI（flup 多年无人维护，进程常驻需求由 mod_wsgi daemon 承接）；
+- error log 默认 stderr 流入 Apache ErrorLog，与 WSGI 宿主行为一致。
+
 ## 11. 日志
 
 | 通道 | 默认 | 配置后 |
@@ -565,6 +578,7 @@ python makoserver.py [options] script [args...]
 | `test_bridge.py` | `_GET`/`_POST` 分离；`_REQUEST` 覆盖序（POST 压 GET）；getlist 三处可用；**form-encoded POST 同时断言 `_POST` 与 `_BODY` 均非空（get_data(cache=True) 先行顺序回归）**；`_SERVER` 键集与 HTTP_*；`SCRIPT_NAME`/`PATH_INFO` 三形态（普通请求 / 尾挂请求 / index 兜底渲染）；`SCRIPT_FILENAME`/`SCRIPT_DIRNAME`/`DOCUMENT_ROOT` 三键（尾挂与兜底场景下 `SCRIPT_FILENAME` 跟随**实际渲染文件**而非初始请求路径）；`REQUEST_URI` 含 query / 无 query / 目录兜底场景（此时 `PATH_INFO` 为空、`REQUEST_URI` 保留完整原始路径）；`_BODY`；`_JSON` 含 json/坏 JSON/非 JSON；RESP.header/status 后设覆盖；`RESP.header('Set-Cookie')` 连设两次逐条追加；`POST /` 到达根路径模板；redirect/json 不终止渲染（后续 echo 仍污染 body，行为断言）；json 中文 ensure_ascii=False；setcookie `expires` 数值时间戳 → IMF-fixdate（UTC）格式断言 |
 | `test_session.py` | 签发/回带往返；**Set-Cookie 属性断言（`Path=/`、`HttpOnly`、`SameSite=Lax`、无 Max-Age/Expires）**；篡改 data/ts/签名 → 空 dict；base64 去 padding 后补 `=` 再解码；absolute 到期拒绝、改数据 ts 继承；sliding 无写入也重签、重签刷新 ts；过期边界（now-ts == lifetime 即过期，等号含入）；原地修改检出（**含嵌套层级：`_SESSION['cart'].append(x)` 判「已写」重签——规范化 JSON 串深比较回归，absolute 模式防嵌套修改静默丢失**）/ `_SESSION = {...}` 重绑定判「未写」；4KB 超限 500；**值不可 JSON 序列化（datetime 等）→ 500（错误信息说明仅支持 JSON 类型）**；**`RESP.setcookie('MAKO_SESSION', ...)` 同名 → 丢弃不下发 + error log warning（session cookie 名独占回归）**；secret 配置覆盖派生；派生密钥模块级缓存（两次调用同值） |
 | `test_cli.py` | stdout 字节精确比对（含二进制输出）；降级 `_SERVER`/空参数/no-op RESP；`argv` 透传（argv[0]=脚本自身、脚本后参数含 `--` 前缀原样透传）；include 基准 = 脚本目录；非 .mako 扩展名照渲染；脚本不存在 exit 1；渲染异常 exit 1；**stdin 渲染（`-`，决策 #24）：基本渲染、argv[0]='-' 与三键降级（SCRIPT_NAME/FILENAME='-'、SCRIPT_DIRNAME=cwd）、include 基准 = cwd、尾部空白截断、BOM 容忍、渲染异常 exit 1** |
+| `test_cgi.py` | 子进程级模拟 CGI 环境（隔离 HOME 防 `~/.config` 泄漏）：模板渲染与 Content-Type；零配置 root = DOCUMENT_ROOT；GET/POST 参数；PATH_INFO 尾挂；静态白名单命中与白名单外 404；配置 root 覆盖 DOCUMENT_ROOT（MAKOSERVER_CONF）；无 GATEWAY_INTERFACE 时靠 REQUEST_METHOD + SCRIPT_FILENAME 兜底检测；CLI 渲染不被 CGI 检测劫持（shell 环境无 CGI 标志） |
 | `test_http.py` | 端到端（Flask test client）：默认 Content-Type；显式覆盖；Set-Cookie 下发与回带；404 文本；500 traceback 转义（`<script>` 注入路径转义断言）；PUT/DELETE 请求 .mako 正常渲染且 `_SERVER['REQUEST_METHOD']` 如实传递；**OPTIONS 请求 .mako 到达脚本渲染（`REQUEST_METHOD='OPTIONS'`，非 Flask 自动 Allow 应答——provide_automatic_options=False 回归）**；index 兜底落 index.html 时 PUT → 405、落 index.mako 时 PUT 照常渲染 |
 
 ## 13. 明确不做（一期）
