@@ -1,10 +1,11 @@
-<%!
+<%! 
 import os
 import sys
 import time
 import socket
 import platform
 import datetime
+import importlib.metadata
 %>\
 <%
 #
@@ -16,6 +17,18 @@ import datetime
 import flask as _flask
 import mako as _mako
 import werkzeug as _wz
+
+
+def _pkg_version (pkg):
+    # werkzeug 2.3+ 移除了 __version__ 属性，优先读属性，
+    # 缺失时回退 importlib.metadata（py3.8+ 标准库）
+    v = getattr(pkg, '__version__', None)
+    if v:
+        return v
+    try:
+        return importlib.metadata.version(pkg.__name__)
+    except Exception:
+        return '?'
 
 _g = echo.__globals__
 _ms_version = _g.get('__version__', '?')
@@ -77,9 +90,9 @@ a {color:#666699;}
 
 <h2>Frameworks &amp; Dependencies</h2>
 <table>
-<tr><td class="e">Flask</td><td class="v">${escape(_flask.__version__)}</td></tr>
-<tr><td class="e">Werkzeug</td><td class="v">${escape(_wz.__version__)}</td></tr>
-<tr><td class="e">Mako</td><td class="v">${escape(_mako.__version__)}</td></tr>
+<tr><td class="e">Flask</td><td class="v">${escape(_pkg_version(_flask))}</td></tr>
+<tr><td class="e">Werkzeug</td><td class="v">${escape(_pkg_version(_wz))}</td></tr>
+<tr><td class="e">Mako</td><td class="v">${escape(_pkg_version(_mako))}</td></tr>
 </table>
 
 <h2>This Request (_SERVER)</h2>
@@ -137,7 +150,7 @@ ${_kv_rows(sorted(os.environ.items()))}
 
 <p class="foot">
 makoinfo() - generated at ${escape(_now)} by MakoServer ${escape(_ms_version)}
-(Flask ${escape(_flask.__version__)} / Werkzeug ${escape(_wz.__version__)} / Mako ${escape(_mako.__version__)})
+(Flask ${escape(_pkg_version(_flask))} / Werkzeug ${escape(_pkg_version(_wz))} / Mako ${escape(_pkg_version(_mako))})
 </p>
 
 </div>
