@@ -28,6 +28,10 @@ _SESSION.count = (_SESSION.count || 0) + 1
     <li><a href="require.eta">require() demo</a></li>
     <li><a href="etainfo.eta">etainfo() - server info page</a>
         (like phpinfo)</li>
+    <li><a href="tsdemo.eta">TypeScript demo</a>
+        (require .ts 库文件)</li>
+    <li><a href="fetchdemo.eta">fetch demo</a>
+        (模板内顶层 await 请求其它 URL)</li>
   </ul>
   <hr>
   <p>

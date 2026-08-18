@@ -132,6 +132,10 @@ HTTP 用 `node:http`、session 用 `node:crypto`、CLI 手写解析——除 `et
 
 模板代码块经 `new Function` 编译，不经过模块加载器，Node 类型剥离帮不上忙，故 `<% %>` 内只能写 JS。但注入的 `require` 支持直接加载 `.ts`（Node 22.18+ 内置类型剥离，实测通过），分工与 PHP 生态一致：模板保持薄壳，重逻辑下沉 `lib/*.ts`。仅支持可擦除语法（enum / namespace / 参数属性不可用）。不引 ts-node / tsx / typescript，`dependencies` 保持只有 `eta`；`engines.node` 相应提到 `>=22.18`。
 
+### 决策 #10：模板内网络请求 —— 顶层 await + 内置 fetch
+
+服务器为单进程单线程（Node 默认模型），但异步 I/O 不阻塞事件循环：`renderStringAsync` 把模板编译为 async function 体，代码块内可直接顶层 `await`，配合 Node 内置 `fetch`（零依赖）请求其他 URL；等待期间其它请求照常处理（demo/fetchdemo.eta 在模板里 await fetch 本服务自己的 hello.eta，若事件循环被阻塞此页必死锁——渲染成功即为非阻塞实证）。约定：外部 URL 必加 `AbortController` 超时保护，否则吊死的外部服务会把该请求的响应永远挂住；fetch 失败走模板内错误分支而非 500。另有一条通用陷阱记入 demo 注释：**代码块的注释里勿书写标签字面量**，Eta 解析器是纯文本扫描，注释内出现 `<%` 会误判标签边界、整块代码被当字符串（实测踩过，错误表现为后续块 ReferenceError）。
+
 ## 已知限制
 
 - 无 HTTPS（本机定位，反代自理）；

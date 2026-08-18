@@ -1,18 +1,26 @@
 <%
-// fetchdemo.eta - 在模板里请求外部 URL（顶层 await + 内置 fetch）
+// fetchdemo.eta - 在模板里请求其他 URL（顶层 await + 内置 fetch）
 //
-// renderAsync 把模板编译为 async function 体，所以 <% %> 内可以顶层 await；
+// renderAsync 把模板编译为 async function 体，代码块内可顶层 await；
 // 等待网络期间事件循环照常服务其它请求，不会阻塞单线程。
-let repos = null
+//
+// 本例演示两种用法：
+//   1. 自请求：fetch 本服务的 hello.eta（不依赖外网，随时可跑）
+//   2. 外部 URL：把 url 换成 'https://api.github.com/users/nodejs/repos'
+//      之类即可，写法完全相同
+//
+// （注意：注释里勿书写标签字面量，解析器是纯文本扫描会误判）
+const url = 'http://' + _SERVER.SERVER_NAME + ':' + _SERVER.SERVER_PORT +
+  '/hello.eta/from-fetchdemo'
+let text = null
 let error = null
 try {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 8000)   // 8 秒超时保护
-  const resp = await fetch('https://api.github.com/users/nodejs/repos?per_page=5',
-    { signal: ctrl.signal })
+  const resp = await fetch(url, { signal: ctrl.signal })
   clearTimeout(timer)
   if (!resp.ok) throw new Error('HTTP ' + resp.status)
-  repos = await resp.json()
+  text = await resp.text()
 } catch (e) {
   error = String(e && e.message || e)
 }
@@ -22,15 +30,10 @@ try {
 <body>
   <h1>fetch in .eta (top-level await)</h1>
   <% if (error) { %>
-    <p style="color:#a00">fetch failed: <%= error %>
-       （本机网络不通时此页演示错误分支）</p>
+    <p style="color:#a00">fetch failed: <%= error %></p>
   <% } else { %>
-    <ul>
-    <% for (const r of repos) { %>
-      <li><a href="<%= r.html_url %>"><%= r.name %></a>
-          - stars: <%= r.stargazers_count %></li>
-    <% } %>
-    </ul>
+    <p>下面是 await fetch 拿到的 hello.eta 响应原文：</p>
+    <pre><%= text %></pre>
   <% } %>
   <p><a href="index.eta">back home</a></p>
 </body>

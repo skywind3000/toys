@@ -239,6 +239,16 @@ async function main () {
       assert.ok(body.indexOf('Internal Server Error') >= 0)
     })
 
+    await check('top-level await fetch works in template', async () => {
+      const res = await fetch(BASE + '/fetchdemo.eta')
+      assert.strictEqual(res.status, 200)
+      const body = await res.text()
+      assert.ok(body.indexOf('top-level await') >= 0)
+      // self-fetch embedded hello.eta response proves event loop kept
+      // serving while the template awaited
+      assert.ok(body.indexOf('PATH_INFO   : /from-fetchdemo') >= 0)
+    })
+
     await check('etainfo() page renders all sections', async () => {
       const res = await fetch(BASE + '/etainfo.eta?probe=1')
       assert.strictEqual(res.status, 200)
