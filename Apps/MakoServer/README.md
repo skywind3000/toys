@@ -169,7 +169,7 @@ root/common/siteutil.py   →   <%! from common.siteutil import tagline %>
 
 要点：
 
-- **静态白名单**（白名单外全 404）：`.html` `.htm` `.txt` `.css` `.js` `.json`、图片（`.png` `.jpg` `.jpeg` `.gif` `.svg` `.ico` `.webp`）、`.pdf`、压缩包（`.zip` `.rar` `.7z` `.tar` `.gz` `.tgz` `.xz`）；
+- **静态白名单**（白名单外全 404）：`.html` `.htm` `.txt` `.csv` `.md` `.css` `.js` `.mjs` `.json` `.map` `.xml`、图片（`.png` `.jpg` `.jpeg` `.gif` `.svg` `.ico` `.webp` `.avif` `.bmp`）、字体（`.woff` `.woff2` `.ttf` `.otf` `.eot`）、音视频（`.mp3` `.ogg` `.wav` `.mp4` `.webm`）、`.wasm` `.pdf`、压缩包（`.zip` `.rar` `.7z` `.tar` `.gz` `.tgz` `.xz`）；可用配置键 `static_types` 按站点扩展/覆盖（`ext=mime` 逗号分隔）；
 - `.mako` 支持全部 HTTP 方法（`REQUEST_METHOD` 如实传递）；静态文件仅 GET/HEAD，其它谓词 405；
 - 防路径穿透、防 `.mako` 源码泄露、防配置文件 / 日志文件回吐均已内置；
 - 源文件按原文编译，末尾空白**不截断**——文本响应忠实保留源文件的尾部换行；二进制脚本用 `echoraw()` 短路文本输出，EOF 换行自然不会污染。
@@ -195,6 +195,7 @@ session_lifetime = 3600         # 会话超时秒数
 session_mode = sliding          # sliding / absolute
 session_cookie = MAKO_SESSION   # 会话 cookie 名
 max_body = 67108864             # 请求体上限（字节），默认 64MB，<=0 不限制
+static_types = woff3=font/woff3 # 可选，静态白名单扩展（ext=mime 逗号分隔）
 access_log = /var/log/makoserver/access.log   # 可选，缺省不落盘
 error_log  = /var/log/makoserver/error.log    # 可选，缺省写 stderr
 ```
@@ -397,7 +398,7 @@ URL 保持 `/web/demo.mako` 原样（Apache 自动以 `PATH_INFO=/web/demo.mako`
 `_FILES` 属二期功能暂未实现；当前可通过 `_BODY` 自行处理 multipart，或改用前端 base64 + `_JSON` 传。
 
 **Q: 依赖版本有要求吗？**
-Python ≥ 3.8；`Flask<4`、`Mako<1.5`（开发基准 Flask 2.2.x + Mako 1.4.x，已验证 Debian 系统包 Mako 1.3.2 / 1.3.9 兼容；Mako 升级小版本时建议回归测试）。
+Python ≥ 3.8；`Flask<4`、`Mako<1.5`（初版开发基准 Flask 2.2.x；当前验证环境 Flask 3.1.x + Werkzeug 3.1.x + Mako 1.4.x 全量测试通过，另验证 Debian 系统包 Mako 1.3.2 / 1.3.9 兼容；升级依赖建议回归测试）。
 
 ## 相关文档
 

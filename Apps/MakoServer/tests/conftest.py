@@ -4,8 +4,9 @@
 # conftest.py - MakoServer 测试公共 fixture 与工具
 #
 # 说明：
-#   makoserver 在 import 时会构建模块级 application（root 回退到
-#   makoserver.py 所在目录），这里显式把 import 路径指向 Apps/MakoServer。
+#   makoserver 的模块级 application 为惰性构造（PEP 562 __getattr__，
+#   决策 #37），import 本身零副作用；这里显式把 import 路径指向
+#   Apps/MakoServer。
 #
 #======================================================================
 

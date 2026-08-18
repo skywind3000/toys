@@ -108,6 +108,29 @@ def test_server_content_keys_on_post (site, wf, client_factory):
     assert cl == b'3'
 
 
+def test_server_protocol_time_https_keys (site, wf, client_factory):
+    # PHP 常备键补齐：SERVER_PROTOCOL / REQUEST_TIME(_FLOAT)；
+    # 非 HTTPS 请求不设 HTTPS 键（PHP 同语义）
+    import time as _time
+    wf('t.mako',
+       '<% echo(_SERVER.get("SERVER_PROTOCOL", "-"), "|",'
+       ' _SERVER["REQUEST_TIME"], "|",'
+       ' "F" if "HTTPS" in _SERVER else "N") %>')
+    cli = client_factory(site)
+    before = int(_time.time())
+    proto, rt, https = cli.get('/t.mako').data.split(b'|')
+    assert proto.startswith(b'HTTP/')
+    assert before <= int(rt) <= int(_time.time()) + 1
+    assert https == b'N'
+
+
+def test_server_https_on (site, wf, client_factory):
+    wf('t.mako', '<% echo(_SERVER.get("HTTPS", "-")) %>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako', environ_overrides={'wsgi.url_scheme': 'https'})
+    assert r.data == b'on'
+
+
 def test_server_three_forms (site, wf, client_factory):
     # SCRIPT_NAME / PATH_INFO 三形态
     wf('i.mako',

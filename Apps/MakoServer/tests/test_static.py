@@ -14,8 +14,13 @@ MATRIX = {
     'a.htm': 'text/html; charset=utf-8',
     'a.txt': 'text/plain; charset=utf-8',
     'a.css': 'text/css; charset=utf-8',
-    'a.js': 'application/javascript',
+    'a.js': 'text/javascript; charset=utf-8',
+    'a.mjs': 'text/javascript; charset=utf-8',
     'a.json': 'application/json',
+    'a.map': 'application/json',
+    'a.xml': 'application/xml',
+    'a.csv': 'text/csv; charset=utf-8',
+    'a.md': 'text/markdown; charset=utf-8',
     'a.png': 'image/png',
     'a.jpg': 'image/jpeg',
     'a.jpeg': 'image/jpeg',
@@ -23,6 +28,19 @@ MATRIX = {
     'a.svg': 'image/svg+xml',
     'a.ico': 'image/x-icon',
     'a.webp': 'image/webp',
+    'a.avif': 'image/avif',
+    'a.bmp': 'image/bmp',
+    'a.woff': 'font/woff',
+    'a.woff2': 'font/woff2',
+    'a.ttf': 'font/ttf',
+    'a.otf': 'font/otf',
+    'a.eot': 'application/vnd.ms-fontobject',
+    'a.mp3': 'audio/mpeg',
+    'a.ogg': 'audio/ogg',
+    'a.wav': 'audio/wav',
+    'a.mp4': 'video/mp4',
+    'a.webm': 'video/webm',
+    'a.wasm': 'application/wasm',
     'a.pdf': 'application/pdf',
     'a.zip': 'application/zip',
     'a.rar': 'application/vnd.rar',
@@ -206,3 +224,32 @@ def test_not_blocked_mako_renders (site, wf, client_factory, tmp_path):
     r = cli.get('/ok.mako')
     assert r.status_code == 200
     assert r.data == b'OK'
+
+
+#----------------------------------------------------------------------
+# static_types 配置键（决策 #39）
+#----------------------------------------------------------------------
+
+def test_static_types_config_extends (site, wfb, client_factory, tmp_path):
+    # 自定义扩展名进白名单；点号可省、大小写不敏感；可覆盖内置映射
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\n'
+                    'static_types = dat=application/x-dat, '
+                    '.TXT=text/x-override\n' % (
+                        str(site).replace('\\', '/')), encoding='utf-8')
+    wfb('a.dat', b'DAT-BYTES')
+    wfb('a.txt', b'TXT')
+    cli = client_factory(site, conf_file=str(conf))
+    r = cli.get('/a.dat')
+    assert r.status_code == 200
+    assert r.content_type == 'application/x-dat'
+    assert r.data == b'DAT-BYTES'
+    # 覆盖内置 .txt 映射
+    assert cli.get('/a.txt').content_type == 'text/x-override'
+
+
+def test_static_types_not_configured_404 (site, wfb, client_factory):
+    # 对照组：未配置时自定义扩展名仍 404（fail-closed 不变）
+    wfb('a.dat', b'X')
+    cli = client_factory(site)
+    assert cli.get('/a.dat').status_code == 404

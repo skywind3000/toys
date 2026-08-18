@@ -209,3 +209,18 @@ def test_cli_render_not_hijacked (tmp_path):
                        capture_output=True, env=env)
     assert r.returncode == 0
     assert r.stdout == b'plain-cli'
+
+
+def test_cgi_env_with_argv_not_hijacked (tmp_path):
+    # argv 守卫：环境里泄漏 CGI 标志但命令行带位置参数 →
+    # 仍走 CLI 渲染，不被 CGI 分支劫持（决策 #40）
+    script = tmp_path / 't.mako'
+    script.write_text('<% echo("argv-wins") %>', encoding='utf-8')
+    env = dict(os.environ)
+    env['GATEWAY_INTERFACE'] = 'CGI/1.1'
+    env['REQUEST_METHOD'] = 'GET'
+    env['SCRIPT_FILENAME'] = str(script)
+    r = subprocess.run([sys.executable, MAKO, str(script)],
+                       capture_output=True, env=env)
+    assert r.returncode == 0
+    assert r.stdout == b'argv-wins'      # 无 CGI 头，纯渲染结果

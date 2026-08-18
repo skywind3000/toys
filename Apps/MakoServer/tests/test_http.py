@@ -260,3 +260,79 @@ def test_max_body_zero_unlimited (site, wf, app_factory, tmp_path):
     assert app.config['MAX_CONTENT_LENGTH'] is None
     r = app.test_client().post('/t.mako', data=b'x' * 2000)
     assert r.status_code == 200 and r.data == b'2000'
+
+
+#----------------------------------------------------------------------
+# view 层兜底 500（决策 #35）与 SystemExit 语义（决策 #36）
+#----------------------------------------------------------------------
+
+def test_assemble_error_custom_500_and_logged (site, wf, app_factory, tmp_path):
+    # 组装阶段异常（header 注入被 Werkzeug 拒绝 → ValueError）：
+    # 走本框架 500 页（非 Flask 默认页），且 traceback 落 error_log
+    wf('t.mako', '<%\nRESP.header("X-T", "a\\r\\nEvil: 1")\necho("x")\n%>')
+    logfile = tmp_path / 'error.log'
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\nerror_log = %s\n' % (
+        str(site).replace('\\', '/'),
+        str(logfile).replace('\\', '/')), encoding='utf-8')
+    cli = app_factory(conf_file=str(conf)).test_client()
+    r = cli.get('/t.mako')
+    assert r.status_code == 500
+    assert b'500 Internal Server Error' in r.data
+    assert 'Traceback' in logfile.read_text(encoding='utf-8')
+
+
+def test_sys_exit_zero_keeps_output (site, wf, client_factory):
+    # sys.exit(0)/exit()：正常终止渲染，已缓冲输出照常返回（对齐 PHP exit）
+    wf('t.mako', 'OK<%\nimport sys\nsys.exit(0)\n%>SKIPPED')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.status_code == 200
+    assert r.data == b'OK'
+
+
+def test_sys_exit_nonzero_500 (site, wf, client_factory):
+    wf('t.mako', 'PARTIAL<%\nimport sys\nsys.exit(3)\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.status_code == 500
+    assert b'PARTIAL' not in r.data
+
+
+def test_sys_exit_zero_session_still_finalized (site, wf, app_factory, tmp_path):
+    # exit(0) 属正常终止：session 写入照常回写 Set-Cookie
+    wf('t.mako', '<%\n_SESSION["u"] = 1\nimport sys\nsys.exit(0)\n%>')
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nroot = %s\nsecret = s\n' % (
+        str(site).replace('\\', '/')), encoding='utf-8')
+    cli = app_factory(conf_file=str(conf)).test_client()
+    r = cli.get('/t.mako')
+    assert 'MAKO_SESSION=' in r.headers.get('Set-Cookie', '')
+
+
+#----------------------------------------------------------------------
+# setcookie expires / RESP.status 校验（决策 #38）
+#----------------------------------------------------------------------
+
+def test_setcookie_expires_datetime (site, wf, client_factory):
+    # datetime（naive 视为 UTC）→ IMF-fixdate；2030-01-01 是周二
+    wf('t.mako', '<%\nimport datetime\n'
+       'RESP.setcookie("a", "v", expires=datetime.datetime(2030, 1, 1))\n'
+       'echo("S")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert 'Expires=Tue, 01 Jan 2030 00:00:00 GMT' in r.headers['Set-Cookie']
+
+
+def test_setcookie_expires_bad_type_500 (site, wf, client_factory):
+    # 非 int/float/datetime/str → TypeError → 500（快速失败，
+    # 而非静默产出浏览器无法解析的日期）
+    wf('t.mako', '<% RESP.setcookie("a", "v", expires=[1, 2]) %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').status_code == 500
+
+
+def test_status_out_of_range_500 (site, wf, client_factory):
+    wf('t.mako', '<% RESP.status(9999) %>ok')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').status_code == 500

@@ -261,3 +261,37 @@ def test_stdin_render_exception_exit1 (tmp_path):
     assert r.returncode == 1
     assert r.stdout == b''
     assert b'Traceback' in r.stderr and b'boom' in r.stderr
+
+
+#----------------------------------------------------------------------
+# sys.exit() 语义（决策 #36，对齐 PHP exit/die：先 flush 再退出）
+#----------------------------------------------------------------------
+
+def test_sys_exit_zero_flushes (tmp_path):
+    script = tmp_path / 't.mako'
+    script.write_text('OUT<%\nimport sys\nsys.exit(0)\n%>SKIPPED',
+                      encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 0
+    assert r.stdout == b'OUT'
+
+
+def test_sys_exit_code_flushes (tmp_path):
+    # 非零码：已缓冲输出照常 flush，退出码透传（PHP exit(n) 同语义）
+    script = tmp_path / 't.mako'
+    script.write_text('OUT<%\nimport sys\nsys.exit(5)\n%>',
+                      encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 5
+    assert r.stdout == b'OUT'
+
+
+def test_sys_exit_message (tmp_path):
+    # sys.exit("msg")：Python 语义——消息进 stderr、退出码 1，输出仍 flush
+    script = tmp_path / 't.mako'
+    script.write_text('OUT<%\nimport sys\nsys.exit("bye")\n%>',
+                      encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 1
+    assert r.stdout == b'OUT'
+    assert b'bye' in r.stderr

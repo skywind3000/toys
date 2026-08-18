@@ -203,3 +203,33 @@ def test_writeraw_str_typeerror_500 (site, wf, client_factory):
     r = cli.get('/t.mako')
     assert r.status_code == 500
     assert b'writeraw() accepts bytes-like only' in r.data
+
+
+#----------------------------------------------------------------------
+# echo 与 Mako buffer 栈（capture / buffered / filtered def，决策 #33）
+#----------------------------------------------------------------------
+
+def test_echo_inside_capture_not_leaking (site, wf, client_factory):
+    # capture() 压栈期间 echo 的输出进入捕获结果，不穿透到 body
+    wf('t.mako',
+       '<%def name="inner()">X<% echo("LEAK") %></%def>'
+       '<% d = capture(self.inner) %>BODY:${len(d)}')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'BODY:5'      # 'XLEAK'
+
+
+def test_echo_inside_filtered_def (site, wf, client_factory):
+    # filter="h" 对 echo 输出同样生效（XSS 旁路回归）
+    wf('t.mako',
+       '<%def name="fx()" filter="h"><% echo("<b>") %></%def>${fx()}')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'&lt;b&gt;'
+
+
+def test_resp_json_inside_capture (site, wf, client_factory):
+    # RESP.json 走同一 echo 通道，capture 期间同样被捕获
+    wf('t.mako',
+       '<%def name="inner()"><% RESP.json({"a": 1}) %></%def>'
+       '<% d = capture(self.inner) %>LEN:${len(d)}')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'LEN:7'       # '{"a":1}'

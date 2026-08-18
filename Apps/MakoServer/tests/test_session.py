@@ -280,6 +280,34 @@ def test_derived_secret_cached (mako_mod, monkeypatch):
     assert isinstance(a, bytes) and len(a) == 32
 
 
+def test_derived_secret_per_root (site, tmp_path, mako_mod, wf):
+    # 无 secret 配置：派生密钥混入 root（决策 #34）——同机不同 root
+    # 的站点密钥不同（跨站 session 不能互相验签），同 root 恒等
+    site_b = tmp_path / 'site_b'
+    site_b.mkdir()
+    sec_a1 = mako_mod.create_app(root=str(site)).mako_server.codec.secret
+    sec_a2 = mako_mod.create_app(root=str(site)).mako_server.codec.secret
+    sec_b = mako_mod.create_app(root=str(site_b)).mako_server.codec.secret
+    assert sec_a1 == sec_a2
+    assert sec_a1 != sec_b
+
+
+def test_cross_site_session_rejected (site, tmp_path, mako_mod, wf):
+    # A 站签发的 session cookie 投给同机另一 root 的 B 站 →
+    # 验签失败按无 session 处理（决策 #34 实测回归）
+    wf('w.mako', '<% _SESSION["who"] = "A-secret" %><% echo("W") %>')
+    site_b = tmp_path / 'site_b'
+    site_b.mkdir()
+    (site_b / 'r.mako').write_text(
+        '<% echo(_SESSION.get("who", "EMPTY")) %>', encoding='utf-8')
+    cli_a = mako_mod.create_app(root=str(site)).test_client()
+    value = _cookie_of(cli_a.get('/w.mako'))
+    assert value is not None
+    cli_b = mako_mod.create_app(root=str(site_b)).test_client()
+    _set_cookie(cli_b, 'MAKO_SESSION', value)
+    assert cli_b.get('/r.mako').data == b'EMPTY'
+
+
 def test_custom_cookie_name (site, wf, mako_mod, tmp_path):
     conf = tmp_path / 'makoserver.ini'
     conf.write_text('[makoserver]\nsecret = s\nsession_cookie = MYSESS\n',

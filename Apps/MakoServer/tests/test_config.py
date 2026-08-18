@@ -8,6 +8,8 @@
 import os
 import pytest
 
+APPDIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 #----------------------------------------------------------------------
 # 配置加载（load_config）
@@ -61,6 +63,47 @@ def test_load_bad_lifetime (tmp_path, mako_mod):
     conf.write_text('[makoserver]\nsession_lifetime = abc\n', encoding='utf-8')
     with pytest.raises(mako_mod.ConfigError):
         mako_mod.load_config(str(conf))
+
+
+def test_load_lifetime_zero_rejected (tmp_path, mako_mod):
+    # 0/负值 = session 恒过期、静默不可用 → 报错退出（决策 #38）
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nsession_lifetime = 0\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_load_bad_static_types (tmp_path, mako_mod):
+    # static_types 格式非法（缺 =）→ ConfigError（决策 #39）
+    conf = tmp_path / 'makoserver.ini'
+    conf.write_text('[makoserver]\nstatic_types = woffX\n', encoding='utf-8')
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.load_config(str(conf))
+
+
+def test_import_side_effect_free (tmp_path):
+    # 决策 #37：import makoserver 零副作用（不查配置链、不派生密钥、
+    # 不构造 app）；application 属性按需惰性构造
+    import subprocess
+    import sys as _sys
+    code = (
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "import makoserver\n"
+        "assert 'application' not in vars(makoserver), 'eager build!'\n"
+        "app = makoserver.application\n"
+        "assert app is not None\n"
+        "assert 'application' in vars(makoserver)   # cached\n"
+        "print('LAZY-OK')\n" % APPDIR)
+    env = dict(os.environ)
+    # 隔离用户级配置，防 ~/.config 泄漏影响惰性构造
+    env['HOME'] = str(tmp_path)
+    env['USERPROFILE'] = str(tmp_path)
+    env.pop('MAKOSERVER_CONF', None)
+    r = subprocess.run([_sys.executable, '-c', code],
+                       capture_output=True, env=env)
+    assert r.returncode == 0, r.stderr.decode('utf-8', 'ignore')
+    assert b'LAZY-OK' in r.stdout
 
 
 def test_load_bad_max_body (tmp_path, mako_mod):
@@ -181,11 +224,14 @@ def test_find_none (conf_env, mako_mod):
     assert mako_mod.find_config_file() is None
 
 
-def test_find_missing_file_continues (conf_env, mako_mod, monkeypatch):
-    # cli / env 指向不存在的文件 → 继续下寻
+def test_find_missing_cli_conf_errors (conf_env, mako_mod, monkeypatch):
+    # 显式 --conf 指向不存在的文件 → 报错（决策 #40）；
+    # MAKOSERVER_CONF 不存在仍宽容继续下寻
     _touch(conf_env['home'])
+    with pytest.raises(mako_mod.ConfigError):
+        mako_mod.find_config_file(str(conf_env['cli']))
     monkeypatch.setenv('MAKOSERVER_CONF', str(conf_env['env']))
-    assert mako_mod.find_config_file(str(conf_env['cli'])) == \
+    assert mako_mod.find_config_file() == \
         os.path.abspath(str(conf_env['home']))
 
 

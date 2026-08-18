@@ -12,7 +12,7 @@
 - 基于 Mako / Flask，提供一套类似 .php 的网页服务；
 - 用户请求 `http://localhost:5000/web/demo.mako` 的话，就会解析出相对路径，到文档根目录下寻找对应 .mako 文件并渲染返回；
 - 启动后指定一个文档根目录，就能为下面的所有 .mako 脚本提供页面服务，用户写新的动态页面，新增 .mako 文件就行，不必改 Flask 端任何一行代码；
-- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt、.css、.js、数据 .json、常见图片、.pdf、常见压缩包，完整表见 spec）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404（无论请求谓词）**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；白名单内且存在的文件仅接受 GET/HEAD，其它谓词返回 405 Method Not Allowed（附 `Allow: GET, HEAD` 头；判定在白名单之后，404 优先，不因 405 泄露文件存在性；.mako 脚本则全谓词渲染，`REQUEST_METHOD` 如实传递给脚本）；
+- 如果请求的是非 .mako 文件，走静态文件服务：按**内置扩展名白名单**（网页 .html/.htm、文本 .txt/.csv/.md、.css、.js/.mjs、数据 .json/.xml、常见图片、字体 .woff/.woff2/.ttf/.otf/.eot、常见音视频、.wasm、.pdf、常见压缩包，完整表见 spec；可经配置键 `static_types` 按站点扩展/覆盖）返回对应 Content-Type 与原始字节；**白名单之外（.py / .pyw / .pyo / .pyc / .php / .ini / .bak / .db / .log / 无扩展名等）一律 404（无论请求谓词）**，与「不存在」同响应——默认拒绝（fail-closed），源码、备份、数据库等杂物默认不可下载；白名单内且存在的文件仅接受 GET/HEAD，其它谓词返回 405 Method Not Allowed（附 `Allow: GET, HEAD` 头；判定在白名单之后，404 优先，不因 405 泄露文件存在性；.mako 脚本则全谓词渲染，`REQUEST_METHOD` 如实传递给脚本）；
 - 能够防止相对路径穿透到文档根目录以外；
 - 防止 .mako 源码以静态文件形式泄露：扩展名判断大小写不敏感，且基于规范化后的真实路径判断（防范 Windows 下 `demo.MAKO`、尾部点 `demo.mako.`、NTFS 数据流 `demo.mako::$DATA` 等写法绕过扩展名检查、走静态分支吐出模板源码；尾部点剥除仅 Windows 主动特判——Linux 下此类字面文件名不存在、自然 404 fail-closed，有意跨平台分裂）；
 - 服务自身与配置的防回吐：makoserver.py 自身与 `makoserver.ini`（.py / .ini 均不在静态白名单，天然 404）、实际加载命中的配置文件、已配置的日志文件（后两者路径启动时记录，请求解析全程对**最终目标文件**比对——初始路径先行、PATH_INFO 回溯与 index 兜底解析出的目标终点收口，命中即 404）——比对覆盖静态分支（回吐 secret 与访客日志）与模板分支（日志 / 配置若起名 `*.mako` 会被**当模板编译执行**），回溯与兜底旁路同堵；
@@ -51,7 +51,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 - `_REQUEST` —— 合并的请求参数字典（对应 PHP 的 `$_REQUEST`），支持 `getlist(name)` 获取同名多值（如 `?tag=a&tag=b`）；
 - `_GET` / `_POST` —— GET 与 POST 参数字典分开访问（对应 `$_GET` / `$_POST`）；
-- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REQUEST_URI`（原始请求 URI 原文含 query，编码态不受解码 / 规范化影响）、`SCRIPT_FILENAME`（实际渲染脚本的绝对路径，尾挂 / 兜底场景跟随最终渲染目标）、`SCRIPT_DIRNAME`（脚本所在目录，语义同 PHP 的 `__DIR__`）、`DOCUMENT_ROOT`（文档根绝对路径）——模板内文件访问**勿依赖**进程 cwd（随启动方式漂移、多线程共享不保证），定位文件用此三键拼绝对路径（PHP web「cwd = 脚本目录」因线程安全不可 chdir，以显式拼路径等价兑现）、`REMOTE_ADDR`（客户端 IP）、`CONTENT_TYPE` / `CONTENT_LENGTH`（请求体类型与长度，POST 场景高频）、`SERVER_NAME` / `SERVER_PORT` / `REQUEST_SCHEME`（服务端地址信息）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
+- `_SERVER` —— 请求环境信息字典（对应 `$_SERVER`），至少包含：`REQUEST_METHOD`、`QUERY_STRING`、`SCRIPT_NAME`（脚本路径）、`PATH_INFO`（尾挂路径，PHP 语义分工：脚本路径在 `SCRIPT_NAME`、尾挂在 `PATH_INFO`，无尾挂时为空串）、`REQUEST_URI`（原始请求 URI 原文含 query，编码态不受解码 / 规范化影响）、`SCRIPT_FILENAME`（实际渲染脚本的绝对路径，尾挂 / 兜底场景跟随最终渲染目标）、`SCRIPT_DIRNAME`（脚本所在目录，语义同 PHP 的 `__DIR__`）、`DOCUMENT_ROOT`（文档根绝对路径）——模板内文件访问**勿依赖**进程 cwd（随启动方式漂移、多线程共享不保证），定位文件用此三键拼绝对路径（PHP web「cwd = 脚本目录」因线程安全不可 chdir，以显式拼路径等价兑现）、`REMOTE_ADDR`（客户端 IP）、`CONTENT_TYPE` / `CONTENT_LENGTH`（请求体类型与长度，POST 场景高频）、`SERVER_NAME` / `SERVER_PORT` / `SERVER_PROTOCOL` / `REQUEST_SCHEME`（服务端地址与协议信息）、`REQUEST_TIME` / `REQUEST_TIME_FLOAT`（请求开始时刻，PHP 常备键）、`HTTPS`（https 请求时为 `'on'`，否则不设键，PHP 同语义）、以及 `HTTP_*` 形式的客户端请求头（如 `HTTP_AUTHORIZATION`）；
 - `_BODY` —— 原始请求 body（对应 PHP 的 `php://input`）；若 Content-Type 为 JSON 则同时提供 `_JSON`（自动解析成字典，否则为 None）；请求体大小受配置键 `max_body` 约束（默认 64MB，超限返回 413，配 `<= 0` 可解除限制）——即使可信环境，也防一次误操作的大 POST 吃光内存；
 - `_COOKIE` —— 客户端 cookie 字典（对应 `$_COOKIE`）；值经 percent-decode（对应 PHP `$_COOKIE` 的 urldecode，与 `RESP.setcookie` 的写侧编码配对；字面 `+` 保留不解为空格——与 PHP 的有意分歧，防解坏第三方 base64 cookie，见 spec 决策 #31）；
 - `_SESSION` —— 会话字典（对应 `$_SESSION`），一期实现，方案如下：
@@ -60,8 +60,8 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
   - 时间戳在签名覆盖范围内，客户端无法篡改续命；过期判定以服务端时钟为准；
   - **两层超时独立控制**：cookie 自身的 HTTP 层过期（`RESP.setcookie()` 的 expires/max-age）与签名 session 的时间戳过期是两层，前者管浏览器是否携带，后者管服务端是否接受；
   - 支持两种超时语义（配置项切换）：绝对超时（签发时间起算）与滑动超时（每次响应重签刷新，仿 PHP 默认行为）；
-  - 签名密钥优先读配置；配置缺失时由本机指纹（machine-id + 网卡 MAC 的 hash）派生，无需落盘即可同机稳定、跨机不同；
-  - 预期管理：容量受 cookie 限制（约 4KB，超限抛 500 错误页、错误信息说明容量限制）、值仅支持 JSON 可序列化类型（datetime / 自定义对象等写入时同样 500 报错）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；
+  - 签名密钥优先读配置；配置缺失时由本机指纹（machine-id + 网卡 MAC 等的 hash）**再混入文档根目录路径**派生——无需落盘即可同机同站稳定、跨机不同，且**同机不同站点（不同 root）互不验签**，跨站 session 不能互通互伪造；跨 root 共享 session 需显式配置同一 secret；
+  - 预期管理：容量受 cookie 限制（约 4KB，超限抛 500 错误页、错误信息说明容量限制）、值仅支持 JSON 可序列化类型（datetime / 自定义对象等写入时同样 500 报错）、数据客户端可见（只防篡改不防偷看）、无法服务端主动失效（改密钥可全员掉线）；**派生密钥的威胁模型**：指纹分量（hostname / machine-id / MAC 等）同机任意本地用户可读——派生密钥只防跨机与网络端伪造，**不防同机非特权用户本地推导后伪造 session**，需要这一级防护请显式配置随机 secret；另注意 cookie 名默认同为 `MAKO_SESSION`，同域多站点会互相覆盖对方 cookie（干扰可用性、不泄密），建议各站配 `session_cookie` 错开；
   - 更复杂的会话需求（主动淘汰、大容量存储等）由用户脚本自行搭配 Redis 等后端实现，bridge 提供 cookie 原语即可支撑（发 HttpOnly 的 sid cookie + 自管存储），MakoServer 不内置也不感知这些依赖。
 
 ### 响应
@@ -108,14 +108,14 @@ HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sy
 
 ## 配置文件
 
-- 全局默认配置（默认文档根目录、session 相关、请求体上限 `max_body` 等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
+- 全局默认配置（默认文档根目录、session 相关、请求体上限 `max_body`、静态白名单扩展 `static_types` 等）：`~/.config/makoserver/settings.ini`；配置文件格式为 INI（`configparser`，单节 `[makoserver]`，支持 `#` / `;` 行注释）；`_SESSION` 的签名密钥（secret）可在此显式配置覆盖，未配置时按本机指纹派生（详见「Bridge API」一节）；
 - 可选键 `access_log` / `error_log`：值为文件路径，配置后请求日志 / 错误日志分别写入对应文件；不配置时的默认流向：access log 不落盘、error log 走 stderr（详见「非功能需求」日志一节）。日志文件路径不建议指向文档根目录；即使指向，框架也会对该路径做运行时 404 屏蔽（见「模板服务」防回吐一条），不会回吐泄露；
 - 命令行参数：`-r` 指定的根目录覆盖配置文件中的 `root`；`-p` / `--host` 为纯命令行参数（端口、监听地址属进程启动属性，只对 dev server 有意义，不进配置文件——WSGI 模式监听由宿主决定，CLI 模式不读配置）；
 - WSGI 模式下按以下顺序查找配置文件，命中即用：
   1. 环境变量 `MAKOSERVER_CONF` 指定的路径；
   2. WSGI 入口脚本同目录下的 `makoserver.ini`；
   3. 兜底 `~/.config/makoserver/settings.ini`。
-  独立 dev server 模式在此之上另有命令行 `--conf FILE` 最高优先（CLI 渲染模式不读配置、忽略该参数）。
+  独立 dev server 模式在此之上另有命令行 `--conf FILE` 最高优先（CLI 渲染模式不读配置、忽略该参数）；`--conf` 指向不存在的文件会**直接报错**（显式参数指错不静默下寻），`MAKOSERVER_CONF` 指向不存在的文件则宽容继续下寻。
 - 若希望"配置随站点目录走，一个目录拷走就能跑"，做法是把 WSGI 入口脚本和 `makoserver.ini` 一起放进站点目录（利用第 2 条规则），配置中的相对路径以配置文件所在目录为基准解析；
 - 更简的**零配置形态**：把 makoserver.py 单独拷进站点目录即可——找不到任何配置文件时，WSGI 模式以 makoserver.py 自身所在目录为文档根目录（与第 2 条查找规则同一锚点），需要改端口 / 密钥等再补 `makoserver.ini`。
 
@@ -123,10 +123,11 @@ HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sy
 
 - 整个 MakoServer 自身代码只有 `makoserver.py` 一个文件，第三方依赖仅 Flask、Mako 两个，除此之外不依赖任何第三方库，拷走单文件就能部署；
 - 这个 MakoServer 可以单独运行，指定一个根目录和端口就能启动一个 HTTP Server 提供页面服务；
-- 这个 MakoServer 也可以按 WSGI 的模式运行，它会寻找配置文件，从里面解析出根目录；找不到配置文件时，以 makoserver.py 自身所在目录为文档根目录（零配置即拷即用）；
+- 这个 MakoServer 也可以按 WSGI 的模式运行，它会寻找配置文件，从里面解析出根目录；找不到配置文件时，以 makoserver.py 自身所在目录为文档根目录（零配置即拷即用）；`import makoserver` 本身零副作用，宿主首次访问 `application` 属性才触发配置查找与构造（惰性，pytest / 工具 import 不受用户级配置影响）；
 - 还可以作为普通 CGI 脚本运行（Apache mod_cgi / mod_cgid）：把 makoserver.py 放进 cgi-bin 目录，或用 `Action` 指令映射，CGI 环境自动检测（`GATEWAY_INTERFACE` 主标志，`REQUEST_METHOD` + `SCRIPT_FILENAME` 兜底），每请求起一个进程服务一次；零配置时文档根回退服务器提供的 `DOCUMENT_ROOT`；配置搜索链与 WSGI 模式相同。定位是兜底运行形态（连 mod_wsgi 都无需安装），生产场景仍推荐 mod_wsgi / gunicorn；
 - 还可以单独传入一个 .mako 脚本，就像命令行运行 `php xxx.php` 那样渲染出来，结果写到 stdout；脚本名传 `-` 时从标准输入读取模板源渲染（POSIX 约定，`echo '<% echo(42) %>' | python makoserver.py -`，与 `cat` / `python -` / `jq` 等工具同习惯；PHP CLI 读 stdin 时 `$argv[0]` 亦为 `'-'`），include 基准为当前工作目录；
-- CLI 模式下 bridge 对象参考 PHP CLI 的降级语义：请求参数字典为空、请求方法为 `GET`、请求 body 为空、cookie 读取为空；`RESP.header()` / `RESP.status()` / `RESP.setcookie()` 等响应控制调用静默无效（no-op），不报错——保证同一个 .mako 脚本在 HTTP 和 CLI 两种模式下都能运行。
+- CLI 模式下 bridge 对象参考 PHP CLI 的降级语义：请求参数字典为空、请求方法为 `GET`、请求 body 为空、cookie 读取为空；`RESP.header()` / `RESP.status()` / `RESP.setcookie()` 等响应控制调用静默无效（no-op），不报错——保证同一个 .mako 脚本在 HTTP 和 CLI 两种模式下都能运行；
+- 模板里的 `sys.exit()` / `exit()` 对齐 PHP 的 `exit` / `die` 语义：退出码 0（或无参）视作**正常终止渲染**——HTTP 下已缓冲输出照常返回、session 照常回写，CLI 下先 flush 输出再以 0 退出；非零退出码 HTTP 下按 500 处理、CLI 下 flush 后以该码退出——绝不静默丢弃输出。
 
 ## 非功能需求
 
