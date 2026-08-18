@@ -2,7 +2,6 @@
 //
 // etainfo() - 类似 phpinfo() 的 EtaServer 信息页
 //
-// 从 MakoServer 的 index.mako (makoinfo) 移植而来。
 // 版本号经 require('../package.json') 读取（require 锚定本模板目录，
 // 向上一级即 EtaServer 包根；require 整个 eta-server.js 也不会启动
 // 服务器，因为 require.main !== module）。

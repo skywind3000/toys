@@ -4,7 +4,7 @@
 
 ## 项目定位
 
-本项目是 `Apps/MakoServer`（Mako + Flask，Python 版）的 JavaScript 对标实现。MakoServer 验证了「文件路径即路由 + PHP 超全局 bridge」的玩法，EtaServer 把同一套玩法搬到 Eta 模板引擎与 Node.js 上，并以 npm 包形式发布，支持 `npx -y eta-server -r root -p 5000` 一行启动。
+EtaServer 是「文件路径即路由 + PHP 超全局 bridge」的轻量动态页面服务：指定一个文档根目录，即可为根目录下所有 .eta 脚本提供页面与接口服务，新增页面 / JSON 接口只需新增文件，零服务端代码。以 npm 包形式发布，支持 `npx -y eta-server -r root -p 5000` 一行启动；同时内置 CLI 渲染模式，可像 `php script.php` 一样直接渲染单个脚本。
 
 ## 定位与安全边界
 
@@ -28,12 +28,14 @@
 - 支持 PATH_INFO 尾挂机制：请求 `xxx.eta/尾挂路径`（如 `/index.eta/hello`）时渲染 `xxx.eta`，尾挂部分（`/hello`）经 `_SERVER['PATH_INFO']` 传入；静态文件不带尾挂；
 - 更新检测：模板引擎关闭缓存（`cache: false`），每次请求读盘编译，改完即生效；
 - 错误处理：.eta 脚本编译错误或运行时异常时，返回 500 + 错误内容页面（含转义后的错误信息与调用栈）；
+- 请求体大小默认上限 64MB，超限在客户端上传完成后返回 413（排水语义，不断连）；
+- **每请求隔离**：bridge 数据与 URL 解析结果均为每请求独立（不存共享可变状态），并发请求间参数不串号；
 - 404 处理：文件不存在或路径穿透被拒绝时，统一返回 404，不区分「不存在」与「被拒绝」；
 - 编码：文本输出统一 UTF-8。
 
 ## Bridge API
 
-Node 端向 .eta 模板暴露的变量/函数，设计对标 PHP 超全局变量与 MakoServer 的 bridge。Eta 配置开启 `useWith`，模板内可**裸名访问**（`_GET.name` 而非 `it._GET.name`），`it.` 前缀写法同样有效。
+Node 端向 .eta 模板暴露的变量/函数，命名与语义对标 PHP 超全局变量。Eta 配置开启 `useWith`，模板内可**裸名访问**（`_GET.name` 而非 `it._GET.name`），`it.` 前缀写法同样有效。
 
 ### 请求（仿 PHP 超全局变量命名）
 
@@ -62,7 +64,7 @@ Node 端向 .eta 模板暴露的变量/函数，设计对标 PHP 超全局变量
 - `RESP.writeraw(buf)` —— 二进制输出通道：追加 bytes，一旦使用即短路全部文本输出（模板文本与插值整体丢弃）；writeraw 不负责设置 Content-Type，需自行 `RESP.header()`；
 - 默认 Content-Type：脚本未显式设置时为 `text/html; charset=utf-8`。
 
-### 暂不实现（对标 MakoServer 第二期）
+### 暂不实现（二期规划）
 
 - `_FILES` —— 文件上传（multipart 解析）；
 - 配置文件（ini / json）与日志文件；
@@ -83,9 +85,9 @@ eta-server [options] - [args...]                   # 从 stdin 读脚本渲染
 
 启动时打印横幅（版本、root 绝对路径、访问 URL）；端口占用（EADDRINUSE）给出友好报错。
 
-### CLI 渲染模式（对标 MakoServer）
+### CLI 渲染模式
 
-出现第一个非选项位置参数时进入 CLI 渲染模式，类似 `php script.php`：渲染单个脚本、结果写 stdout 后退出。规则与 MakoServer 的命令行渲染一致：
+出现第一个非选项位置参数时进入 CLI 渲染模式，类似 `php script.php`：渲染单个脚本、结果写 stdout 后退出。规则（对齐 PHP CLI 习惯）：
 
 - 脚本路径**不限扩展名**；文件不存在 → stderr 报错、退出码 1；
 - `script` 为 `-` 时从 **stdin** 读取模板源渲染（POSIX 约定）；

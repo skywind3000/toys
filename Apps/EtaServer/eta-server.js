@@ -30,7 +30,7 @@ const VERSION = '0.1.0'
 const MAX_BODY = 64 * 1024 * 1024
 const SESSION_COOKIE = 'etasess'
 const SESSION_TTL = 30 * 60 * 1000          // sliding timeout: 30 min
-// cookie capacity guard (MakoServer parity): an oversized session
+// cookie capacity guard: an oversized session
 // cookie is silently dropped by browsers anyway; fail loudly instead
 const SESSION_COOKIE_LIMIT = 4096
 const SELF_PATH = path.resolve(__filename)
@@ -135,19 +135,22 @@ function deriveSecret (rootDir) {
   } catch (e) {
     rootReal = path.resolve(rootDir)
   }
-  let mac = ''
+  // mix in ALL non-zero MACs sorted: enumeration order of the first
+  // interface is not stable across reboots (and may pick a virtual
+  // adapter), which would silently invalidate every session
+  const macs = []
   try {
     const ifs = os.networkInterfaces()
     for (const key of Object.keys(ifs)) {
       for (const item of ifs[key] || []) {
         if (item.mac && item.mac !== '00:00:00:00:00:00') {
-          mac = item.mac
-          break
+          macs.push(item.mac)
         }
       }
-      if (mac) break
     }
   } catch (e) { /* ignore */ }
+  macs.sort()
+  const mac = macs.join(',')
   let username = ''
   let home = ''
   try {
@@ -160,6 +163,12 @@ function deriveSecret (rootDir) {
   const seed = ['eta-server', os.hostname(), username, home, mac,
     rootReal].join('|')
   return crypto.createHash('sha256').update(seed).digest('hex')
+}
+
+// percent-encode a decoded path for use in a Location header (each
+// segment separately so '/' separators survive); search kept raw
+function encodeLocationPath (p) {
+  return p.split('/').map(encodeURIComponent).join('/')
 }
 
 function signPayload (secret, data) {
@@ -201,7 +210,7 @@ function decodeSession (cookie, secret) {
 }
 
 function parseCookies (header) {
-  const out = {}
+  const out = Object.create(null)
   if (!header) return out
   for (const part of String(header).split(';')) {
     const i = part.indexOf('=')
@@ -222,24 +231,35 @@ function readBody (req) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
+    let over = false
     req.on('data', (chunk) => {
+      if (over) return
       size += chunk.length
       if (size > MAX_BODY) {
-        const err = new Error('request body too large')
-        err.status = 413
-        reject(err)
-        req.destroy()
+        // keep draining the socket (bounded memory) and only reply
+        // once the client finishes uploading: destroying the socket
+        // here would hand the client an ECONNRESET with no response
+        over = true
+        chunks.length = 0
         return
       }
       chunks.push(chunk)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('end', () => {
+      if (over) {
+        const err = new Error('request body too large')
+        err.status = 413
+        reject(err)
+        return
+      }
+      resolve(Buffer.concat(chunks))
+    })
     req.on('error', reject)
   })
 }
 
 function parseForm (buf) {
-  const out = {}
+  const out = Object.create(null)
   const sp = new URLSearchParams(buf.toString('utf8'))
   for (const pair of sp.entries()) {
     out[pair[0]] = pair[1]
@@ -295,14 +315,17 @@ function makeResp () {
       resp.headers.push([String(name), String(value)])
     },
     status: function (code) {
-      resp.code = Number(code) || 200
+      // stored raw: validated at assembly time (non 100-999 integer
+      // becomes a 500); coercing here
+      // would silently turn status('abc') / status(0) into 200
+      resp.code = code
     },
     redirect: function (url, code) {
       resp.code = code || 302
       resp.headers.push(['Location', String(url)])
     },
     setcookie: function (name, value, opts) {
-      // session cookie name monopoly (MakoServer parity): a script
+      // session cookie name monopoly: a script
       // setcookie() with the session name would fight the framework
       // over the same cookie; drop the script's line and warn
       if (String(name) === SESSION_COOKIE) {
@@ -378,7 +401,7 @@ function buildServerEnv (req, parsed, scriptAbs, scriptName, pathInfo, ctx) {
   return env
 }
 
-async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
+async function renderTemplate (req, res, ctx, parsed, scriptAbs, scriptName, pathInfo) {
   let bodyBuf = Buffer.alloc(0)
   try {
     bodyBuf = await readBody(req)
@@ -389,20 +412,19 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
     return sendError(res, 400, 'Bad Request', err.message)
   }
 
-  const parsed = ctx.parsed
-  const query = {}
+  const query = Object.create(null)
   for (const pair of parsed.searchParams.entries()) {
     query[pair[0]] = pair[1]
   }
 
-  let post = {}
+  let post = Object.create(null)
   let jsonVal = null
   const ctype = String(req.headers['content-type'] || '')
   if (ctype.indexOf('application/x-www-form-urlencoded') >= 0) {
     post = parseForm(bodyBuf)
   } else if (ctype.indexOf('json') >= 0) {
     // any json-ish content type (application/json, application/*+json,
-    // text/json) is parsed, same as MakoServer
+    // text/json) is parsed
     try {
       jsonVal = JSON.parse(bodyBuf.toString('utf8'))
     } catch (e) {
@@ -418,7 +440,7 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
   const data = {
     _GET: query,
     _POST: post,
-    _REQUEST: Object.assign({}, query, post),
+    _REQUEST: Object.assign(Object.create(null), query, post),
     _SERVER: buildServerEnv(req, parsed, scriptAbs, scriptName, pathInfo, ctx),
     _COOKIE: cookies,
     _SESSION: session,
@@ -440,6 +462,14 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
     return sendError(res, 500, 'Internal Server Error', detail)
   }
 
+  // ---- status validation: checked
+  // right after rendering, before session re-signing, so an invalid
+  // code wastes neither the session update nor the response ----
+  if (!Number.isInteger(resp.code) || resp.code < 100 || resp.code > 999) {
+    return sendError(res, 500, 'Internal Server Error',
+      'invalid status code: ' + resp.code)
+  }
+
   // ---- assemble response headers ----
   const headers = { 'Content-Type': 'text/html; charset=utf-8' }
   const setCookies = []
@@ -458,7 +488,6 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
       '; Path=/; HttpOnly; SameSite=Lax'
     if (Buffer.byteLength(sessCookie, 'utf8') > SESSION_COOKIE_LIMIT) {
       // browsers silently drop oversized cookies; fail loudly instead
-      // (MakoServer SessionTooLarge parity)
       return sendError(res, 500, 'Internal Server Error',
         'session data exceeds the cookie capacity limit (about 4KB)')
     }
@@ -468,13 +497,6 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
       '; Max-Age=0')
   }
   if (setCookies.length > 0) headers['Set-Cookie'] = setCookies
-
-  // ---- status validation (MakoServer decision #38 parity): an
-  // out-of-range code must become a 500, not a broken writeHead ----
-  if (!Number.isInteger(resp.code) || resp.code < 100 || resp.code > 999) {
-    return sendError(res, 500, 'Internal Server Error',
-      'invalid status code: ' + resp.code)
-  }
 
   // ---- pick body: binary short-circuit > RESP.json() > rendered html ----
   let body = html
@@ -548,7 +570,8 @@ async function handleRequest (req, res, ctx) {
   if (pathname.indexOf('//') >= 0) {
     // %2f-encoded slashes survive the raw check above; normalize them
     // the same way once decoded
-    const loc = pathname.replace(/\/{2,}/g, '/') + (parsed.search || '')
+    const loc = encodeLocationPath(pathname.replace(/\/{2,}/g, '/')) +
+      (parsed.search || '')
     res.writeHead(308, { 'Location': loc })
     res.end()
     return
@@ -557,7 +580,7 @@ async function handleRequest (req, res, ctx) {
     // Win32 silently drops trailing dots / spaces when opening files
     // ('demo.eta.' resolves to 'demo.eta'); strip them up front so
     // extension decisions and containment checks agree with what the
-    // file system actually opens (MakoServer spec 3.2 rstrip)
+    // file system actually opens
     pathname = pathname.replace(/[. ]+$/, '') || '/'
     // ADS colons (foo.txt::$DATA) and reserved device names (NUL,
     // CON.txt, ...) cannot be served as regular files: fail-closed
@@ -567,7 +590,6 @@ async function handleRequest (req, res, ctx) {
       }
     }
   }
-  ctx.parsed = parsed
   parsed.queryString = (req.url.indexOf('?') >= 0)
     ? req.url.slice(req.url.indexOf('?') + 1) : ''
 
@@ -612,7 +634,7 @@ async function handleRequest (req, res, ctx) {
     if (!realInside(ctx.rootReal, scriptAbs)) {
       return sendError(res, 404, 'Not Found')
     }
-    return renderTemplate(req, res, ctx, scriptAbs, scriptRel, pathInfo)
+    return renderTemplate(req, res, ctx, parsed, scriptAbs, scriptRel, pathInfo)
   }
 
   // ---- directory branch: 301 slash, then index fallbacks ----
@@ -630,7 +652,7 @@ async function handleRequest (req, res, ctx) {
   }
   if (stat.isDirectory()) {
     if (!pathname.endsWith('/')) {
-      const loc = pathname + '/' + (parsed.search || '')
+      const loc = encodeLocationPath(pathname) + '/' + (parsed.search || '')
       res.writeHead(301, { 'Location': loc })
       res.end()
       return
@@ -638,14 +660,23 @@ async function handleRequest (req, res, ctx) {
     const idxEta = path.join(real, 'index.eta')
     try {
       if (fs.statSync(idxEta).isFile()) {
+        // index candidates get their own containment check: the
+        // directory passed, but an index symlink inside it may still
+        // point outside the root
+        if (!realInside(ctx.rootReal, idxEta)) {
+          return sendError(res, 404, 'Not Found')
+        }
         const name = pathname + 'index.eta'
-        return renderTemplate(req, res, ctx, idxEta, name, '')
+        return renderTemplate(req, res, ctx, parsed, idxEta, name, '')
       }
     } catch (e) { /* no index.eta */ }
     for (const name of ['index.html', 'index.htm']) {
       const f = path.join(real, name)
       try {
         if (fs.statSync(f).isFile()) {
+          if (!realInside(ctx.rootReal, f)) {
+            return sendError(res, 404, 'Not Found')
+          }
           return sendStatic(req, res, f, STATIC_TYPES[path.extname(f)])
         }
       } catch (e) { /* keep looking */ }
@@ -711,14 +742,14 @@ async function renderCli (script, args) {
   }
   src = stripBom(src)
 
-  // bridge degraded to CLI values (mirrors MakoServer 6.4): no
+  // bridge degraded to CLI values: no
   // request, no session, empty body; argv[0] = the script itself
   const resp = makeResp()
   const now = Date.now()
   const data = {
-    _GET: {},
-    _POST: {},
-    _REQUEST: {},
+    _GET: Object.create(null),
+    _POST: Object.create(null),
+    _REQUEST: Object.create(null),
     _SERVER: {
       REQUEST_METHOD: 'GET',
       QUERY_STRING: '',
@@ -735,7 +766,7 @@ async function renderCli (script, args) {
       REQUEST_TIME_FLOAT: now / 1000,
       argv: [script].concat(args),
     },
-    _COOKIE: {},
+    _COOKIE: Object.create(null),
     _SESSION: {},
     _BODY: Buffer.alloc(0),
     _JSON: null,
@@ -784,7 +815,6 @@ function startServer (rootDir, port, host) {
     port: port,
     secret: deriveSecret(root),
     eta: new Eta({ views: root, cache: false, useWith: true, autoTrim: false }),
-    parsed: null,
   }
 
   const server = http.createServer((req, res) => {
@@ -794,14 +824,19 @@ function startServer (rootDir, port, host) {
   })
 
   return new Promise((resolve, reject) => {
-    server.once('error', (err) => {
+    const onError = (err) => {
       if (err.code === 'EADDRINUSE') {
         reject(new Error('port ' + port + ' is already in use on ' + host))
       } else {
         reject(err)
       }
-    })
+    }
+    server.once('error', onError)
     server.listen(port, host, () => {
+      // once listening, the startup error path is over: leaving the
+      // handler around would reject an already-settled promise on any
+      // later server-level error
+      server.removeListener('error', onError)
       resolve(server)
     })
   })
@@ -845,8 +880,11 @@ function parseArgs (argv) {
       opts.root = path.resolve(args[++i])
     } else if (a === '-p' || a === '--port') {
       if (i + 1 >= args.length) throw new Error('missing value for ' + a)
-      opts.port = Number(args[++i])
-      if (!opts.port) throw new Error('invalid port')
+      const n = Number(args[++i])
+      if (!Number.isInteger(n) || n < 1 || n > 65535) {
+        throw new Error('invalid port')
+      }
+      opts.port = n
     } else if (a === '-H' || a === '--host') {
       if (i + 1 >= args.length) throw new Error('missing value for ' + a)
       opts.host = args[++i]
@@ -856,7 +894,7 @@ function parseArgs (argv) {
     } else {
       // first positional argument is the script: CLI render mode.
       // everything after the script name is never parsed and passed
-      // through verbatim (same as argparse REMAINDER in MakoServer),
+      // through verbatim (argparse REMAINDER semantics),
       // including arguments that look like options
       opts.script = a
       opts.args = args.slice(i + 1)

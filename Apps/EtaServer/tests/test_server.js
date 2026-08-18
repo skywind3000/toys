@@ -441,6 +441,93 @@ async function main () {
       assert.strictEqual(res.status, 200)
       assert.strictEqual(await res.text(), '&lt;a&gt;&amp;')
     })
+
+    await check('RESP.status(0)/status("abc") give 500', async () => {
+      writeDemo('_t_status0.eta', '<% RESP.status(0) %>x')
+      writeDemo('_t_statusabc.eta', '<% RESP.status("abc") %>x')
+      const r1 = await fetch(BASE + '/_t_status0.eta')
+      assert.strictEqual(r1.status, 500)
+      await r1.text()
+      const r2 = await fetch(BASE + '/_t_statusabc.eta')
+      assert.strictEqual(r2.status, 500)
+      const body = await r2.text()
+      assert.ok(body.indexOf('invalid status') >= 0)
+    })
+
+    await check('prototype-named query keys stay plain data', async () => {
+      const res = await fetch(BASE +
+        '/api.eta?__proto__=pwned&constructor=c&hasOwnProperty=h')
+      assert.strictEqual(res.status, 200)
+      const data = await res.json()
+      assert.strictEqual(data.query.__proto__, 'pwned')
+      assert.strictEqual(data.query.constructor, 'c')
+      assert.strictEqual(data.query.hasOwnProperty, 'h')
+    })
+
+    await check('escaping index.eta/index.html fallbacks give 404', async () => {
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eta-out2-'))
+      fs.writeFileSync(path.join(outDir, 'evil.eta'), 'EVIL <%= 1 %>')
+      fs.writeFileSync(path.join(outDir, 'secret.html'), 'SECRET')
+      const mk = (dir, link, target) => {
+        fs.mkdirSync(path.join(ROOT, dir), { recursive: true })
+        tmpDemoFiles.push(path.join(ROOT, dir))
+        fs.symlinkSync(target, path.join(ROOT, dir, link))
+      }
+      try {
+        mk('_t_esc1', 'index.eta', path.join(outDir, 'evil.eta'))
+        const r1 = await fetch(BASE + '/_t_esc1/')
+        await r1.text()
+        assert.strictEqual(r1.status, 404, 'escaping index.eta')
+        // fail-closed: an escaping index candidate is a 404 even when
+        // a legit fallback file exists next to it (fail-closed)
+        mk('_t_esc2', 'index.eta', path.join(outDir, 'evil.eta'))
+        fs.writeFileSync(path.join(ROOT, '_t_esc2', 'index.html'), 'OK')
+        const r2 = await fetch(BASE + '/_t_esc2/')
+        await r2.text()
+        assert.strictEqual(r2.status, 404, 'escaping index.eta blocks dir')
+        mk('_t_esc3', 'index.html', path.join(outDir, 'secret.html'))
+        const r3 = await fetch(BASE + '/_t_esc3/')
+        await r3.text()
+        assert.strictEqual(r3.status, 404, 'escaping index.html')
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true })
+      }
+    })
+
+    await check('oversized body receives a real 413 response', async () => {
+      const big = 'x'.repeat(64 * 1024 * 1024 + 1024)
+      const res = await fetch(BASE + '/api.eta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: big,
+      })
+      assert.strictEqual(res.status, 413)
+      const body = await res.text()
+      assert.ok(body.indexOf('Payload Too Large') >= 0)
+    })
+
+    await check('concurrent requests keep their own parameters', async () => {
+      // overlapping big POSTs widen the readBody await window while a
+      // swarm of tagged GETs checks that no query ever crosses over
+      const jobs = []
+      const big = 'x'.repeat(4 * 1024 * 1024)
+      for (let i = 0; i < 8; i++) {
+        jobs.push(fetch(BASE + '/api.eta?post=' + i, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: big,
+        }).then((r) => r.json()).then((d) => {
+          assert.strictEqual(d.query.post, String(i))
+        }))
+      }
+      for (let i = 0; i < 40; i++) {
+        jobs.push(fetch(BASE + '/api.eta?tag=' + i)
+          .then((r) => r.json()).then((d) => {
+            assert.strictEqual(d.query.tag, String(i))
+          }))
+      }
+      await Promise.all(jobs)
+    })
   } finally {
     for (const f of tmpDemoFiles) {
       try { fs.rmSync(f, { recursive: true, force: true }) } catch (e) { }
