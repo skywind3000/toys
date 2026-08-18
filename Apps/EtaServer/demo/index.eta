@@ -26,6 +26,8 @@ _SESSION.count = (_SESSION.count || 0) + 1
     <li><a href="api.eta">JSON API demo</a>
         (also accepts POST: form or JSON body)</li>
     <li><a href="require.eta">require() demo</a></li>
+    <li><a href="etainfo.eta">etainfo() - server info page</a>
+        (like phpinfo)</li>
   </ul>
   <hr>
   <p>

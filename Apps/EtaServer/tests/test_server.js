@@ -224,11 +224,33 @@ async function main () {
       assert.ok(body.indexOf('SCRIPT_DIRNAME') >= 0)
     })
 
+    await check('TypeScript library loads via require(.ts)', async () => {
+      const res = await fetch(BASE + '/tsdemo.eta')
+      assert.strictEqual(res.status, 200)
+      const body = await res.text()
+      assert.ok(body.indexOf('alice (age 30)') >= 0)
+      assert.ok(body.indexOf('sum([1,2,3]) = 6') >= 0)
+    })
+
     await check('template runtime error gives 500 page', async () => {
       const res = await fetch(BASE + '/broken.eta')
       assert.strictEqual(res.status, 500)
       const body = await res.text()
       assert.ok(body.indexOf('Internal Server Error') >= 0)
+    })
+
+    await check('etainfo() page renders all sections', async () => {
+      const res = await fetch(BASE + '/etainfo.eta?probe=1')
+      assert.strictEqual(res.status, 200)
+      const body = await res.text()
+      assert.ok(body.indexOf('etainfo()') >= 0)
+      assert.ok(body.indexOf('EtaServer Version') >= 0)
+      assert.ok(body.indexOf('This Request (_SERVER)') >= 0)
+      assert.ok(body.indexOf('Request Parameters') >= 0)
+      assert.ok(body.indexOf('Environment Variables') >= 0)
+      assert.ok(body.indexOf('Bridge API') >= 0)
+      assert.ok(body.indexOf('probe') >= 0)        // _GET echoed in table
+      assert.ok(body.indexOf('QUERY_STRING') >= 0)
     })
   } finally {
     child.kill()

@@ -47,7 +47,8 @@ Node 端向 .eta 模板暴露的变量/函数，设计对标 PHP 超全局变量
 ### 模块加载
 
 - `require(spec)` —— 按模板文件所在目录锚定的 Node `require`（`module.createRequire(scriptPath)`）：相对说明符以 .eta 文件目录为基准，裸说明符沿目录向上搜索 `node_modules`，与「同目录的 .js 文件」行为一致；
-- ESM 静态 `import` 语法不可用（模板编译为 `new Function` 体，非模块），需要 ESM 时用 `await import()` 动态形式。
+- ESM 静态 `import` 语法不可用（模板编译为 `new Function` 体，非模块），需要 ESM 时用 `await import()` 动态形式；
+- **模板代码块只能写 JS，但业务逻辑可用 TypeScript**：模板里直接 `require('./lib/util.ts')` 即可，由 Node 22.18+ 内置类型剥离支持，零额外依赖；仅限可擦除语法（类型注解 / interface / type / 泛型可用，enum / namespace / 参数属性不可用）；模板保持薄壳，重逻辑下沉到 .ts 库文件。
 
 ### 输出与响应
 

@@ -1,0 +1,23 @@
+<%
+// tsdemo.eta - 模板保持薄壳，业务逻辑放 .ts 库文件
+const { formatUser, sum } = require('./tslib.ts')
+const users = [
+  { name: 'alice', age: 30 },
+  { name: 'bob', age: 25 },
+]
+%><!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>TypeScript demo</title></head>
+<body>
+  <h1>TypeScript in EtaServer</h1>
+  <p>模板里只能写 JS，但逻辑库可以是 .ts ——
+     本页即 <code>require('./tslib.ts')</code> 而来，零编译步骤。</p>
+  <ul>
+  <% for (const u of users) { %>
+    <li><%= formatUser(u) %></li>
+  <% } %>
+  </ul>
+  <p>sum([1,2,3]) = <%= sum([1, 2, 3]) %></p>
+  <p><a href="index.eta">back home</a></p>
+</body>
+</html>

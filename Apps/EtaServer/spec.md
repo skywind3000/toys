@@ -51,7 +51,8 @@ require: createRequire(scriptAbs)
 - 相对说明符以 .eta 文件所在目录为基准；
 - 裸说明符沿目录向上搜索 `node_modules`；
 - 与「同目录 .js 文件」的 Node 原生行为一致；
-- ESM 静态 `import` 语法不可用（非模块作用域），需要时用 `await import()` 动态形式。
+- ESM 静态 `import` 语法不可用（非模块作用域），需要时用 `await import()` 动态形式；
+- **模板内可 require `.ts` 文件**：Node 22.18+ 内置类型剥离（无需任何依赖），因此「模板 JS 薄壳 + 逻辑下沉 .ts 库文件」是推荐分工；限制：仅可擦除语法（enum / namespace / 参数属性会报错）。模板代码块本身不经过类型剥离（`new Function` 编译路径），故 `<% %>` 内仍只能写 JS；`engines.node >= 22.18` 即为此特性而设。
 
 ### 决策 #4：`<%= %>` 默认转义（Eta 原生 autoEscape）
 
@@ -126,6 +127,10 @@ HTTP 用 `node:http`、session 用 `node:crypto`、CLI 手写解析——除 `et
 - 500：broken.eta（引用未定义函数）。
 
 跑法：`npm test`（Node 18+，用全局 fetch）。
+
+### 决策 #9：模板 JS + 逻辑 TS 的分工，零依赖
+
+模板代码块经 `new Function` 编译，不经过模块加载器，Node 类型剥离帮不上忙，故 `<% %>` 内只能写 JS。但注入的 `require` 支持直接加载 `.ts`（Node 22.18+ 内置类型剥离，实测通过），分工与 PHP 生态一致：模板保持薄壳，重逻辑下沉 `lib/*.ts`。仅支持可擦除语法（enum / namespace / 参数属性不可用）。不引 ts-node / tsx / typescript，`dependencies` 保持只有 `eta`；`engines.node` 相应提到 `>=22.18`。
 
 ## 已知限制
 
