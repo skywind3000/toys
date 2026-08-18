@@ -158,7 +158,8 @@ def test_request_uri_dir_fallback (site, wf, client_factory):
 #----------------------------------------------------------------------
 
 def test_body_raw (site, wf, client_factory):
-    wf('t.mako', '<% echo(_BODY) %>')
+    # _BODY 是原始 bytes：二进制回显走 echoraw（echo 只接受文本）
+    wf('t.mako', '<% echoraw(_BODY) %>')
     cli = client_factory(site)
     r = cli.post('/t.mako', data=b'\x00\x01RAW',
                  content_type='application/octet-stream')
@@ -210,7 +211,13 @@ def test_json_empty_body_none (site, wf, client_factory):
 def test_cookie_dict (site, wf, client_factory):
     wf('t.mako', '<% echo(_COOKIE.get("ck", "-")) %>')
     cli = client_factory(site)
-    cli.set_cookie('localhost', 'ck', 'vv')
+    # 兼容 Werkzeug 两代 test client set_cookie 签名
+    import inspect
+    params = list(inspect.signature(cli.set_cookie).parameters)
+    if params and params[0] == 'server_name':
+        cli.set_cookie('localhost', 'ck', 'vv')
+    else:
+        cli.set_cookie('ck', 'vv')
     r = cli.get('/t.mako')
     assert r.data == b'vv'
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# test_template.py - 模板加载：渲染 / mtime reload / 尾部截断 / BOM / include
+# test_template.py - 模板加载：渲染 / mtime reload / 尾部保留 / BOM / include
 #
 #======================================================================
 
@@ -39,18 +39,19 @@ def test_size_change_reload (site, wf, client_factory):
     assert cli.get('/t.mako').data == b'BBBBBBBB'
 
 
-def test_trailing_whitespace_truncated (site, wf, client_factory):
-    # 整文件单一代码块 + 二进制输出：%> 后的尾部空白不属于输出
-    wf('bin.mako', '<% echo(b"\\x89PNG\\r\\n\\x1a\\n") %>\n\n   \n')
+def test_binary_script_eof_newline_not_polluting (site, wf, client_factory):
+    # 二进制脚本经 echoraw 短路文本输出：%> 后的尾部空白不进响应
+    wf('bin.mako', '<% echoraw(b"\\x89PNG\\r\\n\\x1a\\n") %>\n\n   \n')
     cli = client_factory(site)
     r = cli.get('/bin.mako')
     assert r.data == b'\x89PNG\r\n\x1a\n'
 
 
-def test_text_template_trailing_newline_truncated (site, wf, client_factory):
+def test_text_template_trailing_newline_preserved (site, wf, client_factory):
+    # 文本模式不做 rstrip：源文件尾部换行忠实保留
     wf('t.mako', 'hello\n\n\n')
     cli = client_factory(site)
-    assert cli.get('/t.mako').data == b'hello'
+    assert cli.get('/t.mako').data == b'hello\n\n\n'
 
 
 def test_bom_file (site, wfb, client_factory):

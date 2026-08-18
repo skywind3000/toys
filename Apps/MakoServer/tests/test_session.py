@@ -7,7 +7,18 @@
 
 import time
 import base64
+import inspect
 import pytest
+
+
+def _set_cookie (cli, name, value):
+    """test client 塞 cookie，兼容 Werkzeug 两代签名：
+    >=2.3 为 set_cookie(key, value)，旧版为 (server_name, key, value)。"""
+    params = list(inspect.signature(cli.set_cookie).parameters)
+    if params and params[0] == 'server_name':
+        cli.set_cookie('localhost', name, value)
+    else:
+        cli.set_cookie(name, value)
 
 
 INI = '''[makoserver]
@@ -42,7 +53,7 @@ def test_roundtrip (site, wf, mkapp):
     r1 = cli.get('/w.mako')
     value = _cookie_of(r1)
     assert value is not None
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r2 = cli.get('/r.mako')
     assert r2.data == b'sky'
 
@@ -69,7 +80,7 @@ def test_tamper_data_rejected (site, wf, mkapp):
     # 篡改 data（换成 {"u":2} 的 b64）
     evil = base64.urlsafe_b64encode(b'{"u":2}').rstrip(b'=').decode()
     forged = '%s.%s.%s' % (evil, ts, sig)
-    cli.set_cookie('localhost', 'MAKO_SESSION', forged)
+    _set_cookie(cli, 'MAKO_SESSION', forged)
     r = cli.get('/r.mako')
     assert r.data == b'-'
 
@@ -81,7 +92,7 @@ def test_tamper_ts_rejected (site, wf, mkapp):
     value = _cookie_of(cli.get('/w.mako'))
     data_b64, ts, sig = value.split('.')
     forged = '%s.%s.%s' % (data_b64, str(int(ts) - 99999), sig)
-    cli.set_cookie('localhost', 'MAKO_SESSION', forged)
+    _set_cookie(cli, 'MAKO_SESSION', forged)
     r = cli.get('/r.mako')
     assert r.data == b'-'
 
@@ -93,7 +104,7 @@ def test_tamper_sig_rejected (site, wf, mkapp):
     value = _cookie_of(cli.get('/w.mako'))
     data_b64, ts, sig = value.split('.')
     forged = '%s.%s.%s' % (data_b64, ts, '0' * len(sig))
-    cli.set_cookie('localhost', 'MAKO_SESSION', forged)
+    _set_cookie(cli, 'MAKO_SESSION', forged)
     r = cli.get('/r.mako')
     assert r.data == b'-'
 
@@ -102,7 +113,7 @@ def test_garbage_cookie_rejected (site, wf, mkapp):
     wf('r.mako', '<% echo(_SESSION.get("u", "-")) %>')
     app, cli = mkapp()
     for garbage in ('', 'abc', 'a.b', 'a.b.c.d', 'xx.yy.zz'):
-        cli.set_cookie('localhost', 'MAKO_SESSION', garbage)
+        _set_cookie(cli, 'MAKO_SESSION', garbage)
         r = cli.get('/r.mako')
         assert r.data == b'-', garbage
 
@@ -130,7 +141,7 @@ def test_absolute_expired_rejected (site, wf, mkapp):
     codec = app.mako_server.codec
     old = int(time.time()) - 7200      # 超过 lifetime=3600
     value = codec.encode({'u': 'old'}, old)
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/r.mako')
     assert r.data == b'-'
 
@@ -142,7 +153,7 @@ def test_absolute_ts_inherited (site, wf, mkapp):
     codec = app.mako_server.codec
     old_ts = int(time.time()) - 100
     value = codec.encode({'u': 1}, old_ts)
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/w.mako')
     new_value = _cookie_of(r)
     assert new_value is not None
@@ -155,7 +166,7 @@ def test_absolute_unchanged_no_cookie (site, wf, mkapp):
     app, cli = mkapp(mode='absolute')
     codec = app.mako_server.codec
     value = codec.encode({'u': 1}, int(time.time()))
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/r.mako')
     assert r.data == b'1'
     assert _cookie_of(r) is None
@@ -168,7 +179,7 @@ def test_sliding_resign_without_write (site, wf, mkapp):
     codec = app.mako_server.codec
     old_ts = int(time.time()) - 500
     value = codec.encode({'u': 1}, old_ts)
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/r.mako')
     new_value = _cookie_of(r)
     assert new_value is not None
@@ -189,7 +200,7 @@ def test_nested_mutation_detected (site, wf, mkapp):
     app, cli = mkapp(mode='absolute')
     codec = app.mako_server.codec
     value = codec.encode({'cart': [1]}, int(time.time()))
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/w.mako')
     new_value = _cookie_of(r)
     assert new_value is not None
@@ -204,7 +215,7 @@ def test_rebind_not_detected (site, wf, mkapp):
     app, cli = mkapp(mode='absolute')
     codec = app.mako_server.codec
     value = codec.encode({'u': 1}, int(time.time()))
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/w.mako')
     assert _cookie_of(r) is None
 
@@ -215,7 +226,7 @@ def test_clear_session_resigned (site, wf, mkapp):
     app, cli = mkapp(mode='sliding')
     codec = app.mako_server.codec
     value = codec.encode({'u': 1}, int(time.time()))
-    cli.set_cookie('localhost', 'MAKO_SESSION', value)
+    _set_cookie(cli, 'MAKO_SESSION', value)
     r = cli.get('/w.mako')
     new_value = _cookie_of(r)
     assert new_value is not None
@@ -280,6 +291,6 @@ def test_custom_cookie_name (site, wf, mako_mod, tmp_path):
     r1 = cli.get('/w.mako')
     value = _cookie_of(r1, name='MYSESS')
     assert value is not None
-    cli.set_cookie('localhost', 'MYSESS', value)
+    _set_cookie(cli, 'MYSESS', value)
     r2 = cli.get('/r.mako')
     assert r2.data == b'1'

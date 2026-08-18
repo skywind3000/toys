@@ -3,7 +3,7 @@
 **MakoServer** 是一个类似 PHP 的动态页面服务：基于 Mako + Flask，指定一个文档根目录（root），目录下所有 `.mako` 文件就像 `.php` 一样按请求即时渲染，新增页面只需新增文件，不用改任何服务端代码。
 
 - 单文件实现（`makoserver.py`），第三方依赖仅 Flask、Mako 两个，拷走单文件即可部署；
-- 内置 PHP 风格超全局变量（`_GET` / `_POST` / `_SESSION` / ...）、`echo()` / `escape()`、`RESP` 响应控制对象；
+- 内置 PHP 风格超全局变量（`_GET` / `_POST` / `_SESSION` / ...）、`echo()` / `echoraw()` / `escape()`、`RESP` 响应控制对象；
 - 三种运行模式：独立 dev server、WSGI 应用（mod_wsgi / gunicorn / uWSGI）、CLI 渲染（像 `php xxx.php`）；另支持普通 CGI 脚本作为兜底部署形态（免 mod_wsgi）；
 - 零配置即拷即用：把 `makoserver.py` 放进站点目录作为 WSGI 入口，文档根目录就是它所在的目录。
 
@@ -114,8 +114,10 @@ root/common/siteutil.py   →   <%! from common.siteutil import tagline %>
 
 | 名字 | 说明 |
 |---|---|
-| `echo(*args)` | 显式输出，参数 `str()` 后 UTF-8 编码；bytes 直通；`None` 输出空串。二进制内容直接 `echo(字节串)` |
+| `echo(*args)` | 显式文本输出，参数 `str()` 后写入文本缓冲；`None` 输出空串；**bytes 抛 TypeError**——二进制内容走 `echoraw()` |
 | `RESP.write(*args)` | `echo` 的规范名（同一函数对象），`echo` 被局部变量覆盖时用它兜底 |
+| `echoraw(*args)` | 二进制输出：只接受 bytes / bytearray / memoryview，**追加**到独立二进制缓冲；**一旦调用即短路全部文本输出**，响应体只剩二进制内容。不代设 Content-Type，需自行 `RESP.header('Content-Type', ...)` |
+| `RESP.writeraw(*args)` | `echoraw` 的规范名，覆盖时兜底 |
 | `escape(value)` | 对标 PHP `htmlspecialchars`：`str()` 后转义 `& < > " '`，**返回字符串**（不输出）。`${}` 插值输出用户数据时务必用它 |
 | `RESP.escape(value)` | `escape` 的规范名 |
 
@@ -147,9 +149,9 @@ root/common/siteutil.py   →   <%! from common.siteutil import tagline %>
 | `RESP.redirect(url, code=302)` | 重定向 |
 | `RESP.json(data)` | JSON 响应（自动设 Content-Type）；**不主动退出**，需要时在 `<% %>` 块内 `return` 终止渲染 |
 | `RESP.setcookie(name, value, *, max_age=None, expires=None, path='/', domain=None, secure=False, httponly=False, samesite=None)` | 设置 cookie，参数语义同 PHP `setcookie()` |
-| `RESP.write(*args)` / `RESP.escape(value)` | 见输出节 |
+| `RESP.write(*args)` / `RESP.writeraw(*args)` / `RESP.escape(value)` | 见输出节 |
 
-默认 Content-Type 为 `text/html; charset=utf-8`；输出二进制（动态图片 / 下载等）需用 `RESP.header('Content-Type', ...)` 显式指定。
+默认 Content-Type 为 `text/html; charset=utf-8`；输出二进制（动态图片 / 下载等）用 `echoraw()` 并以 `RESP.header('Content-Type', ...)` 显式指定类型（`echoraw` 不代设）。
 
 ## URL 与路径解析
 
@@ -170,7 +172,7 @@ root/common/siteutil.py   →   <%! from common.siteutil import tagline %>
 - **静态白名单**（白名单外全 404）：`.html` `.htm` `.txt` `.css` `.js` `.json`、图片（`.png` `.jpg` `.jpeg` `.gif` `.svg` `.ico` `.webp`）、`.pdf`、压缩包（`.zip` `.rar` `.7z` `.tar` `.gz` `.tgz` `.xz`）；
 - `.mako` 支持全部 HTTP 方法（`REQUEST_METHOD` 如实传递）；静态文件仅 GET/HEAD，其它谓词 405；
 - 防路径穿透、防 `.mako` 源码泄露、防配置文件 / 日志文件回吐均已内置；
-- 源文件末尾空白在编译前统一截断——EOF 的换行不属于输出内容。
+- 源文件按原文编译，末尾空白**不截断**——文本响应忠实保留源文件的尾部换行；二进制脚本用 `echoraw()` 短路文本输出，EOF 换行自然不会污染。
 
 ## 会话（_SESSION）
 
@@ -216,7 +218,7 @@ echo '<% echo(6 * 7) %>' | python makoserver.py -
 
 - 脚本名传 `-` 时从 stdin 读模板源（POSIX 约定），`<%include>` 基准为 cwd；
 - 脚本名后的参数原样传入 `_SERVER['argv']`（`argv[0]` 为脚本自身）；
-- CLI 模式不读配置文件；bridge 降级语义对齐 PHP CLI：请求字典为空、`REQUEST_METHOD` 为 GET、`RESP.header/status/setcookie` 静默 no-op，`echo` 照常工作——同一个 `.mako` 脚本 HTTP 和 CLI 两种模式都能跑。
+- CLI 模式不读配置文件；bridge 降级语义对齐 PHP CLI：请求字典为空、`REQUEST_METHOD` 为 GET、`RESP.header/status/setcookie` 静默 no-op，`echo` / `echoraw` 照常工作（`echoraw` 同样短路文本、stdout 输出原始字节）——同一个 `.mako` 脚本 HTTP 和 CLI 两种模式都能跑。
 
 ## 部署
 

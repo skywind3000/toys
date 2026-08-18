@@ -213,7 +213,7 @@ def test_template_imports_site_module (site, wf, client_factory):
     """A <%! %> block can import a .py helper living under root
     (py3 namespace package, no __init__.py), end to end."""
     wf('sitepkg/helper.py', 'def shout ():\n    return "HELLO-FROM-ROOT"\n')
-    wf('page.mako', '<%!\nfrom sitepkg.helper import shout\n%>${shout()}\n')
+    wf('page.mako', '<%!\nfrom sitepkg.helper import shout\n%>${shout()}')
     client = client_factory(site)
     rv = client.get('/page.mako')
     assert rv.status_code == 200

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #======================================================================
 #
-# test_echo.py - echo 类型矩阵与 RESP.write 兜底
+# test_echo.py - echo 文本类型矩阵、RESP.write 兜底与 writeraw/echoraw
 #
 #======================================================================
 
@@ -12,22 +12,25 @@ def test_echo_str (site, wf, client_factory):
     assert cli.get('/t.mako').data == b'abc'
 
 
-def test_echo_bytes (site, wf, client_factory):
+def test_echo_bytes_typeerror_500 (site, wf, client_factory):
+    # echo 只接受文本：bytes → TypeError → 500，错误信息指向 writeraw
     wf('t.mako', '<% echo(b"\\x00\\x01BIN") %>')
     cli = client_factory(site)
-    assert cli.get('/t.mako').data == b'\x00\x01BIN'
+    r = cli.get('/t.mako')
+    assert r.status_code == 500
+    assert b'echo() accepts text only' in r.data
 
 
-def test_echo_bytearray (site, wf, client_factory):
+def test_echo_bytearray_typeerror_500 (site, wf, client_factory):
     wf('t.mako', '<% echo(bytearray(b"BA")) %>')
     cli = client_factory(site)
-    assert cli.get('/t.mako').data == b'BA'
+    assert cli.get('/t.mako').status_code == 500
 
 
-def test_echo_memoryview (site, wf, client_factory):
+def test_echo_memoryview_typeerror_500 (site, wf, client_factory):
     wf('t.mako', '<% echo(memoryview(b"MV")) %>')
     cli = client_factory(site)
-    assert cli.get('/t.mako').data == b'MV'
+    assert cli.get('/t.mako').status_code == 500
 
 
 def test_echo_none_outputs_nothing (site, wf, client_factory):
@@ -44,7 +47,7 @@ def test_echo_other_types_str (site, wf, client_factory):
 
 
 def test_echo_multi_args (site, wf, client_factory):
-    wf('t.mako', '<% echo("a", b"b", None, "c") %>')
+    wf('t.mako', '<% echo("a", None, "b", "c") %>')
     cli = client_factory(site)
     assert cli.get('/t.mako').data == b'abc'
 
@@ -108,3 +111,95 @@ def test_resp_escape_shadow_fallback (site, wf, client_factory):
     wf('t.mako', '<%\n escape = 123\n%><% echo(RESP.escape("<x>")) %>')
     cli = client_factory(site)
     assert cli.get('/t.mako').data == b'&lt;x&gt;'
+
+
+#----------------------------------------------------------------------
+# RESP.writeraw / echoraw：独立二进制缓冲与短路
+#----------------------------------------------------------------------
+
+def test_echoraw_binary_body (site, wf, client_factory):
+    wf('t.mako', '<% echoraw(b"\\x89PNG\\r\\n\\x1a\\n") %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'\x89PNG\r\n\x1a\n'
+
+
+def test_echoraw_append_mode (site, wf, client_factory):
+    # 多次调用 / 多参数按序追加到同一二进制缓冲
+    wf('t.mako', '<% echoraw(b"\\x00", b"\\x01") %>'
+                 '<% echoraw(bytearray(b"\\x02"), memoryview(b"\\x03")) %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'\x00\x01\x02\x03'
+
+
+def test_echoraw_short_circuits_text (site, wf, client_factory):
+    # 一旦使用 writeraw，模板文本块与 echo 输出整体被短路
+    wf('t.mako', 'HEAD<% echo("TEXT") %><% echoraw(b"RAW") %>TAIL\n')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'RAW'
+
+
+def test_echoraw_eof_newline_not_polluting (site, wf, client_factory):
+    # 精确二进制脚本无需关心编辑器 EOF 换行（短路兑现，非 rstrip）
+    wf('bin.mako', '<% echoraw(b"\\x89PNG") %>\n\n   \n')
+    cli = client_factory(site)
+    assert cli.get('/bin.mako').data == b'\x89PNG'
+
+
+def test_echoraw_does_not_set_content_type (site, wf, client_factory):
+    # writeraw 不负责 Content-Type：未显式设置时仍是默认 text/html
+    wf('t.mako', '<% echoraw(b"RAW") %>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.content_type == 'text/html; charset=utf-8'
+    assert r.data == b'RAW'
+
+
+def test_echoraw_manual_content_type (site, wf, client_factory):
+    wf('t.mako', '<%\nRESP.header("Content-Type", "image/png")\n'
+       'echoraw(b"\\x89PNG")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.content_type == 'image/png'
+    assert r.data == b'\x89PNG'
+
+
+def test_echoraw_headers_status_still_apply (site, wf, client_factory):
+    # 短路只作用于 body：status / 自定义 header / cookie 照常下发
+    wf('t.mako', '<%\nRESP.status(418)\nRESP.header("X-Raw", "1")\n'
+       'RESP.setcookie("c", "v")\nechoraw(b"RAW")\n%>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.status_code == 418
+    assert r.headers['X-Raw'] == '1'
+    assert 'c=v' in r.headers['Set-Cookie']
+    assert r.data == b'RAW'
+
+
+def test_echoraw_empty_call_short_circuits (site, wf, client_factory):
+    # 零参数调用也触发短路：文本输出被丢弃、body 为空
+    wf('t.mako', 'TEXT<% echoraw() %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b''
+
+
+def test_writeraw_alias_same (site, wf, client_factory):
+    # echoraw 与 RESP.writeraw 是同一方法（绑定方法相等）
+    wf('t.mako', '<% echo("T" if echoraw == RESP.writeraw else "F") %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'T'
+
+
+def test_resp_writeraw_fallback_when_shadowed (site, wf, client_factory):
+    # echoraw 被局部变量覆盖后，规范名 RESP.writeraw 兜底
+    wf('t.mako', '<%\n echoraw = 123\n%><% RESP.writeraw(b"OK") %>')
+    cli = client_factory(site)
+    assert cli.get('/t.mako').data == b'OK'
+
+
+def test_writeraw_str_typeerror_500 (site, wf, client_factory):
+    # writeraw 只接受 bytes-like：str → TypeError → 500
+    wf('t.mako', '<% echoraw("text") %>')
+    cli = client_factory(site)
+    r = cli.get('/t.mako')
+    assert r.status_code == 500
+    assert b'writeraw() accepts bytes-like only' in r.data

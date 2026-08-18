@@ -19,10 +19,11 @@ def run_cli (args, cwd=None, data=None):
 
 
 def test_stdout_bytes_exact (tmp_path):
-    # 二进制输出字节精确（含 PNG 头），%> 后 EOF 换行不污染
+    # 二进制输出字节精确（含 PNG 头）：echoraw 短路文本输出，
+    # %> 后的 EOF 换行不污染
     script = tmp_path / 'bin.mako'
     script.write_text(
-        '<% echo(b"\\x89PNG\\r\\n\\x1a\\n") %>\n', encoding='utf-8')
+        '<% echoraw(b"\\x89PNG\\r\\n\\x1a\\n") %>\n', encoding='utf-8')
     r = run_cli([str(script)], cwd=str(tmp_path))
     assert r.returncode == 0
     assert r.stdout == b'\x89PNG\r\n\x1a\n'
@@ -161,11 +162,30 @@ def test_cli_ignores_options_after_script (tmp_path):
     assert r.stdout == b'3'      # [script, '-r', 'somewhere']
 
 
-def test_echo_none_and_bytes_cli (tmp_path):
+def test_echo_none_cli (tmp_path):
     script = tmp_path / 't.mako'
-    script.write_text('<% echo(None, b"B", "A") %>', encoding='utf-8')
+    script.write_text('<% echo(None, "A") %>', encoding='utf-8')
     r = run_cli([str(script)], cwd=str(tmp_path))
-    assert r.stdout == b'BA'
+    assert r.stdout == b'A'
+
+
+def test_echo_bytes_typeerror_cli (tmp_path):
+    # echo 只接受文本：bytes → TypeError → exit 1
+    script = tmp_path / 't.mako'
+    script.write_text('<% echo(b"B") %>', encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 1
+    assert r.stdout == b''
+    assert b'echo() accepts text only' in r.stderr
+
+
+def test_echoraw_short_circuit_cli (tmp_path):
+    # CLI 下 echoraw 同样短路文本输出，stdout 只有二进制缓冲
+    script = tmp_path / 't.mako'
+    script.write_text('TEXT<% echoraw(b"\\x00RAW") %>\n', encoding='utf-8')
+    r = run_cli([str(script)], cwd=str(tmp_path))
+    assert r.returncode == 0
+    assert r.stdout == b'\x00RAW'
 
 
 def test_escape_cli (tmp_path):
@@ -212,10 +232,17 @@ def test_stdin_include_base_is_cwd (tmp_path):
     assert r.stdout == b'[INC]'
 
 
-def test_stdin_trailing_whitespace_stripped (tmp_path):
-    # 尾部空白截断契约与文件加载一致
+def test_stdin_trailing_whitespace_preserved (tmp_path):
+    # 文本模式不做 rstrip：stdin 模板源尾部空白忠实保留
+    r = run_cli(['-'], cwd=str(tmp_path), data=b'hi\n\n  \n')
+    assert r.returncode == 0
+    assert r.stdout == b'hi\n\n  \n'
+
+
+def test_stdin_echoraw_short_circuit (tmp_path):
+    # stdin 渲染同样支持 echoraw 短路（EOF 换行不污染二进制输出）
     r = run_cli(['-'], cwd=str(tmp_path),
-                data=b'<% echo(b"\\x89PNG") %>\n\n  \n')
+                data=b'<% echoraw(b"\\x89PNG") %>\n\n  \n')
     assert r.returncode == 0
     assert r.stdout == b'\x89PNG'
 

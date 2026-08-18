@@ -30,17 +30,20 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 - **请求数据**：大写下划线超全局风格（`_GET` / `_SERVER` 等），几乎不会与局部变量撞名；
 - **响应控制**：统一挂 `RESP` 对象（`RESP.header()` / `RESP.json()` 等），不占用全局名——尤其 `json` 由此释放给标准库，模板里 `import json` 后 `json.dumps()` 不受干扰；
-- **输出/工具**：裸函数两个——`echo`（输出，高频、PHP 肌肉记忆、名字独特）与 `escape`（HTML 转义，对标 `htmlspecialchars`），分别另挂规范名 `RESP.write()` / `RESP.escape()`（同为同一函数对象），被模板局部变量覆盖时用规范名兜底。
+- **输出/工具**：裸函数三个——`echo`（文本输出，高频、PHP 肌肉记忆、名字独特）、`echoraw`（二进制输出，一旦使用即短路全部文本输出）与 `escape`（HTML 转义，对标 `htmlspecialchars`），分别另挂规范名 `RESP.write()` / `RESP.writeraw()` / `RESP.escape()`，被模板局部变量覆盖时用规范名兜底。
 
 ### 输出
 
-- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），内部调用 Mako 的 `context.write()`，让模板代码块里可以像 PHP 一样显式输出，不必依赖 `<% %>` 块外的文本插值。输出缓冲只有一个，统一存 bytes：参数是 bytes（含 bytearray）时直接追加，`None` 输出空串（对齐 PHP 的 `echo null`），其它类型先 `str()` 再即时 UTF-8 编码追加——因此二进制内容（动态生成图片 / 文件下载等）直接 `echo(字节串)` 即可，无需单独的 raw 接口；
+输出分**文本**与**二进制**两条通道，互不混用：
+
+- `echo(*args)` —— 模仿 PHP 的 `echo`（含逗号分隔多参数），**只接受文本**：参数是 `str` 直接写入文本缓冲，`None` 输出空串（对齐 PHP 的 `echo null`），其它类型先 `str()` 再写入；**bytes / bytearray / memoryview 一律抛 TypeError**（错误信息指引改用 `RESP.writeraw()`/`echoraw()`），HTTP 模式下即 500 错误页——二进制内容不允许流入文本通道；
 - `RESP.write(*args)` —— `echo` 的规范名，挂在 `RESP` 对象上不受模板局部变量影响：即便 `echo` 被覆盖，规范名永远可用；
+- `RESP.writeraw(*args)` / 别名 `echoraw(*args)` —— 二进制输出通道：只接受 bytes / bytearray / memoryview（其它类型抛 TypeError → 500），**追加模式**不停追加到独立的二进制缓冲；**一旦调用过（哪怕零参数），就短路全部文本内容**——模板普通文本块与 `echo()` 的输出整体丢弃，响应体只有二进制缓冲的内容。短路只作用于 body：`RESP.header()` / `status()` / `setcookie()` 与 session cookie 照常生效；**writeraw 不负责设置 Content-Type**，未显式设置时仍是默认 `text/html; charset=utf-8`，二进制脚本需自行 `RESP.header('Content-Type', 'xxx')`；
 - `escape(value)` —— 对标 PHP 的 `htmlspecialchars`：先 `str()`（整数 / 浮点 / None / 任意对象先字符串化）再转义 `& < > " '`（`quote=True`），**返回转义后的字符串**（纯转换，不写输出缓冲）；`${}` 插值输出变量时用它防注入；
 - `RESP.escape(value)` —— `escape` 的规范名（同一函数对象），被模板局部变量覆盖时兜底；CLI 模式照常可用（纯函数不受响应控制 no-op 规则影响）；
 - 模板中 `<% %>` 块之外的普通文本照旧直接输出，以上方式可混用；
-- **输出全程缓冲**：`echo()` / 文本块写入内部缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output，返回干净的 5xx 错误页；缓冲在实现上以自定义 Mako buffer 兑现（`write(str)` 即时 UTF-8 编码追加、`write(bytes)` 直通），不依赖 Mako 默认的文本 buffer；
-- **源码末尾空白截断**：读取 .mako 源文件后、编译前，统一删除源码末尾空白（空格 / tab / 换行）——文件末尾空白永远不属于输出内容。由此写精确二进制脚本（整文件单一 `<% %>` 块、二进制经 `echo(bytes)` 输出）时无需关心编辑器的 EOF 换行，`%>` 后的尾部空白不会污染输出；普通文本模板也获得统一行为（响应体末尾不保留源文件的尾部换行）。
+- **输出全程缓冲**：`echo()` / 文本块写入文本缓冲、`writeraw()` 写入二进制缓冲，`Content-Type`、`status`、`header` 等响应元数据可在模板任意位置、最末尾设置，不存在 PHP 的 headers-already-sent 限制；模板渲染中途抛异常时丢弃已缓冲的 partial output（两个缓冲一起丢弃），返回干净的 5xx 错误页；实现只使用 Mako 公开 API（文本缓冲即普通 StringIO，经文档化的 Context 模式注入），**不依赖 mako 库任何私有接口**；
+- **源码忠实保留**：.mako 源文件按原文编译，**末尾空白不做任何截断（rstrip）**——文本模板的响应体忠实保留源文件的尾部换行（include / inherit 同理）。精确二进制脚本无需关心编辑器的 EOF 换行：`writeraw` 的短路机制天然把 `%>` 后的尾部空白连同其它文本输出一起丢弃。
 
 ### 请求（仿 PHP 超全局变量命名）
 
@@ -69,7 +72,7 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 - `RESP.redirect(url, code=302)` —— 便捷重定向（等价于 PHP 的 `header('Location: ...')`）；
 - `RESP.json(data)` —— 便捷 JSON 响应（自动设置 Content-Type 并序列化）；参考 PHP 实现，**不主动退出**渲染，脚本需自行终止后续输出以防残留文本污染 body（Mako 模板顶层 `<% %>` 块内 `return` 即可终止渲染）；
 - `RESP.setcookie(name, value, ...)` —— 设置 cookie（对应 PHP 的 `setcookie()`）；
-- 默认 Content-Type：脚本未显式设置时为 `text/html; charset=utf-8`（对齐 PHP 默认行为），二进制输出脚本（动态图片 / 下载等）需用 `RESP.header()` 显式指定类型。
+- 默认 Content-Type：脚本未显式设置时为 `text/html; charset=utf-8`（对齐 PHP 默认行为），二进制输出脚本（动态图片 / 下载等）需用 `RESP.header()` 显式指定类型——`RESP.writeraw()`/`echoraw()` 只短路 body，**不会**代为设置 Content-Type。
 
 ### 第二期扩展（暂不实现）
 
@@ -77,13 +80,13 @@ Flask 端向 .mako 模板暴露的函数/对象，设计对标 PHP 的超全局�
 
 ### 说明
 
-- **模板辅助函数的作用域约定**：Mako 模板有两层 Python 作用域——`<%! %>` 是模块级（模板加载时执行一次）、`<% %>` / `${ }` 是渲染体（每请求执行一次）。bridge 注入的 11 个名字（`echo` / `escape` / `_GET` / `_SESSION` / `RESP` 等）只存在于渲染作用域，`<%! %>` 里的函数引用它们会在**运行时首次被调用时**才报 NameError（编译不报错，极具迷惑性）。约定：`<%! %>` 里只放 import 与纯函数（参数进、结果出，不碰注入名）；要用注入名的辅助函数放 `<% %>` 里，或把注入名作为参数显式传入；
+- **模板辅助函数的作用域约定**：Mako 模板有两层 Python 作用域——`<%! %>` 是模块级（模板加载时执行一次）、`<% %>` / `${ }` 是渲染体（每请求执行一次）。bridge 注入的 12 个名字（`echo` / `echoraw` / `escape` / `_GET` / `_SESSION` / `RESP` 等）只存在于渲染作用域，`<%! %>` 里的函数引用它们会在**运行时首次被调用时**才报 NameError（编译不报错，极具迷惑性）。约定：`<%! %>` 里只放 import 与纯函数（参数进、结果出，不碰注入名）；要用注入名的辅助函数放 `<% %>` 里，或把注入名作为参数显式传入；
 - 跨请求持久化不提供内置支持，脚本自己读写文件即可（本机可信环境）；
-- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（渲染结果以原始字节写入 stdout 的 `sys.stdout.buffer`，保证二进制内容不损坏）；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
+- CLI 模式下 bridge 的降级语义见「运行方式」一节，`echo()` 在 CLI 下照常输出（文本缓冲 UTF-8 编码后写入 stdout 的 `sys.stdout.buffer`）；`echoraw()` 同样生效——用过即短路文本、stdout 只输出二进制缓冲的原始字节；`_SESSION` 读取为空、写入随 cookie 设置一同 no-op。
 
 ### 注入名作用域（模板编写约定）
 
-桥接注入名（`echo` / `escape` / `_GET` / `_SESSION` / `RESP` 等）是**每请求**经渲染调用传入的，只存在于模板的**渲染体作用域**（`<% %>` 块与 `${}` 插值），**不在模板模块的 globals 里**。由此产生一条硬性编写规则：
+桥接注入名（`echo` / `echoraw` / `escape` / `_GET` / `_SESSION` / `RESP` 等）是**每请求**经渲染调用传入的，只存在于模板的**渲染体作用域**（`<% %>` 块与 `${}` 插值），**不在模板模块的 globals 里**。由此产生一条硬性编写规则：
 
 - `<%! %>`（模块块，模板加载时执行一次）里**只放 import 与纯函数**——参数进、结果出，绝不引用任何注入名；
 - 需要访问注入名的辅助函数一律定义在 `<% %>` 块内（每请求定义，闭包捕获注入名）；
@@ -128,7 +131,7 @@ HTTP 模式（dev server / WSGI）启动时，文档根目录会被追加进 `sy
 ## 非功能需求
 
 - 并发模型：第一期使用 Flask 自带 dev server 即可，不追求生产级并发能力；
-- 依赖版本：受 Python 3.8 地板约束，`Flask<4` / `Mako<1.5`（部署时可钉版本上界，避免未来主版本破坏性改动影响 MakoServer）；开发/验证基准为 Flask 2.2.x + Mako 1.4.x，其中自定义字节缓冲注入用到 `mako.runtime` 私有接口，升级 Mako 小版本时需回归验证；
+- 依赖版本：受 Python 3.8 地板约束，`Flask<4` / `Mako<1.5`（部署时可钉版本上界，避免未来主版本破坏性改动影响 MakoServer）；开发/验证基准为 Flask 2.2.x + Mako 1.4.x；Mako 只使用公开 API（模板渲染经文档化的 `Context` + `render_context` 模式），不依赖任何私有接口；
 - 模板编译：一律在内存中进行，`module_directory` 不启用，确保文档根目录可只读挂载且不产生 `__pycache__` / `.pyc` 污染（`module_directory` 会落盘编译后 `.py` 并经 import 系统写 `__pycache__`，既破坏只读 root 又可能被静态分支回吐编译后源码）；
 - 日志：
   - access log 默认不落盘：独立 dev 模式走 Werkzeug 控制台默认输出，WSGI 模式交由宿主（Apache `access_log` / gunicorn `--access-logfile`）负责，MakoServer 不重复记录；配置了 `access_log` 文件路径后由 MakoServer 主动记录请求日志（含 WSGI 模式，此时与宿主日志并存，是否双写由使用者取舍）；

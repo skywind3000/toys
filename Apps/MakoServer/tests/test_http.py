@@ -18,7 +18,7 @@ def test_default_content_type (site, wf, client_factory):
 
 def test_explicit_content_type (site, wf, client_factory):
     wf('t.mako', '<%\nRESP.header("Content-Type", "image/png")\n'
-       'echo(b"\\x89PNG")\n%>')
+       'echoraw(b"\\x89PNG")\n%>')
     cli = client_factory(site)
     r = cli.get('/t.mako')
     assert r.content_type == 'image/png'
@@ -120,10 +120,10 @@ def test_index_mako_put_renders (site, wf, client_factory):
 
 
 def test_binary_download_headers (site, wf, client_factory):
-    # 二进制输出脚本显式指定类型 + 自定义 header
+    # 二进制输出脚本显式指定类型 + 自定义 header（echoraw 短路文本）
     wf('dl.mako', '<%\nRESP.header("Content-Type", "application/octet-stream")\n'
        'RESP.header("Content-Disposition", "attachment; filename=x.bin")\n'
-       'echo(b"\\x00\\x01\\x02")\n%>')
+       'echoraw(b"\\x00\\x01\\x02")\n%>')
     cli = client_factory(site)
     r = cli.get('/dl.mako')
     assert r.content_type == 'application/octet-stream'
