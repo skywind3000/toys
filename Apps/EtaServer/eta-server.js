@@ -9,9 +9,11 @@
  *
  * Usage:
  *   eta-server -r <root> -p <port> [-H <host>]
+ *   eta-server [options] script.eta [args...]   # CLI render, result to stdout
+ *   eta-server [options] - [args...]            # read the script from stdin
  *
  * Created by skywind on 2026/02/16
- * Last Modified: 2026/02/16 20:30:00
+ * Last Modified: 2026/08/18 00:00:00
  *
  * ===================================================================== */
 'use strict'
@@ -28,6 +30,9 @@ const VERSION = '0.1.0'
 const MAX_BODY = 64 * 1024 * 1024
 const SESSION_COOKIE = 'etasess'
 const SESSION_TTL = 30 * 60 * 1000          // sliding timeout: 30 min
+// cookie capacity guard (MakoServer parity): an oversized session
+// cookie is silently dropped by browsers anyway; fail loudly instead
+const SESSION_COOKIE_LIMIT = 4096
 const SELF_PATH = path.resolve(__filename)
 
 // extension whitelist for static files (fail-closed outside this table)
@@ -36,10 +41,13 @@ const STATIC_TYPES = {
   '.htm': 'text/html; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.mjs': 'application/javascript; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
-  '.xml': 'application/xml; charset=utf-8',
+  '.map': 'application/json',
+  '.xml': 'application/xml',
+  '.csv': 'text/csv; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -48,13 +56,26 @@ const STATIC_TYPES = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.bmp': 'image/bmp',
-  '.pdf': 'application/pdf',
-  '.zip': 'application/zip',
-  '.gz': 'application/gzip',
-  '.mp4': 'video/mp4',
-  '.mp3': 'audio/mpeg',
+  '.avif': 'image/avif',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.wasm': 'application/wasm',
+  '.pdf': 'application/pdf',
+  '.zip': 'application/zip',
+  '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed',
+  '.tar': 'application/x-tar',
+  '.gz': 'application/gzip',
+  '.tgz': 'application/gzip',
+  '.xz': 'application/x-xz',
 }
 
 const HTML_SPECIAL = {
@@ -67,6 +88,12 @@ const HTML_SPECIAL = {
 
 function escapeHtml (value) {
   return String(value).replace(/[&<>"']/g, c => HTML_SPECIAL[c])
+}
+
+// utf-8-sig semantics: tolerate a leading BOM (file and stdin alike)
+function stripBom (text) {
+  if (text.charCodeAt(0) === 0xFEFF) return text.slice(1)
+  return text
 }
 
 function errorPage (code, title, detail) {
@@ -98,7 +125,16 @@ function req_HEAD (res) {
 }
 
 // stable per-machine secret: hostname + user + home + first real MAC
-function deriveSecret () {
+// + document root (per-site key: same machine, different roots get
+// different secrets, so a session cookie from site A never verifies
+// on site B even when both run on this host)
+function deriveSecret (rootDir) {
+  let rootReal = ''
+  try {
+    rootReal = fs.realpathSync(rootDir)
+  } catch (e) {
+    rootReal = path.resolve(rootDir)
+  }
   let mac = ''
   try {
     const ifs = os.networkInterfaces()
@@ -121,7 +157,8 @@ function deriveSecret () {
   } catch (e) {
     home = os.homedir()
   }
-  const seed = ['eta-server', os.hostname(), username, home, mac].join('|')
+  const seed = ['eta-server', os.hostname(), username, home, mac,
+    rootReal].join('|')
   return crypto.createHash('sha256').update(seed).digest('hex')
 }
 
@@ -211,6 +248,40 @@ function parseForm (buf) {
 }
 
 /* ---------------------------------------------------------------------
+ * path hardening helpers
+ * ------------------------------------------------------------------- */
+
+// Windows reserved device names, with or without an extension
+const DEVICE_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+
+// a path segment that Win32 cannot open as a regular file: ADS colon
+// (foo.txt::$DATA, foo:bar) or a reserved device name
+function win32BadSegment (name) {
+  if (name.indexOf(':') >= 0) return true
+  return DEVICE_NAME.test(name)
+}
+
+// containment check: p equals root or lives strictly inside it
+function containsPath (root, p) {
+  if (p === root) return true
+  const rel = path.relative(root, p)
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
+
+// realpath containment: resolve symlinks / junctions, reject anything
+// whose real location lives outside the real document root. Returns
+// the real path, or null when missing / escaping.
+function realInside (rootReal, abs) {
+  let real = null
+  try {
+    real = fs.realpathSync(abs)
+  } catch (e) {
+    return null
+  }
+  return containsPath(rootReal, real) ? real : null
+}
+
+/* ---------------------------------------------------------------------
  * response control object injected into templates as RESP
  * ------------------------------------------------------------------- */
 
@@ -231,6 +302,14 @@ function makeResp () {
       resp.headers.push(['Location', String(url)])
     },
     setcookie: function (name, value, opts) {
+      // session cookie name monopoly (MakoServer parity): a script
+      // setcookie() with the session name would fight the framework
+      // over the same cookie; drop the script's line and warn
+      if (String(name) === SESSION_COOKIE) {
+        console.error('eta-server: warning: RESP.setcookie() with the ' +
+          'session cookie name "' + SESSION_COOKIE + '" is ignored')
+        return
+      }
       opts = opts || {}
       let s = encodeURIComponent(name) + '=' + encodeURIComponent(String(value))
       if (opts.maxage != null) s += '; Max-Age=' + Math.floor(Number(opts.maxage))
@@ -260,7 +339,8 @@ function makeResp () {
     write: function () {
       // no-op alias: in eta, output goes through template text / <%= %>
       throw new Error('use template text or <%= %> for output')
-    }
+    },
+    escape: escapeHtml,
   }
   return resp
 }
@@ -271,6 +351,7 @@ function makeResp () {
 
 function buildServerEnv (req, parsed, scriptAbs, scriptName, pathInfo, ctx) {
   const headers = req.headers
+  const now = Date.now()
   const env = {
     REQUEST_METHOD: req.method,
     QUERY_STRING: parsed.queryString,
@@ -286,6 +367,9 @@ function buildServerEnv (req, parsed, scriptAbs, scriptName, pathInfo, ctx) {
     SERVER_NAME: ctx.host,
     SERVER_PORT: String(ctx.port),
     REQUEST_SCHEME: 'http',
+    SERVER_PROTOCOL: 'HTTP/' + (req.httpVersion || '1.1'),
+    REQUEST_TIME: Math.floor(now / 1000),
+    REQUEST_TIME_FLOAT: now / 1000,
   }
   for (const key of Object.keys(headers)) {
     const name = 'HTTP_' + key.toUpperCase().replace(/-/g, '_')
@@ -316,7 +400,9 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
   const ctype = String(req.headers['content-type'] || '')
   if (ctype.indexOf('application/x-www-form-urlencoded') >= 0) {
     post = parseForm(bodyBuf)
-  } else if (ctype.indexOf('application/json') >= 0) {
+  } else if (ctype.indexOf('json') >= 0) {
+    // any json-ish content type (application/json, application/*+json,
+    // text/json) is parsed, same as MakoServer
     try {
       jsonVal = JSON.parse(bodyBuf.toString('utf8'))
     } catch (e) {
@@ -347,7 +433,7 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
   try {
     // read the file ourselves and render the string: bypasses eta's
     // file resolution quirks and gives mtime-based reload for free
-    const src = fs.readFileSync(scriptAbs, 'utf8')
+    const src = stripBom(fs.readFileSync(scriptAbs, 'utf8'))
     html = await ctx.eta.renderStringAsync(src, data)
   } catch (err) {
     const detail = (err && err.stack) ? err.stack : String(err)
@@ -368,13 +454,27 @@ async function renderTemplate (req, res, ctx, scriptAbs, scriptName, pathInfo) {
 
   // ---- session cookie: re-sign (sliding) when session has data ----
   if (Object.keys(session).length > 0) {
-    setCookies.push(SESSION_COOKIE + '=' + encodeSession(session, ctx.secret) +
-      '; Path=/; HttpOnly; SameSite=Lax')
+    const sessCookie = SESSION_COOKIE + '=' + encodeSession(session, ctx.secret) +
+      '; Path=/; HttpOnly; SameSite=Lax'
+    if (Buffer.byteLength(sessCookie, 'utf8') > SESSION_COOKIE_LIMIT) {
+      // browsers silently drop oversized cookies; fail loudly instead
+      // (MakoServer SessionTooLarge parity)
+      return sendError(res, 500, 'Internal Server Error',
+        'session data exceeds the cookie capacity limit (about 4KB)')
+    }
+    setCookies.push(sessCookie)
   } else if (hadSessionCookie) {
     setCookies.push(SESSION_COOKIE + '=; Path=/; HttpOnly; SameSite=Lax' +
       '; Max-Age=0')
   }
   if (setCookies.length > 0) headers['Set-Cookie'] = setCookies
+
+  // ---- status validation (MakoServer decision #38 parity): an
+  // out-of-range code must become a 500, not a broken writeHead ----
+  if (!Number.isInteger(resp.code) || resp.code < 100 || resp.code > 999) {
+    return sendError(res, 500, 'Internal Server Error',
+      'invalid status code: ' + resp.code)
+  }
 
   // ---- pick body: binary short-circuit > RESP.json() > rendered html ----
   let body = html
@@ -421,6 +521,19 @@ function sendStatic (req, res, abs, type) {
  * ------------------------------------------------------------------- */
 
 async function handleRequest (req, res, ctx) {
+  // ---- slash merging: //a///b -> 308 /a/b (checked on the raw URL
+  // first, because new URL() would treat a leading '//' as
+  // protocol-relative and misparse the host part) ----
+  const rawUrl = req.url || ''
+  const rawPath = rawUrl.split(/[?#]/)[0]
+  if (rawPath.indexOf('//') >= 0) {
+    const loc = rawPath.replace(/\/{2,}/g, '/') +
+      (rawUrl.length > rawPath.length ? rawUrl.slice(rawPath.length) : '')
+    res.writeHead(308, { 'Location': loc })
+    res.end()
+    return
+  }
+
   let parsed = null
   let pathname = ''
   try {
@@ -432,13 +545,35 @@ async function handleRequest (req, res, ctx) {
   if (pathname.indexOf('\0') >= 0) {
     return sendError(res, 404, 'Not Found')
   }
+  if (pathname.indexOf('//') >= 0) {
+    // %2f-encoded slashes survive the raw check above; normalize them
+    // the same way once decoded
+    const loc = pathname.replace(/\/{2,}/g, '/') + (parsed.search || '')
+    res.writeHead(308, { 'Location': loc })
+    res.end()
+    return
+  }
+  if (process.platform === 'win32') {
+    // Win32 silently drops trailing dots / spaces when opening files
+    // ('demo.eta.' resolves to 'demo.eta'); strip them up front so
+    // extension decisions and containment checks agree with what the
+    // file system actually opens (MakoServer spec 3.2 rstrip)
+    pathname = pathname.replace(/[. ]+$/, '') || '/'
+    // ADS colons (foo.txt::$DATA) and reserved device names (NUL,
+    // CON.txt, ...) cannot be served as regular files: fail-closed
+    for (const seg of pathname.split('/')) {
+      if (seg && win32BadSegment(seg)) {
+        return sendError(res, 404, 'Not Found')
+      }
+    }
+  }
   ctx.parsed = parsed
   parsed.queryString = (req.url.indexOf('?') >= 0)
     ? req.url.slice(req.url.indexOf('?') + 1) : ''
 
   const root = ctx.root
   let target = path.resolve(root, '.' + pathname)
-  if (target !== root && !target.startsWith(root + path.sep)) {
+  if (!containsPath(root, target)) {
     return sendError(res, 404, 'Not Found')
   }
   if (target === SELF_PATH) {
@@ -460,7 +595,7 @@ async function handleRequest (req, res, ctx) {
   }
   if (scriptRel !== null) {
     const scriptAbs = path.resolve(root, '.' + scriptRel)
-    if (scriptAbs !== root && !scriptAbs.startsWith(root + path.sep)) {
+    if (!containsPath(root, scriptAbs)) {
       return sendError(res, 404, 'Not Found')
     }
     let stat = null
@@ -470,6 +605,11 @@ async function handleRequest (req, res, ctx) {
       return sendError(res, 404, 'Not Found')
     }
     if (!stat.isFile()) {
+      return sendError(res, 404, 'Not Found')
+    }
+    // realpath containment: a symlink / junction inside root pointing
+    // outside must not be rendered
+    if (!realInside(ctx.rootReal, scriptAbs)) {
       return sendError(res, 404, 'Not Found')
     }
     return renderTemplate(req, res, ctx, scriptAbs, scriptRel, pathInfo)
@@ -482,6 +622,12 @@ async function handleRequest (req, res, ctx) {
   } catch (e) {
     return sendError(res, 404, 'Not Found')
   }
+  // realpath containment applies to both directories and static files:
+  // a symlink / junction escaping the root is a plain 404
+  const real = realInside(ctx.rootReal, target)
+  if (!real) {
+    return sendError(res, 404, 'Not Found')
+  }
   if (stat.isDirectory()) {
     if (!pathname.endsWith('/')) {
       const loc = pathname + '/' + (parsed.search || '')
@@ -489,7 +635,7 @@ async function handleRequest (req, res, ctx) {
       res.end()
       return
     }
-    const idxEta = path.join(target, 'index.eta')
+    const idxEta = path.join(real, 'index.eta')
     try {
       if (fs.statSync(idxEta).isFile()) {
         const name = pathname + 'index.eta'
@@ -497,7 +643,7 @@ async function handleRequest (req, res, ctx) {
       }
     } catch (e) { /* no index.eta */ }
     for (const name of ['index.html', 'index.htm']) {
-      const f = path.join(target, name)
+      const f = path.join(real, name)
       try {
         if (fs.statSync(f).isFile()) {
           return sendStatic(req, res, f, STATIC_TYPES[path.extname(f)])
@@ -508,7 +654,7 @@ async function handleRequest (req, res, ctx) {
   }
 
   // ---- static file branch: whitelist + method check ----
-  const ext = path.extname(target).toLowerCase()
+  const ext = path.extname(real).toLowerCase()
   const type = STATIC_TYPES[ext]
   if (!type) {
     return sendError(res, 404, 'Not Found')
@@ -518,7 +664,105 @@ async function handleRequest (req, res, ctx) {
     res.end()
     return
   }
-  return sendStatic(req, res, target, type)
+  return sendStatic(req, res, real, type)
+}
+
+/* ---------------------------------------------------------------------
+ * CLI rendering mode
+ * ------------------------------------------------------------------- */
+
+async function renderCli (script, args) {
+  // render a single script like "php xxx.php", writing the result to
+  // stdout. A script name of '-' reads the template source from stdin
+  // (POSIX convention; PHP CLI likewise uses argv[0] = '-' for stdin
+  // scripts). Exits with 1 on failure (no partial content on stdout:
+  // eta rendering is a pure function returning the full string).
+  let src = null
+  let scriptAbs = null
+  let baseDir = null
+  if (script === '-') {
+    // stdin mode: includes resolve against cwd, the only natural
+    // anchor when there is no script file
+    baseDir = process.cwd()
+    scriptAbs = '-'
+    try {
+      src = fs.readFileSync(0, 'utf8')
+    } catch (err) {
+      console.error('eta-server: cannot read stdin: ' + err.message)
+      process.exit(1)
+    }
+  } else {
+    scriptAbs = path.resolve(script)
+    let stat = null
+    try {
+      stat = fs.statSync(scriptAbs)
+    } catch (e) { /* fall through to the error below */ }
+    if (!stat || !stat.isFile()) {
+      console.error('eta-server: no such file: ' + script)
+      process.exit(1)
+    }
+    baseDir = path.dirname(scriptAbs)
+    try {
+      src = fs.readFileSync(scriptAbs, 'utf8')
+    } catch (err) {
+      console.error('eta-server: cannot read file: ' + script)
+      process.exit(1)
+    }
+  }
+  src = stripBom(src)
+
+  // bridge degraded to CLI values (mirrors MakoServer 6.4): no
+  // request, no session, empty body; argv[0] = the script itself
+  const resp = makeResp()
+  const now = Date.now()
+  const data = {
+    _GET: {},
+    _POST: {},
+    _REQUEST: {},
+    _SERVER: {
+      REQUEST_METHOD: 'GET',
+      QUERY_STRING: '',
+      SCRIPT_NAME: scriptAbs,
+      SCRIPT_FILENAME: scriptAbs,
+      SCRIPT_DIRNAME: baseDir,
+      PATH_INFO: '',
+      REMOTE_ADDR: '',
+      SERVER_NAME: '',
+      SERVER_PORT: '',
+      CONTENT_TYPE: '',
+      CONTENT_LENGTH: '',
+      REQUEST_TIME: Math.floor(now / 1000),
+      REQUEST_TIME_FLOAT: now / 1000,
+      argv: [script].concat(args),
+    },
+    _COOKIE: {},
+    _SESSION: {},
+    _BODY: Buffer.alloc(0),
+    _JSON: null,
+    RESP: resp,
+    escape: escapeHtml,
+    require: createRequire(script === '-'
+      ? path.join(baseDir, 'stdin.js') : scriptAbs),
+  }
+  const eta = new Eta({ views: baseDir, cache: false, useWith: true, autoTrim: false })
+  let html = ''
+  try {
+    html = await eta.renderStringAsync(src, data)
+  } catch (err) {
+    // traceback goes to stderr, stdout stays clean
+    console.error((err && err.stack) ? err.stack : String(err))
+    process.exit(1)
+  }
+
+  // body priority identical to HTTP mode (decision #6): writeraw
+  // short-circuit > RESP.json() > rendered text
+  let body = html
+  if (resp.binary !== null) {
+    body = resp.binary
+  } else if (resp.text !== null) {
+    body = resp.text
+  }
+  process.stdout.write(body)
 }
 
 /* ---------------------------------------------------------------------
@@ -535,9 +779,10 @@ function startServer (rootDir, port, host) {
 
   const ctx = {
     root: root,
+    rootReal: fs.realpathSync(root),
     host: host,
     port: port,
-    secret: deriveSecret(),
+    secret: deriveSecret(root),
     eta: new Eta({ views: root, cache: false, useWith: true, autoTrim: false }),
     parsed: null,
   }
@@ -571,17 +816,27 @@ function printBanner (root, port, host) {
 }
 
 function printHelp () {
-  console.log('usage: eta-server [options]')
+  console.log('usage: eta-server [options] [script] [args...]')
+  console.log('')
+  console.log('with no positional argument, start the HTTP dev server;')
+  console.log('with a script argument, render it once to stdout (CLI mode)')
+  console.log('like "php script.php"; use "-" to read the script from stdin')
   console.log('')
   console.log('options:')
-  console.log('  -r, --root <dir>    document root (default: cwd)')
-  console.log('  -p, --port <port>   listen port (default: 5000)')
-  console.log('  -H, --host <host>   bind address (default: 127.0.0.1)')
+  console.log('  -r, --root <dir>    document root (default: cwd, HTTP mode only)')
+  console.log('  -p, --port <port>   listen port (default: 5000, HTTP mode only)')
+  console.log('  -H, --host <host>   bind address (default: 127.0.0.1, HTTP mode only)')
   console.log('  -h, --help          show this help')
+  console.log('')
+  console.log('CLI mode:')
+  console.log('  script              script path (any extension); "-" reads stdin')
+  console.log('  args...             everything after the script name is passed')
+  console.log('                      through verbatim, readable via _SERVER.argv')
 }
 
 function parseArgs (argv) {
-  const opts = { root: process.cwd(), port: 5000, host: '127.0.0.1' }
+  const opts = { root: process.cwd(), port: 5000, host: '127.0.0.1',
+    script: null, args: [] }
   const args = argv.slice(2)
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -599,7 +854,13 @@ function parseArgs (argv) {
       printHelp()
       process.exit(0)
     } else {
-      throw new Error('unknown option: ' + a + ' (try --help)')
+      // first positional argument is the script: CLI render mode.
+      // everything after the script name is never parsed and passed
+      // through verbatim (same as argparse REMAINDER in MakoServer),
+      // including arguments that look like options
+      opts.script = a
+      opts.args = args.slice(i + 1)
+      break
     }
   }
   return opts
@@ -613,16 +874,23 @@ if (require.main === module) {
     console.error('eta-server: ' + err.message)
     process.exit(1)
   }
-  startServer(opts.root, opts.port, opts.host).then((server) => {
-    printBanner(path.resolve(opts.root), opts.port, opts.host)
-    process.on('SIGINT', () => {
-      server.close(() => process.exit(0))
-      setTimeout(() => process.exit(0), 1000).unref()
+  if (opts.script) {
+    renderCli(opts.script, opts.args).catch((err) => {
+      console.error((err && err.stack) ? err.stack : String(err))
+      process.exit(1)
     })
-  }).catch((err) => {
-    console.error('eta-server: ' + err.message)
-    process.exit(1)
-  })
+  } else {
+    startServer(opts.root, opts.port, opts.host).then((server) => {
+      printBanner(path.resolve(opts.root), opts.port, opts.host)
+      process.on('SIGINT', () => {
+        server.close(() => process.exit(0))
+        setTimeout(() => process.exit(0), 1000).unref()
+      })
+    }).catch((err) => {
+      console.error('eta-server: ' + err.message)
+      process.exit(1)
+    })
+  }
 }
 
-module.exports = { startServer, VERSION }
+module.exports = { startServer, renderCli, deriveSecret, VERSION }

@@ -13,6 +13,8 @@
 'use strict'
 
 const { spawn } = require('node:child_process')
+const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const assert = require('node:assert')
 
@@ -23,6 +25,16 @@ const SERVER = path.join(__dirname, '..', 'eta-server.js')
 
 let passed = 0
 let failed = 0
+const tmpDemoFiles = []
+
+// write a throwaway file inside the docroot, cleaned up at the end
+function writeDemo (name, text) {
+  const p = path.join(ROOT, name)
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, text)
+  tmpDemoFiles.push(p)
+  return p
+}
 
 async function check (name, fn) {
   try {
@@ -262,7 +274,177 @@ async function main () {
       assert.ok(body.indexOf('probe') >= 0)        // _GET echoed in table
       assert.ok(body.indexOf('QUERY_STRING') >= 0)
     })
+
+    // ==================== path hardening ====================
+
+    await check('symlink/junction escaping the root gives 404', async () => {
+      const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eta-out-'))
+      fs.writeFileSync(path.join(outDir, 'evil.eta'), 'EVIL')
+      fs.writeFileSync(path.join(outDir, 'data.json'), '{"evil":1}')
+      const junc = path.join(ROOT, '_t_junc')
+      tmpDemoFiles.push(junc)
+      const type = process.platform === 'win32' ? 'junction' : 'dir'
+      fs.symlinkSync(outDir, junc, type)
+      try {
+        const r1 = await fetch(BASE + '/_t_junc/evil.eta')
+        await r1.text()
+        assert.strictEqual(r1.status, 404, 'escaping .eta template')
+        const r2 = await fetch(BASE + '/_t_junc/data.json')
+        await r2.text()
+        assert.strictEqual(r2.status, 404, 'escaping static file')
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true })
+      }
+    })
+
+    await check('symlink staying inside the root still serves', async () => {
+      const link = path.join(ROOT, '_t_in.txt')
+      tmpDemoFiles.push(link)
+      fs.symlinkSync(path.join(ROOT, 'style.css'), link)
+      const res = await fetch(BASE + '/_t_in.txt')
+      assert.strictEqual(res.status, 200)
+      await res.text()
+    })
+
+    await check('DOS device names give 404', async () => {
+      for (const name of ['/NUL', '/con.txt', '/COM1']) {
+        const res = await fetch(BASE + name)
+        await res.text()
+        assert.strictEqual(res.status, 404, name)
+      }
+    })
+
+    await check('NTFS ADS colon paths give 404', async () => {
+      const res = await fetch(BASE + '/hello.eta%3A%3A%24DATA')
+      await res.text()
+      assert.strictEqual(res.status, 404)
+    })
+
+    await check('trailing dot behaves like the filesystem', async () => {
+      // Win32 opens 'hello.eta.' as 'hello.eta'; POSIX has no such file
+      const res = await fetch(BASE + '/hello.eta.')
+      await res.text()
+      const expect = process.platform === 'win32' ? 200 : 404
+      assert.strictEqual(res.status, expect)
+    })
+
+    await check('duplicate slashes merge with 308', async () => {
+      const r1 = await fetch(BASE + '//style.css', { redirect: 'manual' })
+      assert.strictEqual(r1.status, 308)
+      assert.strictEqual(r1.headers.get('location'), '/style.css')
+      const r2 = await fetch(BASE + '//sub///index.html?x=1',
+        { redirect: 'manual' })
+      assert.strictEqual(r2.status, 308)
+      assert.strictEqual(r2.headers.get('location'), '/sub/index.html?x=1')
+    })
+
+    await check('%2f-encoded duplicate slashes merge with 308', async () => {
+      const res = await fetch(BASE + '/sub%2f%2findex.html',
+        { redirect: 'manual' })
+      assert.strictEqual(res.status, 308)
+      assert.strictEqual(res.headers.get('location'), '/sub/index.html')
+    })
+
+    // ==================== bridge / _SERVER parity ====================
+
+    await check('HTTP _SERVER has SERVER_PROTOCOL and REQUEST_TIME', async () => {
+      writeDemo('_t_srvinfo.eta',
+        '<%~ _SERVER.SERVER_PROTOCOL %>;<%~ _SERVER.REQUEST_TIME %>;' +
+        '<%~ _SERVER.REQUEST_TIME_FLOAT %>')
+      const res = await fetch(BASE + '/_t_srvinfo.eta')
+      assert.strictEqual(res.status, 200)
+      const parts = (await res.text()).split(';')
+      assert.strictEqual(parts[0], 'HTTP/1.1')
+      assert.ok(/^\d+$/.test(parts[1]))
+      assert.ok(/^\d+(\.\d+)?$/.test(parts[2]))
+    })
+
+    await check('+json content types reach _JSON', async () => {
+      const res = await fetch(BASE + '/api.eta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/vnd.api+json' },
+        body: JSON.stringify({ marked: 'json' }),
+      })
+      assert.strictEqual(res.status, 200)
+      const data = await res.json()
+      assert.deepStrictEqual(data.json, { marked: 'json' })
+    })
+
+    // ==================== static whitelist expansion ====================
+
+    await check('expanded static types served with right Content-Type', async () => {
+      writeDemo('_t.csv', 'a,b\n1,2')
+      writeDemo('_t.md', '# hello')
+      writeDemo('_t.js', 'var x = 1')
+      writeDemo('_t.webm', 'bytes')
+      const expect = [
+        ['_t.csv', 'text/csv; charset=utf-8'],
+        ['_t.md', 'text/markdown; charset=utf-8'],
+        ['_t.js', 'text/javascript; charset=utf-8'],
+        ['_t.webm', 'video/webm'],
+      ]
+      for (const item of expect) {
+        const res = await fetch(BASE + '/' + item[0])
+        assert.strictEqual(res.status, 200, item[0])
+        assert.strictEqual(res.headers.get('content-type'), item[1])
+        await res.text()
+      }
+    })
+
+    // ==================== session hardening ====================
+
+    await check('session over 4KB gives 500', async () => {
+      writeDemo('_t_bigsess.eta',
+        '<% _SESSION.blob = "x".repeat(5000) %>ok')
+      const res = await fetch(BASE + '/_t_bigsess.eta')
+      assert.strictEqual(res.status, 500)
+      const body = await res.text()
+      assert.ok(body.indexOf('4KB') >= 0)
+    })
+
+    await check('deriveSecret mixes in the document root', async () => {
+      const mod = require(SERVER)
+      const a = mod.deriveSecret(ROOT)
+      const b = mod.deriveSecret(path.join(ROOT, 'sub'))
+      assert.strictEqual(typeof a, 'string')
+      assert.strictEqual(a.length, 64)
+      assert.notStrictEqual(a, b)
+      assert.strictEqual(a, mod.deriveSecret(ROOT))
+    })
+
+    await check('session cookie name monopoly (setcookie dropped)', async () => {
+      writeDemo('_t_sessmono.eta',
+        '<% _SESSION.k = 1 %><% RESP.setcookie("etasess", "evil") %>ok')
+      const res = await fetch(BASE + '/_t_sessmono.eta')
+      assert.strictEqual(res.status, 200)
+      await res.text()
+      const all = res.headers.getSetCookie
+        ? res.headers.getSetCookie() : []
+      const sess = all.filter((c) => c.startsWith('etasess='))
+      assert.strictEqual(sess.length, 1)
+      assert.ok(sess[0].indexOf('evil') < 0)
+    })
+
+    // ==================== RESP small parity items ====================
+
+    await check('RESP.status(9999) gives 500', async () => {
+      writeDemo('_t_status.eta', '<% RESP.status(9999) %>x')
+      const res = await fetch(BASE + '/_t_status.eta')
+      assert.strictEqual(res.status, 500)
+      const body = await res.text()
+      assert.ok(body.indexOf('invalid status') >= 0)
+    })
+
+    await check('RESP.escape works like escape()', async () => {
+      writeDemo('_t_respescape.eta', '<%~ RESP.escape("<a>&") %>')
+      const res = await fetch(BASE + '/_t_respescape.eta')
+      assert.strictEqual(res.status, 200)
+      assert.strictEqual(await res.text(), '&lt;a&gt;&amp;')
+    })
   } finally {
+    for (const f of tmpDemoFiles) {
+      try { fs.rmSync(f, { recursive: true, force: true }) } catch (e) { }
+    }
     child.kill()
   }
 

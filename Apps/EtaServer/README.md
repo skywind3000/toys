@@ -32,6 +32,18 @@ _SESSION.count = (_SESSION.count || 0) + 1
 
 请求 `http://localhost:5000/hello.eta?name=skywind` 即得页面。`_GET` / `_POST` / `_SESSION` / `_SERVER` / `_COOKIE` / `RESP` / `require` 等 bridge 变量裸名可用（详见 prd.md Bridge API 一节）。
 
+## 命令行渲染（CLI 模式）
+
+像 `php script.php` 一样直接渲染单个脚本，结果写 stdout：
+
+```bash
+node eta-server.js demo/hello.eta            # 渲染文件
+node eta-server.js script.eta one two --x    # 额外参数经 _SERVER.argv 透传
+echo 'hi <%~ _SERVER.argv[0] %>' | node eta-server.js -   # 从 stdin 读脚本
+```
+
+规则同 MakoServer 的命令行渲染：脚本不限扩展名；`-` 代表 stdin；脚本名后的一切参数原样透传（`argv[0]` = 脚本自身）；include / require 以脚本所在目录为基准（stdin 时为 cwd）；渲染异常报错到 stderr、退出码 1。详见 spec.md 决策 #11。
+
 ## 测试
 
 ```bash

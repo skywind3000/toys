@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "start": "node eta-server.js -r demo",
-    "test": "node tests/test_server.js"
+    "test": "node tests/test_server.js && node tests/test_cli.js"
   },
   "keywords": [
     "eta",
