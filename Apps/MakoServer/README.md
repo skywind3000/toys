@@ -269,7 +269,7 @@ sudo systemctl reload apache2
 
 要点：
 
-- **必须用 daemon mode**（`WSGIDaemonProcess` + `WSGIProcessGroup`）；如果改用 venv，加 `python-home=/path/to/venv`（venv 基底 Python 版本必须和 mod_wsgi 编译的版本一致，Debian 系统包对得上）；
+- **使用 daemon mode**（`WSGIDaemonProcess` + `WSGIProcessGroup`）：venv 场景下这是唯一选择（embedded 模式不支持按应用指定 `python-home`）；系统包场景下 embedded 虽能跑，daemon 仍是官方推荐形态——独立进程组、多站点互不串 `sys.path`，且改代码后 touch 入口文件即可热重载，无需重启 Apache。若改用 venv，加 `python-home=/path/to/venv`（venv 基底 Python 版本必须和 mod_wsgi 编译的版本一致，Debian 系统包对得上）；
 - `makoserver.py` 自身、`makoserver.ini`、配置文件、日志文件均不会被 HTTP 回吐（内置 404 屏蔽），但仍建议把配置和日志放 root 外；
 - access log 默认由 Apache 记录，MakoServer 不重复记录；错误信息走 Apache ErrorLog。
 
