@@ -1,0 +1,182 @@
+<%
+//
+// etainfo() - 类似 phpinfo() 的 EtaServer 信息页
+//
+// 版本号经 require('../package.json') 读取（require 锚定本模板目录，
+// 向上一级即 EtaServer 包根；require 整个 eta-server.js 也不会启动
+// 服务器，因为 require.main !== module）。
+//
+const os = require('node:os')
+const path = require('node:path')
+const fs = require('node:fs')
+
+const selfPkg = require('../package.json')
+const etaServerVersion = selfPkg.version
+
+// eta 的 exports 字段不导出 ./package.json，不能 require('eta/package.json')，
+// 从 require.resolve('eta') 的位置向上找包根再读文件
+function pkgVersionOf (name) {
+  let dir = path.dirname(require.resolve(name))
+  while (true) {
+    const f = path.join(dir, 'package.json')
+    if (fs.existsSync(f)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(f, 'utf8'))
+        if (pkg.name === name) return pkg.version || '?'
+      } catch (e) { /* keep climbing */ }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return '?'
+    dir = parent
+  }
+}
+
+const etaVersion = pkgVersionOf('eta')
+
+const srv = _SERVER
+
+function kvRows (pairs) {
+  const out = []
+  for (const p of pairs) {
+    out.push('<tr><td class="e">' + escape(p[0]) + '</td>' +
+             '<td class="v">' + escape(String(p[1])) + '</td></tr>')
+  }
+  if (!out.length) {
+    out.push('<tr><td class="e" colspan="2">(empty)</td></tr>')
+  }
+  return out.join('\n')
+}
+
+function sortedEntries (obj) {
+  return Object.keys(obj).sort().map(k => [k, obj[k]])
+}
+
+// require 锚定模板目录，裸说明符沿这些目录逐级向上找 node_modules
+function moduleSearchPaths () {
+  const out = []
+  let dir = _SERVER.SCRIPT_DIRNAME
+  while (true) {
+    out.push(path.join(dir, 'node_modules'))
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return out
+}
+
+const now = new Date()
+const pad = (n) => String(n).padStart(2, '0')
+const nowStr = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' +
+  pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) +
+  ':' + pad(now.getSeconds())
+%><!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>etainfo()</title>
+<style>
+body {background:#fff; color:#222; margin:0; padding:0;
+      font-family:Verdana,Arial,Helvetica,sans-serif; font-size:12px;}
+.banner {background:#666699; color:#fff; padding:10px 18px;}
+.banner h1 {margin:0; font-size:22px; font-weight:bold;}
+.banner span {color:#ccccff;}
+.wrap {padding:8px 18px 40px 18px;}
+h2 {background:#9999cc; color:#fff; font-size:14px; padding:4px 10px;
+    margin:26px 0 0 0;}
+table {border-collapse:collapse; width:920px; margin:0 0 2px 0;}
+td {border:1px solid #9999cc; padding:3px 8px; vertical-align:top;}
+td.e {background:#ccccff; font-weight:bold; width:300px;}
+td.v {background:#f8f8ff; word-break:break-all; white-space:pre-wrap;}
+td.h {background:#666699; color:#fff; font-weight:bold;}
+p.foot {color:#888; margin-top:30px;}
+a {color:#666699;}
+</style>
+</head>
+<body>
+<div class="banner">
+<h1>etainfo() <span>- EtaServer <%= etaServerVersion %></span></h1>
+</div>
+<div class="wrap">
+
+<h2>System</h2>
+<table>
+<tr><td class="e">EtaServer Version</td><td class="v"><%= etaServerVersion %></td></tr>
+<tr><td class="e">Node.js Version</td><td class="v"><%= process.version %></td></tr>
+<tr><td class="e">Node.js Executable</td><td class="v"><%= process.execPath %></td></tr>
+<tr><td class="e">Platform</td><td class="v"><%= os.platform() %> <%= os.release() %></td></tr>
+<tr><td class="e">OS / Architecture</td><td class="v"><%= os.type() %> / <%= os.arch() %></td></tr>
+<tr><td class="e">Hostname</td><td class="v"><%= os.hostname() %></td></tr>
+<tr><td class="e">Process ID</td><td class="v"><%= process.pid %></td></tr>
+<tr><td class="e">Current Working Directory</td><td class="v"><%= process.cwd() %></td></tr>
+<tr><td class="e">Memory (RSS / Heap Used)</td><td class="v"><%= (process.memoryUsage().rss / 1048576).toFixed(1) %> MB / <%= (process.memoryUsage().heapUsed / 1048576).toFixed(1) %> MB</td></tr>
+<tr><td class="e">Server Time</td><td class="v"><%= nowStr %></td></tr>
+</table>
+
+<h2>Frameworks &amp; Dependencies</h2>
+<table>
+<tr><td class="e">Eta</td><td class="v"><%= etaVersion %></td></tr>
+<tr><td class="e">Node.js</td><td class="v"><%= process.version %></td></tr>
+</table>
+
+<h2>This Request (_SERVER)</h2>
+<table>
+<%~ kvRows(sortedEntries(srv)) %>
+</table>
+
+<h2>Request Parameters</h2>
+<table>
+<tr><td class="h" colspan="2">_GET</td></tr>
+<%~ kvRows(sortedEntries(_GET)) %>
+<tr><td class="h" colspan="2">_POST</td></tr>
+<%~ kvRows(sortedEntries(_POST)) %>
+<tr><td class="h" colspan="2">_REQUEST (GET + POST)</td></tr>
+<%~ kvRows(sortedEntries(_REQUEST)) %>
+<tr><td class="h" colspan="2">_COOKIE</td></tr>
+<%~ kvRows(sortedEntries(_COOKIE)) %>
+</table>
+
+<h2>Session (_SESSION)</h2>
+<table>
+<%~ kvRows(sortedEntries(_SESSION)) %>
+</table>
+
+<h2>Environment Variables (process.env)</h2>
+<table>
+<%~ kvRows(sortedEntries(process.env)) %>
+</table>
+
+<h2>Paths</h2>
+<table>
+<tr><td class="e">DOCUMENT_ROOT</td><td class="v"><%= srv.DOCUMENT_ROOT || '-' %></td></tr>
+<tr><td class="e">SCRIPT_FILENAME</td><td class="v"><%= srv.SCRIPT_FILENAME || '-' %></td></tr>
+<tr><td class="e">SCRIPT_DIRNAME</td><td class="v"><%= srv.SCRIPT_DIRNAME || '-' %></td></tr>
+<tr><td class="e">require() search path (node_modules)</td><td class="v"><%= moduleSearchPaths().join('\n') %></td></tr>
+</table>
+
+<h2>Bridge API (injected names)</h2>
+<table>
+<tr><td class="h">Name</td><td class="h">Description</td></tr>
+<tr><td class="e">template text / &lt;%= %&gt; / &lt;%~ %&gt;</td><td class="v">输出通道：普通文本直出；&lt;%= %&gt; 插值默认 HTML 转义；&lt;%~ %&gt; 原样输出（本页表格即用它注入预转义 HTML）</td></tr>
+<tr><td class="e">escape(value)</td><td class="v">PHP htmlspecialchars 等价：先 String() 再转义 &amp; &lt; &gt; " '，返回转义串</td></tr>
+<tr><td class="e">RESP.header(name, value)</td><td class="v">设置响应头（Set-Cookie 追加、其余覆盖；渲染全程缓冲，无 headers-already-sent 限制）</td></tr>
+<tr><td class="e">RESP.status(code)</td><td class="v">设置响应状态码</td></tr>
+<tr><td class="e">RESP.redirect(url, code=302)</td><td class="v">便捷重定向（不终止渲染，脚本自行 return）</td></tr>
+<tr><td class="e">RESP.json(data)</td><td class="v">JSON 响应（Content-Type: application/json，不终止渲染，配合顶层 return 使用）</td></tr>
+<tr><td class="e">RESP.setcookie(name, value, opts)</td><td class="v">设置 cookie（值默认 percent-encode，对应 PHP setcookie）</td></tr>
+<tr><td class="e">RESP.writeraw(buf)</td><td class="v">二进制输出通道：只收 bytes，一旦使用即短路全部文本输出；需自行 RESP.header 设置 Content-Type</td></tr>
+<tr><td class="e">require(spec)</td><td class="v">锚定本模板目录的 Node require：相对路径以 .eta 文件目录为基准，裸名沿目录向上搜索 node_modules；ESM 用 await import() 动态形式</td></tr>
+<tr><td class="e">_GET / _POST / _REQUEST</td><td class="v">请求参数（普通对象；_REQUEST 为 GET+POST 合并，POST 覆盖）</td></tr>
+<tr><td class="e">_SERVER</td><td class="v">请求环境（REQUEST_METHOD / SCRIPT_NAME / PATH_INFO / REQUEST_URI / SCRIPT_FILENAME / SCRIPT_DIRNAME / DOCUMENT_ROOT / HTTP_* 等）</td></tr>
+<tr><td class="e">_BODY / _JSON</td><td class="v">原始请求体 Buffer；Content-Type 含 json 时自动解析（失败为 null）</td></tr>
+<tr><td class="e">_COOKIE</td><td class="v">客户端 cookie 字典（值经 percent-decode）</td></tr>
+<tr><td class="e">_SESSION</td><td class="v">会话对象（签名 cookie + 时间戳，无服务端存储，滑动 30 分钟；原地增删改，勿整体重绑定）</td></tr>
+</table>
+
+<p class="foot">
+etainfo() - generated at <%= nowStr %> by EtaServer <%= etaServerVersion %>
+(Eta <%= etaVersion %> / Node.js <%= process.version %>)
+</p>
+
+</div>
+</body>
+</html>

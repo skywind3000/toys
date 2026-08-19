@@ -1,0 +1,33 @@
+{
+  "name": "eta-server",
+  "version": "0.1.0",
+  "description": "PHP-style dev server for .eta templates: file path is route, drop-in pages like .php",
+  "main": "eta-server.js",
+  "bin": {
+    "eta-server": "./eta-server.js"
+  },
+  "files": [
+    "eta-server.js",
+    "prd.md",
+    "spec.md"
+  ],
+  "scripts": {
+    "start": "node eta-server.js -r demo",
+    "test": "node tests/test_server.js && node tests/test_cli.js"
+  },
+  "keywords": [
+    "eta",
+    "template",
+    "php",
+    "server",
+    "dev-server",
+    "file-routing"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "eta": "^3.5.0"
+  }
+}
